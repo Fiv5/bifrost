@@ -35,6 +35,7 @@ use super::ws_handshake::{
 use crate::server::{full_body, with_trailers, BoxBody, ResolvedRules, RulesResolver};
 use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
+use crate::transform::collect_all_cookies_from_headers;
 use crate::transform::decompress_body_with_limit;
 use crate::transform::{apply_body_rules, apply_content_injection, Phase};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
@@ -76,9 +77,25 @@ fn get_traffic_type_from_url(url: &str) -> TrafficType {
 
 fn headers_to_pairs(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
     let mut pairs = Vec::with_capacity(headers.len());
+    let mut cookie_values: Vec<&str> = Vec::new();
+    let mut cookie_insert_pos: Option<usize> = None;
+
     for (key, value) in headers {
-        pairs.push((key.to_string(), value.to_str().unwrap_or("").to_string()));
+        if key == hyper::header::COOKIE {
+            if cookie_insert_pos.is_none() {
+                cookie_insert_pos = Some(pairs.len());
+                pairs.push(("cookie".to_string(), String::new()));
+            }
+            cookie_values.push(value.to_str().unwrap_or(""));
+        } else {
+            pairs.push((key.to_string(), value.to_str().unwrap_or("").to_string()));
+        }
     }
+
+    if let Some(pos) = cookie_insert_pos {
+        pairs[pos].1 = cookie_values.join("; ");
+    }
+
     pairs
 }
 
@@ -574,23 +591,7 @@ pub async fn handle_http_request(
             )
         })
         .collect();
-    let incoming_cookies: HashMap<String, String> = req
-        .headers()
-        .get(hyper::header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(';')
-                .filter_map(|part| {
-                    let mut iter = part.trim().splitn(2, '=');
-                    match (iter.next(), iter.next()) {
-                        (Some(key), Some(val)) => Some((key.to_string(), val.to_string())),
-                        _ => None,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let incoming_cookies: HashMap<String, String> = collect_all_cookies_from_headers(req.headers());
 
     let rule_match_url = if ctx.url.is_empty() { &url } else { &ctx.url };
     let resolved_rules = rules.resolve_with_context(
@@ -700,6 +701,16 @@ pub async fn handle_http_request(
     let req_content_encoding = header_content_encoding(&parts.headers);
 
     apply_req_rules(&mut parts, &resolved_rules, verbose_logging, ctx);
+
+    if parts.headers.get_all(hyper::header::COOKIE).iter().count() > 1 {
+        let merged = crate::transform::merge_cookie_header_values(&parts.headers);
+        parts.headers.remove(hyper::header::COOKIE);
+        if !merged.is_empty() {
+            if let Ok(v) = merged.parse::<HeaderValue>() {
+                parts.headers.insert(hyper::header::COOKIE, v);
+            }
+        }
+    }
 
     let content_length = parts
         .headers
@@ -2881,5 +2892,51 @@ mod tests {
         assert!(!should_use_metrics_only_forwarding_mode(
             true, false, true, false, false
         ));
+    }
+
+    #[test]
+    fn test_headers_to_pairs_merges_cookie_entries() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(hyper::header::HOST, "example.com".parse().unwrap());
+        headers.append(hyper::header::COOKIE, "session=abc123".parse().unwrap());
+        headers.append(hyper::header::COOKIE, "user=test".parse().unwrap());
+        headers.append(hyper::header::COOKIE, "lang=en".parse().unwrap());
+        headers.append(hyper::header::ACCEPT, "*/*".parse().unwrap());
+
+        let pairs = headers_to_pairs(&headers);
+
+        let cookie_entries: Vec<_> = pairs.iter().filter(|(k, _)| k == "cookie").collect();
+        assert_eq!(cookie_entries.len(), 1);
+        assert_eq!(cookie_entries[0].1, "session=abc123; user=test; lang=en");
+
+        assert!(pairs.iter().any(|(k, v)| k == "host" && v == "example.com"));
+        assert!(pairs.iter().any(|(k, v)| k == "accept" && v == "*/*"));
+    }
+
+    #[test]
+    fn test_headers_to_pairs_single_cookie_unchanged() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(
+            hyper::header::COOKIE,
+            "session=abc123; user=test".parse().unwrap(),
+        );
+
+        let pairs = headers_to_pairs(&headers);
+
+        let cookie_entries: Vec<_> = pairs.iter().filter(|(k, _)| k == "cookie").collect();
+        assert_eq!(cookie_entries.len(), 1);
+        assert_eq!(cookie_entries[0].1, "session=abc123; user=test");
+    }
+
+    #[test]
+    fn test_headers_to_pairs_no_cookie() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(hyper::header::HOST, "example.com".parse().unwrap());
+        headers.append(hyper::header::ACCEPT, "text/html".parse().unwrap());
+
+        let pairs = headers_to_pairs(&headers);
+
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.iter().all(|(k, _)| k != "cookie"));
     }
 }

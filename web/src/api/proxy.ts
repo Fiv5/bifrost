@@ -48,6 +48,7 @@ export interface ProxyAddress {
   ip: string;
   address: string;
   qrcode_url: string;
+  is_preferred: boolean;
 }
 
 export interface ProxyAddressInfo {

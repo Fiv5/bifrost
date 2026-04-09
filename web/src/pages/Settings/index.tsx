@@ -161,7 +161,6 @@ export default function Settings() {
   const [hostMetricsLoading, setHostMetricsLoading] = useState(false);
   const [proxyAddressInfo, setProxyAddressInfo] =
     useState<ProxyAddressInfo | null>(null);
-  const [selectedProxyIp, setSelectedProxyIp] = useState<string>("");
   const [proxySettings, setProxySettings] = useState<ProxySettings | null>(null);
   const [desktopExpectedProxyPort, setDesktopExpectedProxyPort] = useState<number | null>(
     isDesktopShell() ? getExpectedDesktopProxyPort() : null,
@@ -307,7 +306,6 @@ export default function Settings() {
     try {
       const info = await getProxyAddressInfo();
       setProxyAddressInfo(info);
-      setSelectedProxyIp((current) => current || info.addresses[0]?.ip || "");
     } catch (error) {
       if (!suppressRestartErrors && !isConnectionIssueError(error)) {
         console.error("Failed to fetch proxy address info");
@@ -1069,7 +1067,6 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       children: (
         <CertificateTab
           certInfo={certInfo}
-          selectedProxyIp={selectedProxyIp}
           getCertDownloadUrl={getCertDownloadUrl}
           getCertQRCodeUrl={getCertQRCodeUrl}
         />

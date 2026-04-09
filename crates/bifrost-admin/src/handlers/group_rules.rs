@@ -410,7 +410,75 @@ async fn resolve_group_name(
         let mut cache = state.group_name_cache();
         cache.insert(group_id.to_string(), name.clone());
     }
+    state.persist_group_name_cache();
     Ok(name)
+}
+
+pub(crate) async fn resolve_missing_group_caches(
+    sync_manager: &bifrost_sync::SyncManager,
+    state: &SharedAdminState,
+    uncached_dir_names: &[String],
+) {
+    if uncached_dir_names.is_empty() {
+        return;
+    }
+
+    let peers = match fetch_peers(sync_manager).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target: "bifrost_admin::group_rules",
+                error = %e,
+                "failed to fetch peers for group cache resolution"
+            );
+            return;
+        }
+    };
+
+    let group_ids: Vec<String> = peers
+        .iter()
+        .filter_map(|p| p.group_id.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let mut resolved = false;
+    for gid in &group_ids {
+        {
+            let cache = state.group_name_cache();
+            if cache.get(gid).is_some() {
+                continue;
+            }
+        }
+        match fetch_group_info(sync_manager, gid).await {
+            Ok(group) => {
+                let dir_name = sanitize_group_dir_name(&group.name);
+                if uncached_dir_names.contains(&dir_name) {
+                    let mut cache = state.group_name_cache();
+                    cache.insert(gid.clone(), group.name);
+                    resolved = true;
+                    tracing::debug!(
+                        target: "bifrost_admin::group_rules",
+                        group_id = %gid,
+                        dir_name = %dir_name,
+                        "resolved missing group cache entry"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_admin::group_rules",
+                    error = %e,
+                    group_id = %gid,
+                    "failed to fetch group info for cache resolution"
+                );
+            }
+        }
+    }
+
+    if resolved {
+        state.persist_group_name_cache();
+    }
 }
 
 async fn resolve_writable_from_room(

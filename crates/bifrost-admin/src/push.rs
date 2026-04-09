@@ -1053,7 +1053,10 @@ impl PushManager {
                     .as_ref()
                     .map(|path| path.exists())
                     .unwrap_or(false);
-                let local_ips = local_ips();
+                let local_ips: Vec<String> = crate::network::get_local_ips()
+                    .into_iter()
+                    .map(|info| info.ip)
+                    .collect();
                 let port = self.state.port();
                 let status = cert_status(self.state.ca_cert_path.as_deref());
                 let download_urls: Vec<String> = local_ips
@@ -1077,15 +1080,17 @@ impl PushManager {
                 })
             }
             SETTINGS_SCOPE_PROXY_ADDRESS => {
-                let local_ips = local_ips();
+                let ip_infos = crate::network::get_local_ips();
                 let port = self.state.port();
-                let addresses: Vec<serde_json::Value> = local_ips
+                let local_ips: Vec<String> = ip_infos.iter().map(|i| i.ip.clone()).collect();
+                let addresses: Vec<serde_json::Value> = ip_infos
                     .iter()
-                    .map(|ip| {
+                    .map(|info| {
                         json!({
-                            "ip": ip,
-                            "address": format!("http://{}:{}", ip, port),
-                            "qrcode_url": format!("http://{}:{}/_bifrost/public/cert/qrcode?ip={}", ip, port, urlencoding::encode(ip)),
+                            "ip": info.ip,
+                            "address": format!("{}:{}", info.ip, port),
+                            "qrcode_url": format!("/_bifrost/public/proxy/qrcode?ip={}", urlencoding::encode(&info.ip)),
+                            "is_preferred": info.is_preferred,
                         })
                     })
                     .collect();
@@ -1448,25 +1453,6 @@ fn cert_status(cert_path: Option<&std::path::Path>) -> CertStatusSnapshot {
             ),
         },
     }
-}
-
-fn local_ips() -> Vec<String> {
-    let mut ips = Vec::new();
-    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(local_addr) = socket.local_addr() {
-                match local_addr.ip() {
-                    std::net::IpAddr::V4(ip) if !ip.is_loopback() => ips.push(ip.to_string()),
-                    std::net::IpAddr::V6(ip) if !ip.is_loopback() => ips.push(ip.to_string()),
-                    _ => {}
-                }
-            }
-        }
-    }
-    if !ips.iter().any(|ip| ip == "127.0.0.1") {
-        ips.push("127.0.0.1".to_string());
-    }
-    ips
 }
 
 pub type SharedPushManager = Arc<PushManager>;

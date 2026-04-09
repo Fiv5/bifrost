@@ -26,7 +26,8 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewUrl,
 };
 
-const BACKEND_HOST: &str = "127.0.0.1";
+const BACKEND_BIND_HOST: &str = "0.0.0.0";
+const BACKEND_ADMIN_HOST: &str = "127.0.0.1";
 const DEFAULT_BACKEND_PORT: u16 = 9900;
 const MAX_PORT_INCREMENT_ATTEMPTS: u16 = 64;
 const HOST_WINDOW_LABEL: &str = "host";
@@ -549,7 +550,7 @@ fn start_backend(binary_path: &Path, data_dir: &Path, port: u16) -> tauri::Resul
         .args([
             "start",
             "--host",
-            BACKEND_HOST,
+            BACKEND_BIND_HOST,
             "--port",
             &port,
             "--skip-cert-check",
@@ -608,7 +609,7 @@ fn launch_backend_on_available_port(
             Ok(()) => {
                 append_desktop_bootstrap_log(
                     data_dir,
-                    format!("backend became ready at http://{BACKEND_HOST}:{port}"),
+                    format!("backend became ready at http://{BACKEND_ADMIN_HOST}:{port}"),
                 );
                 return Ok((child, port));
             }
@@ -886,7 +887,7 @@ fn wait_for_backend(port: u16, timeout: Duration) -> tauri::Result<()> {
     }
 
     Err(anyhow(format!(
-        "backend did not become ready at http://{BACKEND_HOST}:{port}"
+        "backend did not become ready at http://{BACKEND_ADMIN_HOST}:{port}"
     )))
 }
 
@@ -921,7 +922,7 @@ fn probe_backend_health(port: u16) -> bool {
         return false;
     };
 
-    let url = format!("http://{BACKEND_HOST}:{port}/_bifrost/api/proxy/system/support");
+    let url = format!("http://{BACKEND_ADMIN_HOST}:{port}/_bifrost/api/proxy/system/support");
     let Ok(response) = client.get(url).send() else {
         return false;
     };
@@ -941,7 +942,7 @@ fn wait_for_backend_shutdown(port: u16, timeout: Duration) {
 }
 
 fn is_port_available(port: u16) -> bool {
-    TcpListener::bind((BACKEND_HOST, port)).is_ok()
+    TcpListener::bind((BACKEND_BIND_HOST, port)).is_ok()
 }
 
 fn has_runtime_marker(data_dir: &Path) -> bool {
@@ -1516,7 +1517,7 @@ fn request_backend_port_transition(
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|error| anyhow(format!("failed to build backend rebind client: {error}")))?;
-    let url = format!("http://{BACKEND_HOST}:{current_port}/_bifrost/api/config/server");
+    let url = format!("http://{BACKEND_ADMIN_HOST}:{current_port}/_bifrost/api/config/server");
     let response = client
         .put(url)
         .json(&serde_json::json!({ "port": expected_port }))

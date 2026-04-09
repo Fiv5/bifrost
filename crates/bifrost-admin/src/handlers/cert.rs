@@ -1,6 +1,3 @@
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::net::IpAddr;
-
 use bifrost_tls::{CertInstaller, CertStatus};
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use qrcode::render::svg;
@@ -11,6 +8,7 @@ use super::{
     cors_preflight, error_response, full_body, json_response, method_not_allowed,
     public_response_builder, BoxBody,
 };
+use crate::network;
 use crate::state::SharedAdminState;
 
 #[derive(Serialize)]
@@ -100,7 +98,7 @@ async fn download_ca_cert(state: SharedAdminState) -> Response<BoxBody> {
     }
 }
 
-async fn get_cert_qrcode(req: Request<Incoming>, _state: SharedAdminState) -> Response<BoxBody> {
+async fn get_cert_qrcode(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
     let query = req.uri().query().unwrap_or("");
     let ip_from_query = query.split('&').find_map(|pair| {
         let mut parts = pair.split('=');
@@ -110,13 +108,17 @@ async fn get_cert_qrcode(req: Request<Incoming>, _state: SharedAdminState) -> Re
         }
     });
 
-    let host = ip_from_query.unwrap_or_else(|| {
-        req.headers()
-            .get(hyper::header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("127.0.0.1")
-            .to_string()
-    });
+    let port = state.port();
+
+    let host = ip_from_query
+        .map(|ip| format!("{}:{}", ip, port))
+        .unwrap_or_else(|| {
+            req.headers()
+                .get(hyper::header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("127.0.0.1")
+                .to_string()
+        });
 
     let download_url = format!("http://{}/_bifrost/public/cert", host);
 
@@ -151,7 +153,10 @@ async fn get_cert_info(_req: Request<Incoming>, state: SharedAdminState) -> Resp
         .unwrap_or(false);
     let cert_state = resolve_cert_state(state.ca_cert_path.as_deref());
 
-    let local_ips = get_local_ips();
+    let local_ips: Vec<String> = network::get_local_ips()
+        .into_iter()
+        .map(|info| info.ip)
+        .collect();
     let port = state.port();
 
     let download_urls: Vec<String> = local_ips
@@ -231,49 +236,6 @@ fn cert_state_from_status(status: CertStatus) -> CertStateView {
             trusted: status.is_trusted(),
             status_message: "CA certificate is installed and trusted by the system.".to_string(),
         },
-    }
-}
-
-fn get_local_ips() -> Vec<String> {
-    let mut ips = Vec::new();
-
-    if let Ok(interfaces) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if interfaces.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = interfaces.local_addr() {
-                ips.push(addr.ip().to_string());
-            }
-        }
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        use std::process::Command;
-        if let Ok(output) = Command::new("hostname").arg("-I").output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for ip_str in stdout.split_whitespace() {
-                    if let Ok(ip) = ip_str.parse::<IpAddr>() {
-                        if is_private_ip(&ip) && !ips.contains(&ip.to_string()) {
-                            ips.push(ip.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if ips.is_empty() {
-        ips.push("127.0.0.1".to_string());
-    }
-
-    ips
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
-        IpAddr::V6(ipv6) => ipv6.is_loopback(),
     }
 }
 

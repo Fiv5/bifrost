@@ -1,9 +1,8 @@
-import { Card, Col, Row, Space, Typography, Tag, Button, Image, List, Divider } from "antd";
+import { Card, Col, Row, Space, Typography, Tag, Button, Image, Divider } from "antd";
 import {
   CheckOutlined,
   CloseOutlined,
   DownloadOutlined,
-  GlobalOutlined,
   QrcodeOutlined,
   SafetyCertificateOutlined,
 } from "@ant-design/icons";
@@ -13,14 +12,12 @@ const { Text } = Typography;
 
 export interface CertificateTabProps {
   certInfo: CertInfo | null;
-  selectedProxyIp: string;
   getCertDownloadUrl: () => string;
   getCertQRCodeUrl: (ip?: string) => string;
 }
 
 export default function CertificateTab({
   certInfo,
-  selectedProxyIp,
   getCertDownloadUrl,
   getCertQRCodeUrl,
 }: CertificateTabProps) {
@@ -99,68 +96,57 @@ export default function CertificateTab({
           }
           size="small"
         >
-          <Space
-            direction="vertical"
-            style={{ width: "100%", alignItems: "center" }}
-            size="middle"
-          >
-            {certInfo?.available ? (
-              <>
-                <Image
-                  src={getCertQRCodeUrl(selectedProxyIp || undefined)}
-                  alt="Certificate QR Code"
-                  width={180}
-                  height={180}
-                  fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAJpAN4pokyXwAAAABJRU5ErkJggg=="
-                  data-testid="settings-certificate-qrcode"
-                />
-                <Text
-                  type="secondary"
-                  style={{ fontSize: 12, textAlign: "center" }}
-                >
-                  Scan with your mobile device to download and install the CA
-                  certificate
-                  {selectedProxyIp && (
-                    <>
-                      <br />
-                      <Text code style={{ fontSize: 11 }}>
-                        {selectedProxyIp}
-                      </Text>
-                    </>
-                  )}
-                </Text>
-              </>
-            ) : (
-              <Text type="secondary">QR code not available</Text>
-            )}
-          </Space>
-        </Card>
-      </Col>
-
-      <Col xs={24}>
-        <Card
-          title={
-            <Space>
-              <GlobalOutlined />
-              <span>Available Download URLs</span>
-            </Space>
-          }
-          size="small"
-        >
-          {certInfo?.download_urls && certInfo.download_urls.length > 0 ? (
-            <List
-              size="small"
-              dataSource={certInfo.download_urls}
-              renderItem={(url) => (
-                <List.Item>
-                  <a href={url} target="_blank" rel="noreferrer">
-                    {url}
-                  </a>
-                </List.Item>
-              )}
-            />
+          {certInfo?.available && certInfo.download_urls.length > 0 ? (
+            <>
+              <Text
+                type="secondary"
+                style={{
+                  fontSize: 12,
+                  display: "block",
+                  marginBottom: 12,
+                }}
+              >
+                Scan with your mobile device to download and install the CA certificate
+              </Text>
+              <Row gutter={[16, 16]} justify="start">
+                {certInfo.download_urls.map((url, index) => {
+                  const ip = certInfo.local_ips[index] || "";
+                  return (
+                    <Col key={ip || index}>
+                      <div style={{ textAlign: "center" }}>
+                        <Image
+                          src={getCertQRCodeUrl(ip || undefined)}
+                          alt={`Certificate QR Code - ${ip}`}
+                          width={120}
+                          height={120}
+                          preview={{
+                            mask: <QrcodeOutlined style={{ fontSize: 20 }} />,
+                          }}
+                          fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAJpAN4pokyXwAAAABJRU5ErkJggg=="
+                          data-testid={`settings-certificate-qrcode-${ip}`}
+                        />
+                        <div style={{ marginTop: 4 }}>
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ fontSize: 12 }}
+                          >
+                            {url}
+                          </a>
+                        </div>
+                      </div>
+                    </Col>
+                  );
+                })}
+              </Row>
+            </>
           ) : (
-            <Text type="secondary">No download URLs available</Text>
+            <Text type="secondary">
+              {certInfo?.available
+                ? "No download URLs available"
+                : "QR code not available"}
+            </Text>
           )}
         </Card>
       </Col>

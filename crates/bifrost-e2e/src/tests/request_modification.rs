@@ -91,6 +91,12 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "request_modification",
             test_req_combined_modifications,
         ),
+        TestCase::standalone(
+            "req_multiple_cookie_headers_merge",
+            "Multiple Cookie headers: merged into single Cookie header for upstream",
+            "request_modification",
+            test_req_multiple_cookie_headers_merge,
+        ),
     ]
 }
 
@@ -547,6 +553,74 @@ async fn test_req_combined_modifications() -> Result<(), String> {
     Ok(())
 }
 
+async fn test_req_multiple_cookie_headers_merge() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![&format!("test.local host://127.0.0.1:{}", mock.port)],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .header("Cookie", "monitor_web_id=123456")
+    .header("Cookie", "session_flag=1")
+    .header("Cookie", "people-lang=zh")
+    .header("Cookie", "x-token=16289f27-f342-4f5b-b95a-e5291cfe1577")
+    .header("Cookie", "bd_sso=eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3NzZ9.sig")
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+
+    let req = mock.last_request().ok_or("No request received")?;
+    let cookie_header = req
+        .headers
+        .get("cookie")
+        .ok_or("No cookie header forwarded to upstream")?;
+
+    if !cookie_header.contains("monitor_web_id=123456") {
+        return Err(format!(
+            "Missing monitor_web_id in merged cookie: {}",
+            cookie_header
+        ));
+    }
+    if !cookie_header.contains("session_flag=1") {
+        return Err(format!(
+            "Missing session_flag in merged cookie: {}",
+            cookie_header
+        ));
+    }
+    if !cookie_header.contains("people-lang=zh") {
+        return Err(format!(
+            "Missing people-lang in merged cookie: {}",
+            cookie_header
+        ));
+    }
+    if !cookie_header.contains("x-token=16289f27-f342-4f5b-b95a-e5291cfe1577") {
+        return Err(format!(
+            "Missing x-token in merged cookie: {}",
+            cookie_header
+        ));
+    }
+    if !cookie_header.contains("bd_sso=eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3NzZ9.sig") {
+        return Err(format!(
+            "Missing bd_sso JWT in merged cookie: {}",
+            cookie_header
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,6 +664,12 @@ mod tests {
     #[tokio::test]
     async fn test_combined() {
         let result = test_req_combined_modifications().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_multiple_cookie_headers_merge() {
+        let result = test_req_multiple_cookie_headers_merge().await;
         assert!(result.is_ok(), "Test failed: {:?}", result.err());
     }
 }

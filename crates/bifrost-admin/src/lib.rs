@@ -6,6 +6,7 @@ pub mod connection_registry;
 mod frame_store;
 mod handlers;
 mod metrics;
+pub(crate) mod network;
 mod port_rebind;
 pub mod push;
 pub mod replay_db;

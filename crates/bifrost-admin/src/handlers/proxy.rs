@@ -1,4 +1,3 @@
-use std::net::IpAddr;
 use std::time::Duration;
 
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
@@ -54,6 +53,7 @@ struct ProxyAddress {
     ip: String,
     address: String,
     qrcode_url: String,
+    is_preferred: bool,
 }
 
 const SYSTEM_PROXY_VERIFY_DELAYS_MS: [u64; 4] = [200, 400, 800, 1600];
@@ -370,18 +370,21 @@ fn get_platform_name() -> String {
 }
 
 async fn get_proxy_address_info(state: SharedAdminState) -> Response<BoxBody> {
-    let local_ips = get_local_ips();
+    let ip_infos = crate::network::get_local_ips();
     let port = state.port();
 
-    let addresses: Vec<ProxyAddress> = local_ips
+    let local_ips: Vec<String> = ip_infos.iter().map(|i| i.ip.clone()).collect();
+
+    let addresses: Vec<ProxyAddress> = ip_infos
         .iter()
-        .map(|ip| ProxyAddress {
-            ip: ip.clone(),
-            address: format!("{}:{}", ip, port),
+        .map(|info| ProxyAddress {
+            ip: info.ip.clone(),
+            address: format!("{}:{}", info.ip, port),
             qrcode_url: format!(
                 "/_bifrost/public/proxy/qrcode?ip={}",
-                urlencoding::encode(ip)
+                urlencoding::encode(&info.ip)
             ),
+            is_preferred: info.is_preferred,
         })
         .collect();
 
@@ -392,56 +395,4 @@ async fn get_proxy_address_info(state: SharedAdminState) -> Response<BoxBody> {
     };
 
     json_response(&info)
-}
-
-fn get_local_ips() -> Vec<String> {
-    let mut ips = Vec::new();
-
-    #[cfg(unix)]
-    {
-        if let Ok(ifaddrs) = nix::ifaddrs::getifaddrs() {
-            for ifaddr in ifaddrs {
-                let Some(addr) = ifaddr.address else {
-                    continue;
-                };
-                let ip = if let Some(sockaddr) = addr.as_sockaddr_in() {
-                    IpAddr::V4(sockaddr.ip())
-                } else if let Some(sockaddr) = addr.as_sockaddr_in6() {
-                    IpAddr::V6(sockaddr.ip())
-                } else {
-                    continue;
-                };
-                if is_private_ip(&ip) && !ips.contains(&ip.to_string()) {
-                    ips.push(ip.to_string());
-                }
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-            if socket.connect("8.8.8.8:80").is_ok() {
-                if let Ok(addr) = socket.local_addr() {
-                    let ip = addr.ip();
-                    if is_private_ip(&ip) {
-                        ips.push(ip.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    if ips.is_empty() {
-        ips.push("127.0.0.1".to_string());
-    }
-
-    ips
-}
-
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_link_local(),
-        IpAddr::V6(_) => false,
-    }
 }

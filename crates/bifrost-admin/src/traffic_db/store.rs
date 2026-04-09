@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use bifrost_storage::{MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS};
 use lru::LruCache;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, MutexGuard, RwLock};
 use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::broadcast;
 
@@ -26,6 +26,43 @@ const DEFAULT_CACHE_SIZE: usize = 500;
 const CLEANUP_CHECK_INTERVAL: u64 = 100;
 const CLEANUP_LOW_WATERMARK_PERCENT: usize = 95;
 const METRICS_CACHE_TTL: Duration = Duration::from_secs(5);
+const READ_POOL_SIZE: usize = 4;
+
+struct ReadPool {
+    conns: Vec<Mutex<Connection>>,
+    next: AtomicUsize,
+}
+
+impl ReadPool {
+    fn new(db_path: &std::path::Path, size: usize) -> Result<Self, rusqlite::Error> {
+        let mut conns = Vec::with_capacity(size);
+        for _ in 0..size {
+            let conn = Connection::open(db_path)?;
+            conn.execute_batch(
+                "PRAGMA query_only = true; \
+                 PRAGMA cache_size = 5000; \
+                 PRAGMA mmap_size = 134217728; \
+                 PRAGMA foreign_keys = ON;",
+            )?;
+            conns.push(Mutex::new(conn));
+        }
+        Ok(Self {
+            conns,
+            next: AtomicUsize::new(0),
+        })
+    }
+
+    fn acquire(&self) -> MutexGuard<'_, Connection> {
+        let start = self.next.fetch_add(1, Ordering::Relaxed) % self.conns.len();
+        for i in 0..self.conns.len() {
+            let idx = (start + i) % self.conns.len();
+            if let Some(guard) = self.conns[idx].try_lock() {
+                return guard;
+            }
+        }
+        self.conns[start].lock()
+    }
+}
 
 pub type SharedTrafficDbStore = Arc<TrafficDbStore>;
 type CleanupNotifier = Arc<dyn Fn(&[String]) + Send + Sync>;
@@ -73,7 +110,7 @@ enum QueryTotalMode {
 pub struct TrafficDbStore {
     db_path: PathBuf,
     write_conn: Mutex<Connection>,
-    read_conn: Mutex<Connection>,
+    read_pool: ReadPool,
     record_count: AtomicUsize,
     max_records: AtomicUsize,
     max_db_size_bytes: AtomicU64,
@@ -175,10 +212,7 @@ impl TrafficDbStore {
             }
         };
 
-        let read_conn = Connection::open(&db_path)?;
-        read_conn.execute_batch(
-            "PRAGMA query_only = true; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728; PRAGMA foreign_keys = ON;",
-        )?;
+        let read_pool = ReadPool::new(&db_path, READ_POOL_SIZE)?;
 
         let current_seq = Self::get_max_sequence(&write_conn).unwrap_or(0);
         let record_count = Self::get_record_count(&write_conn).unwrap_or(0);
@@ -195,7 +229,7 @@ impl TrafficDbStore {
         Ok(Self {
             db_path,
             write_conn: Mutex::new(write_conn),
-            read_conn: Mutex::new(read_conn),
+            read_pool,
             record_count: AtomicUsize::new(record_count),
             max_records: AtomicUsize::new(max_records),
             max_db_size_bytes: AtomicU64::new(max_db_size_bytes),
@@ -738,7 +772,7 @@ impl TrafficDbStore {
     }
 
     fn query_internal(&self, params: &QueryParams, total_mode: QueryTotalMode) -> QueryResult {
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let (sql, values) = params.build_select_sql();
         let param_refs: Vec<&dyn rusqlite::ToSql> =
             values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -927,7 +961,7 @@ impl TrafficDbStore {
             placeholders.join(",")
         );
 
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
             Err(e) => {
@@ -1016,11 +1050,7 @@ impl TrafficDbStore {
         out
     }
 
-    fn count_with_conn(
-        &self,
-        conn: &parking_lot::MutexGuard<'_, Connection>,
-        params: &QueryParams,
-    ) -> usize {
+    fn count_with_conn(&self, conn: &Connection, params: &QueryParams) -> usize {
         let (sql, values) = params.build_count_sql();
         let param_refs: Vec<&dyn rusqlite::ToSql> =
             values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -1036,7 +1066,7 @@ impl TrafficDbStore {
     }
 
     fn get_by_id_from_db(&self, id: &str) -> Option<TrafficRecord> {
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let mut record = conn
             .query_row(
                 "SELECT sequence, id, timestamp, host, method, status, protocol, url, path, \
@@ -1075,7 +1105,7 @@ impl TrafficDbStore {
             placeholders.join(",")
         );
 
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
             Err(_) => return vec![],
@@ -1480,7 +1510,7 @@ impl TrafficDbStore {
         let count = self.count();
         let db_size = fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
 
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let oldest: Option<u64> = conn
             .query_row("SELECT MIN(timestamp) FROM traffic_records", [], |row| {
                 row.get::<_, Option<i64>>(0)
@@ -1516,7 +1546,7 @@ impl TrafficDbStore {
             }
         }
 
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let sql = "SELECT COALESCE(NULLIF(host, ''), 'Unknown') AS host, \
                    COUNT(*) AS requests, \
                    COALESCE(SUM(request_size), 0) AS bytes_sent, \
@@ -1573,7 +1603,7 @@ impl TrafficDbStore {
             }
         }
 
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let sql = "SELECT COALESCE(NULLIF(client_app, ''), 'Unknown') AS app_name, \
                    COUNT(*) AS requests, \
                    COALESCE(SUM(request_size), 0) AS bytes_sent, \
@@ -1632,7 +1662,7 @@ impl TrafficDbStore {
     }
 
     pub fn find_latest_client_path_by_app(&self, app_name: &str) -> Option<String> {
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         conn.query_row(
             "SELECT client_path FROM traffic_records WHERE client_app = ?1 AND client_path IS NOT NULL ORDER BY sequence DESC LIMIT 1",
             [app_name],
@@ -1780,7 +1810,7 @@ impl TrafficDbStore {
     }
 
     pub fn all_ids_set(&self) -> std::collections::HashSet<String> {
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let mut stmt = match conn.prepare("SELECT id FROM traffic_records") {
             Ok(s) => s,
             Err(_) => return std::collections::HashSet::new(),
@@ -1796,7 +1826,7 @@ impl TrafficDbStore {
         if limit == 0 {
             return Vec::new();
         }
-        let conn = self.read_conn.lock();
+        let conn = self.read_pool.acquire();
         let mut stmt = match conn
             .prepare("SELECT id FROM traffic_records ORDER BY sequence ASC LIMIT ? OFFSET ?")
         {
@@ -2156,7 +2186,7 @@ mod tests {
         let dir = create_test_dir();
         let store = TrafficDbStore::new(dir.clone(), 5_000, 0, None).unwrap();
 
-        let conn = store.read_conn.lock();
+        let conn = store.read_pool.acquire();
         let has_idx_flags: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_flags')",
@@ -2193,6 +2223,148 @@ mod tests {
         store.clear_with_active_ids(&active_ids);
         assert_eq!(store.count(), 1);
         assert!(store.get_by_id("active-1").is_some());
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_read_pool_concurrent_reads_do_not_block() {
+        let dir = create_test_dir();
+        let store = Arc::new(TrafficDbStore::new(dir.clone(), 1000, 0, None).unwrap());
+
+        for i in 0..20 {
+            let mut r = TrafficRecord::new(
+                format!("conc-{}", i),
+                "GET".to_string(),
+                format!("https://example{}.com/path", i),
+            );
+            r.status = 200;
+            store.record(r);
+        }
+
+        let barrier = Arc::new(std::sync::Barrier::new(READ_POOL_SIZE + 1));
+        let mut handles = Vec::new();
+
+        for t in 0..READ_POOL_SIZE {
+            let s = store.clone();
+            let b = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                b.wait();
+                let start = Instant::now();
+                let params = QueryParams {
+                    limit: Some(10),
+                    direction: Direction::Backward,
+                    ..Default::default()
+                };
+                let result = s.query(&params);
+                let elapsed = start.elapsed();
+                assert!(
+                    !result.records.is_empty(),
+                    "thread {} should get records",
+                    t
+                );
+                elapsed
+            }));
+        }
+
+        barrier.wait();
+        let durations: Vec<Duration> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let max = durations.iter().max().unwrap();
+        assert!(
+            *max < Duration::from_secs(2),
+            "max concurrent read took {:?}, expected < 2s",
+            max
+        );
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_read_pool_pragma_query_only() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        for _ in 0..READ_POOL_SIZE {
+            let conn = store.read_pool.acquire();
+            let result = conn.execute(
+                "INSERT INTO traffic_records (sequence, id, timestamp, host, method, status, \
+                 protocol, url, path, content_type, request_content_type, request_size, \
+                 response_size, duration_ms, client_ip, client_app, flags, frame_count, \
+                 last_frame_id, socket_is_open, socket_send_count, socket_receive_count, \
+                 socket_send_bytes, socket_receive_bytes, socket_frame_count, rule_count) \
+                 VALUES (999, 'x', 0, '', '', 0, '', '', '', '', '', 0, 0, 0, '', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
+                [],
+            );
+            assert!(result.is_err(), "read pool connection should be query_only");
+        }
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_read_pool_under_write_pressure() {
+        let dir = create_test_dir();
+        let store = Arc::new(TrafficDbStore::new(dir.clone(), 5000, 0, None).unwrap());
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let writer_store = store.clone();
+        let writer_stop = stop.clone();
+        let writer = std::thread::spawn(move || {
+            let mut i = 0u64;
+            while !writer_stop.load(Ordering::Relaxed) {
+                let mut r = TrafficRecord::new(
+                    format!("wp-{}", i),
+                    "POST".to_string(),
+                    format!("https://pressure{}.com", i),
+                );
+                r.status = 201;
+                writer_store.record(r);
+                i += 1;
+                if i.is_multiple_of(50) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            i
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut read_handles = Vec::new();
+        for _ in 0..8 {
+            let s = store.clone();
+            read_handles.push(std::thread::spawn(move || {
+                let mut success = 0u32;
+                for _ in 0..20 {
+                    let params = QueryParams {
+                        limit: Some(10),
+                        direction: Direction::Backward,
+                        ..Default::default()
+                    };
+                    let result = s.query(&params);
+                    if !result.records.is_empty() {
+                        success += 1;
+                    }
+                }
+                success
+            }));
+        }
+
+        let results: Vec<u32> = read_handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        stop.store(true, Ordering::Relaxed);
+        let written = writer.join().unwrap();
+
+        for (i, &count) in results.iter().enumerate() {
+            assert!(
+                count > 0,
+                "reader {} got 0 successful reads under write pressure (written: {})",
+                i,
+                written
+            );
+        }
 
         cleanup_test_dir(&dir);
     }

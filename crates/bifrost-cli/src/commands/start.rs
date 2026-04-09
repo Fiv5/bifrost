@@ -941,6 +941,7 @@ pub fn run_foreground(
             log_resolver_rules(&resolver);
 
             let unsafe_ssl = config.unsafe_ssl;
+            admin_state.load_group_name_cache();
             let admin_state_arc = Arc::new(admin_state);
 
             let phase_started_at = Instant::now();
@@ -1569,6 +1570,7 @@ pub fn run_daemon(
                     log_resolver_rules(&resolver);
 
                     let unsafe_ssl = config.unsafe_ssl;
+                    admin_state.load_group_name_cache();
                     let system_proxy_host = if config.host == "0.0.0.0" {
                         "127.0.0.1".to_string()
                     } else {

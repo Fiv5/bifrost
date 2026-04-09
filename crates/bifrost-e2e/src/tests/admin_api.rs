@@ -246,6 +246,159 @@ pub fn get_all_tests() -> Vec<TestCase> {
                 Ok(())
             },
         ),
+        TestCase::standalone(
+            "admin_api_proxy_address_with_preferred_ip",
+            "Validate GET /api/proxy/address returns addresses with is_preferred field and preferred IP first",
+            "admin",
+            || async move {
+                let port = pick_unused_port()?;
+                let (_proxy, _admin_state) =
+                    ProxyInstance::start_with_admin(port, vec![], false, true)
+                        .await
+                        .map_err(|e| format!("Failed to start proxy with admin: {}", e))?;
+
+                let client = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .no_proxy()
+                    .build()
+                    .map_err(|e| format!("Failed to create client: {}", e))?;
+
+                let response = client
+                    .get(format!(
+                        "http://127.0.0.1:{}/_bifrost/api/proxy/address",
+                        port
+                    ))
+                    .send()
+                    .await
+                    .map_err(|e| format!("GET proxy/address failed: {}", e))?;
+
+                assert_status(&response, 200)?;
+
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse proxy address JSON: {}", e))?;
+
+                let port_val = json
+                    .get("port")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing 'port' field in proxy address response")?;
+                if port_val != port as u64 {
+                    return Err(format!(
+                        "Expected port {}, got {}",
+                        port, port_val
+                    ));
+                }
+
+                let addresses = json
+                    .get("addresses")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing 'addresses' array in proxy address response")?;
+
+                if addresses.is_empty() {
+                    return Err("Expected at least one address entry".to_string());
+                }
+
+                for (i, addr) in addresses.iter().enumerate() {
+                    if addr.get("ip").and_then(|v| v.as_str()).is_none() {
+                        return Err(format!("addresses[{}] missing 'ip' field", i));
+                    }
+                    if addr.get("address").and_then(|v| v.as_str()).is_none() {
+                        return Err(format!("addresses[{}] missing 'address' field", i));
+                    }
+                    if addr.get("is_preferred").is_none() {
+                        return Err(format!("addresses[{}] missing 'is_preferred' field", i));
+                    }
+                }
+
+                let has_preferred = addresses
+                    .iter()
+                    .any(|a| a.get("is_preferred").and_then(|v| v.as_bool()) == Some(true));
+                if has_preferred {
+                    let first_preferred = addresses[0]
+                        .get("is_preferred")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if !first_preferred {
+                        return Err(
+                            "Preferred IP should be sorted first in the addresses list".to_string(),
+                        );
+                    }
+                }
+
+                let local_ips = json
+                    .get("local_ips")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing 'local_ips' array")?;
+                if local_ips.len() != addresses.len() {
+                    return Err(format!(
+                        "local_ips length ({}) doesn't match addresses length ({})",
+                        local_ips.len(),
+                        addresses.len()
+                    ));
+                }
+
+                Ok(())
+            },
+        ),
+        TestCase::standalone(
+            "admin_api_proxy_address_contains_lan_ip",
+            "Validate GET /api/proxy/address returns at least one non-loopback LAN IP for external devices",
+            "admin",
+            || async move {
+                let port = pick_unused_port()?;
+                let (_proxy, _admin_state) =
+                    ProxyInstance::start_with_admin(port, vec![], false, true)
+                        .await
+                        .map_err(|e| format!("Failed to start proxy with admin: {}", e))?;
+
+                let client = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .no_proxy()
+                    .build()
+                    .map_err(|e| format!("Failed to create client: {}", e))?;
+
+                let response = client
+                    .get(format!(
+                        "http://127.0.0.1:{}/_bifrost/api/proxy/address",
+                        port
+                    ))
+                    .send()
+                    .await
+                    .map_err(|e| format!("GET proxy/address failed: {}", e))?;
+
+                assert_status(&response, 200)?;
+
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse proxy address JSON: {}", e))?;
+
+                let addresses = json
+                    .get("addresses")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing 'addresses' array in proxy address response")?;
+
+                let has_non_loopback = addresses.iter().any(|addr| {
+                    addr.get("ip")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|ip| ip != "127.0.0.1" && ip != "::1")
+                });
+
+                if !has_non_loopback {
+                    let ips: Vec<&str> = addresses
+                        .iter()
+                        .filter_map(|a| a.get("ip").and_then(|v| v.as_str()))
+                        .collect();
+                    return Err(format!(
+                        "Expected at least one non-loopback LAN IP for external device access, got only: {:?}",
+                        ips
+                    ));
+                }
+
+                Ok(())
+            },
+        ),
     ]
 }
 

@@ -821,6 +821,11 @@ export default function ProxyTab({
                             {addr.address}
                           </Text>
                         </div>
+                        {addr.is_preferred && (
+                          <Tag color="green" style={{ marginTop: 4, fontSize: 11 }}>
+                            Recommended
+                          </Tag>
+                        )}
                       </div>
                     </Col>
                   ))}
