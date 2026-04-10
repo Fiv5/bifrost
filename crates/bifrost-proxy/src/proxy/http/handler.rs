@@ -1541,21 +1541,26 @@ pub async fn handle_http_request(
         }
     }
 
-    let skip_body_processing = (skip_binary_recording
+    let skip_body_processing = skip_binary_recording
         || is_sse
         || !needs_processing
-        || (res_body_too_large && needs_res_body_read))
-        && !force_body_processing_for_badge;
+        || (res_body_too_large && needs_res_body_read);
 
     if needs_res_body_read && res_body_too_large {
         let size_display = res_content_length
             .map(|len| len.to_string())
             .unwrap_or_else(|| format!(">{}", res_body_limit));
+        let skip_detail = if force_body_processing_for_badge {
+            "skipping body rules and badge injection"
+        } else {
+            "skipping body rules"
+        };
         warn!(
-            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), {}, streaming forward",
             ctx.id_str(),
             size_display,
-            res_body_limit
+            res_body_limit,
+            skip_detail
         );
     }
 
