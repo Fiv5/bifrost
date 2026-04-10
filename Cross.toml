@@ -3,3 +3,8 @@ passthrough = [
     "SKIP_FRONTEND_BUILD",
     "CARGO_TERM_COLOR",
 ]
+
+[target.armv7-unknown-linux-gnueabihf]
+pre-build = [
+    "apt-get update && apt-get install -y --no-install-recommends clang libclang-dev",
+]
