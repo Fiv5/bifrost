@@ -19,7 +19,7 @@ reqwest = { workspace = true, features = ["blocking"] }
 bifrost-core = { path = "../bifrost-core" }
 bifrost-storage = { path = "../bifrost-storage" }
 
-[target.'cfg(target_arch = "arm")'.dependencies]
+[target.'cfg(any(target_arch = "arm", all(target_arch = "aarch64", target_os = "windows")))'.dependencies]
 rquickjs-sys = { version = "0.9", features = ["bindgen"] }
 
 [dev-dependencies]
