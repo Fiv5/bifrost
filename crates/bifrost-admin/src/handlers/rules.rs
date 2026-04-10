@@ -351,29 +351,26 @@ async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
         .collect();
 
     if !still_orphaned.is_empty() && state.is_group_cache_resolved() {
-        for (dir_name, dir_path) in &still_orphaned {
-            let has_enabled = RulesStorage::with_dir(dir_path.clone())
-                .ok()
-                .and_then(|s| s.load_enabled().ok())
-                .map(|r| !r.is_empty())
-                .unwrap_or(false);
+        let mut any_had_enabled = false;
 
-            if has_enabled {
-                tracing::warn!(
-                    target: "bifrost_admin::rules",
-                    dir = %dir_name,
-                    "orphaned group directory has enabled rules, disabling and cleaning up"
-                );
-                if let Ok(storage) = RulesStorage::with_dir(dir_path.clone()) {
-                    if let Ok(rules) = storage.load_all() {
+        for (dir_name, dir_path) in &still_orphaned {
+            if let Ok(storage) = RulesStorage::with_dir(dir_path.clone()) {
+                if let Ok(rules) = storage.load_all() {
+                    let had_enabled = rules.iter().any(|r| r.enabled);
+                    if had_enabled {
+                        tracing::warn!(
+                            target: "bifrost_admin::rules",
+                            dir = %dir_name,
+                            "orphaned group directory has enabled rules, disabling and cleaning up"
+                        );
                         for rule in &rules {
                             if rule.enabled {
                                 let _ = storage.set_enabled(&rule.name, false);
                             }
                         }
+                        any_had_enabled = true;
                     }
                 }
-                notify_rules_changed(&state);
             }
 
             tracing::info!(
@@ -389,6 +386,10 @@ async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
                     "failed to remove orphaned group directory"
                 );
             }
+        }
+
+        if any_had_enabled {
+            notify_rules_changed(&state);
         }
     }
 

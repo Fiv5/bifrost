@@ -12,6 +12,15 @@ fn is_group_list_request(method: &Method, api_path: &str) -> bool {
 }
 
 fn cleanup_orphaned_group_dirs(state: &SharedAdminState, response_body: &[u8]) {
+    let local_entries: Vec<(String, String)> = {
+        let cache = state.group_name_cache();
+        let entries = cache.entries();
+        if entries.is_empty() {
+            return;
+        }
+        entries
+    };
+
     let parsed: serde_json::Value = match serde_json::from_slice(response_body) {
         Ok(v) => v,
         Err(_) => return,
@@ -22,15 +31,6 @@ fn cleanup_orphaned_group_dirs(state: &SharedAdminState, response_body: &[u8]) {
         None => return,
     };
 
-    let known_group_names: std::collections::HashSet<String> = {
-        let cache = state.group_name_cache();
-        cache.all_dir_names()
-    };
-
-    if known_group_names.is_empty() {
-        return;
-    }
-
     let remote_group_ids: std::collections::HashSet<String> = groups
         .iter()
         .filter_map(|g| {
@@ -40,17 +40,19 @@ fn cleanup_orphaned_group_dirs(state: &SharedAdminState, response_body: &[u8]) {
         })
         .collect();
 
-    let cache = state.group_name_cache();
-    let local_entries: Vec<(String, String)> = cache.entries();
-    drop(cache);
+    let orphaned: Vec<&(String, String)> = local_entries
+        .iter()
+        .filter(|(gid, _)| !remote_group_ids.contains(gid))
+        .collect();
+
+    if orphaned.is_empty() {
+        return;
+    }
 
     let rules_base_dir = state.rules_storage.base_dir();
+    let mut any_had_enabled = false;
 
-    for (group_id, dir_name) in &local_entries {
-        if remote_group_ids.contains(group_id) {
-            continue;
-        }
-
+    for (group_id, dir_name) in &orphaned {
         let dir_path = rules_base_dir.join(dir_name);
         if !dir_path.exists() {
             continue;
@@ -65,10 +67,13 @@ fn cleanup_orphaned_group_dirs(state: &SharedAdminState, response_body: &[u8]) {
 
         if let Ok(storage) = RulesStorage::with_dir(dir_path.clone()) {
             if let Ok(rules) = storage.load_all() {
-                for rule in &rules {
-                    if rule.enabled {
-                        let _ = storage.set_enabled(&rule.name, false);
+                if rules.iter().any(|r| r.enabled) {
+                    for rule in &rules {
+                        if rule.enabled {
+                            let _ = storage.set_enabled(&rule.name, false);
+                        }
                     }
+                    any_had_enabled = true;
                 }
             }
         }
@@ -92,18 +97,13 @@ fn cleanup_orphaned_group_dirs(state: &SharedAdminState, response_body: &[u8]) {
 
     {
         let mut cache = state.group_name_cache();
-        for (group_id, _) in &local_entries {
-            if !remote_group_ids.contains(group_id) {
-                cache.remove(group_id);
-            }
+        for (group_id, _) in &orphaned {
+            cache.remove(group_id);
         }
         cache.persist(rules_base_dir);
     }
 
-    let any_removed = local_entries
-        .iter()
-        .any(|(gid, _)| !remote_group_ids.contains(gid));
-    if any_removed {
+    if any_had_enabled {
         super::rules::notify_rules_changed_pub(state);
     }
 }

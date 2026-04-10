@@ -970,16 +970,23 @@ fn print_traffic_detail(record: &Value, _format: OutputFormat) {
             for rule in rules {
                 let protocol = rule.get("protocol").and_then(|v| v.as_str()).unwrap_or("?");
                 let value = rule.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                let file = rule.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                let rule_name = rule.get("rule_name").and_then(|v| v.as_str()).unwrap_or("");
                 let display_value = if value.len() > 60 {
                     format!("{}...", &value[..57])
                 } else {
                     value.to_string()
                 };
-                println!(
-                    "    {dim}•{reset} {yellow}{}{reset} → {}  {dim}[{}]{reset}",
-                    protocol, display_value, file
-                );
+                if rule_name.is_empty() {
+                    println!(
+                        "    {dim}•{reset} {yellow}{}{reset} → {}",
+                        protocol, display_value
+                    );
+                } else {
+                    println!(
+                        "    {dim}•{reset} {yellow}{}{reset} → {}  {dim}[{}]{reset}",
+                        protocol, display_value, rule_name
+                    );
+                }
             }
         }
     }
