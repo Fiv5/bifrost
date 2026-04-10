@@ -847,7 +847,13 @@ async fn handle_delete_rule(
 
     if let Some(remote_id) = &existing.sync.remote_id {
         if let Err(e) = proxy_delete(&sync_manager, &format!("/v4/env/{remote_id}")).await {
-            return error_response(StatusCode::BAD_GATEWAY, &e);
+            tracing::warn!(
+                target: "bifrost_admin::group_rules",
+                rule = %rule_name,
+                group = %group_id,
+                error = %e,
+                "failed to delete remote rule, proceeding with local delete"
+            );
         }
     }
 

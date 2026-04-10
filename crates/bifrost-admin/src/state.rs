@@ -902,6 +902,43 @@ impl GroupNameCacheGuard<'_> {
             .find(|(_, v)| v.as_str() == name)
             .map(|(k, _)| k.clone())
     }
+
+    pub fn all_dir_names(&self) -> std::collections::HashSet<String> {
+        self.guard.values().cloned().collect()
+    }
+
+    pub fn entries(&self) -> Vec<(String, String)> {
+        self.guard
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    pub fn remove(&mut self, group_id: &str) {
+        self.guard.remove(group_id);
+    }
+
+    pub fn persist(&self, rules_dir: &std::path::Path) {
+        let cache_path = rules_dir.join(".group_cache.json");
+        match serde_json::to_string_pretty(&*self.guard) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&cache_path, json) {
+                    tracing::warn!(
+                        target: "bifrost_admin::state",
+                        error = %e,
+                        "failed to persist group name cache after cleanup"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_admin::state",
+                    error = %e,
+                    "failed to serialize group name cache for cleanup persist"
+                );
+            }
+        }
+    }
 }
 
 pub type SharedAdminState = Arc<AdminState>;

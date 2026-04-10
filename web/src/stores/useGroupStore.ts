@@ -77,7 +77,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       const room = roomResult?.list?.[0];
       const level: GroupUserLevel | null = room
         ? (room.level as GroupUserLevel)
-        : (cachedGroup?.level ?? group.level ?? null);
+        : (cachedGroup?.level ?? null);
 
       set({ currentGroup: group, myLevel: level, loading: false });
     } catch (e) {

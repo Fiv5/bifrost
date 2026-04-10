@@ -479,7 +479,7 @@ pub struct ConnectionErrorInfo {
     pub request_url: String,
 }
 
-fn build_error_body(status_code: u16, error_info: &ConnectionErrorInfo) -> Bytes {
+pub fn build_error_body(status_code: u16, error_info: &ConnectionErrorInfo) -> Bytes {
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
     let now = chrono::Local::now();
     let date_str = now.format("%m/%d/%Y, %I:%M:%S %p").to_string();
@@ -667,6 +667,68 @@ pub async fn handle_http_request(
         if verbose_logging {
             info!("[{}] [MOCK] returning mock response", ctx.id_str());
         }
+
+        if let Some(ref state) = admin_state {
+            let total_ms = start_time.elapsed().as_millis() as u64;
+            let mock_host = uri.host().unwrap_or("unknown").to_string();
+            let req_headers_pairs = headers_to_pairs(req.headers());
+            let mock_status = mock_response.status().as_u16();
+            let mock_res_headers = headers_to_pairs(mock_response.headers());
+            let mock_res_body = resolved_rules.res_body.clone().unwrap_or_else(|| {
+                Bytes::from(
+                    hyper::StatusCode::from_u16(mock_status)
+                        .ok()
+                        .and_then(|s| s.canonical_reason())
+                        .unwrap_or(""),
+                )
+            });
+            let mock_body_len = mock_res_body.len();
+
+            let traffic_type = get_traffic_type_from_url(&record_url);
+            state
+                .metrics_collector
+                .add_bytes_sent_by_type(traffic_type, 0);
+            state
+                .metrics_collector
+                .increment_requests_by_type(traffic_type);
+
+            let mut record =
+                TrafficRecord::new(ctx.id_str().to_string(), method.clone(), record_url.clone());
+            record.status = mock_status;
+            record.duration_ms = total_ms;
+            record.host = mock_host;
+            record.timing = Some(RequestTiming {
+                dns_ms: None,
+                connect_ms: None,
+                tls_ms: None,
+                send_ms: None,
+                wait_ms: Some(total_ms),
+                first_byte_ms: None,
+                receive_ms: None,
+                total_ms,
+            });
+            record.request_headers = Some(req_headers_pairs);
+            record.response_headers = Some(mock_res_headers);
+            record.has_rule_hit = has_rules;
+            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+            record.client_ip = ctx.client_ip.clone();
+            record.client_app = ctx.client_app.clone();
+            record.client_pid = ctx.client_pid;
+            record.client_path = ctx.client_path.clone();
+            record.response_body_ref = if let Some(ref body_store) = state.body_store {
+                let store = body_store.read();
+                store.store(ctx.id_str(), "res", mock_res_body.as_ref())
+            } else {
+                store_response_body(&admin_state, ctx.id_str(), &mock_res_body)
+            };
+            record.response_size = calculate_response_size(
+                mock_status,
+                record.response_headers.as_deref().unwrap_or(&[]),
+                mock_body_len,
+            );
+            state.record_traffic(record);
+        }
+
         return Ok(mock_response);
     }
 
@@ -1133,6 +1195,40 @@ pub async fn handle_http_request(
                 } else {
                     store_response_body(&admin_state, ctx.id_str(), &response_body)
                 };
+
+                {
+                    let mut res_header_pairs: Vec<(String, String)> = Vec::new();
+                    if needs_response_override(&resolved_rules) {
+                        for (name, value) in &resolved_rules.res_headers {
+                            res_header_pairs.push((name.clone(), value.clone()));
+                        }
+                        if resolved_rules.res_body.is_none() {
+                            res_header_pairs.push((
+                                "content-type".to_string(),
+                                "text/plain; charset=utf-8".to_string(),
+                            ));
+                            res_header_pairs
+                                .push(("x-bifrost-error".to_string(), error_type.to_string()));
+                        }
+                    } else {
+                        res_header_pairs.push((
+                            "content-type".to_string(),
+                            "text/plain; charset=utf-8".to_string(),
+                        ));
+                        res_header_pairs
+                            .push(("x-bifrost-error".to_string(), error_type.to_string()));
+                    }
+                    if !res_header_pairs.is_empty() {
+                        record.response_headers = Some(res_header_pairs);
+                    }
+                }
+
+                record.response_size = calculate_response_size(
+                    record.status,
+                    record.response_headers.as_deref().unwrap_or(&[]),
+                    response_body.len(),
+                );
+
                 state.record_traffic(record);
             }
             if needs_response_override(&resolved_rules) {

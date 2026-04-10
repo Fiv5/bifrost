@@ -75,6 +75,13 @@ export function isConnectionIssueError(error: unknown): boolean {
   return getApiErrorPayload(error).kind === 'connection';
 }
 
+export function isNotFoundError(error: unknown): boolean {
+  if (axios.isAxiosError(error)) {
+    return error.response?.status === 404;
+  }
+  return false;
+}
+
 export function normalizeApiErrorMessage(
   error: unknown,
   fallback = 'Request failed',

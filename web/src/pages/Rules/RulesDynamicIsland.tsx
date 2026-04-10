@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { theme, Badge } from "antd";
-import { ThunderboltOutlined, TeamOutlined } from "@ant-design/icons";
-import { getActiveSummary, type ActiveRuleItem } from "../../api/rules";
+import { theme, Badge, Tooltip } from "antd";
+import { ThunderboltOutlined, TeamOutlined, WarningOutlined } from "@ant-design/icons";
+import { getActiveSummary, type ActiveRuleItem, type VariableConflict } from "../../api/rules";
 import { useRulesStore } from "../../stores/useRulesStore";
 
 interface Props {
@@ -18,6 +18,7 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
     null,
   );
   const [activeRules, setActiveRules] = useState<ActiveRuleItem[]>([]);
+  const [variableConflicts, setVariableConflicts] = useState<VariableConflict[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef({
     startX: 0,
@@ -28,20 +29,28 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
   });
 
   const rules = useRulesStore((s) => s.rules);
+  const requestIdRef = useRef(0);
 
-  useEffect(() => {
-    let cancelled = false;
+  const refreshActiveRules = useCallback(() => {
+    const id = ++requestIdRef.current;
     getActiveSummary()
       .then((resp) => {
-        if (!cancelled) setActiveRules(resp.rules);
+        if (id === requestIdRef.current) {
+          setActiveRules(resp.rules);
+          setVariableConflicts(resp.variable_conflicts ?? []);
+        }
       })
       .catch(() => {
-        if (!cancelled) setActiveRules([]);
+        if (id === requestIdRef.current) {
+          setActiveRules([]);
+          setVariableConflicts([]);
+        }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [rules]);
+  }, []);
+
+  useEffect(() => {
+    refreshActiveRules();
+  }, [rules, refreshActiveRules]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -216,9 +225,19 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
         >
           {activeRules.length} active
         </span>
+        {variableConflicts.length > 0 && (
+          <Tooltip title={`${variableConflicts.length} variable conflict${variableConflicts.length > 1 ? "s" : ""}`}>
+            <WarningOutlined
+              style={{
+                fontSize: 13,
+                color: token.colorWarning,
+              }}
+            />
+          </Tooltip>
+        )}
       </div>
 
-      {expanded && activeRules.length > 0 && (
+      {expanded && (activeRules.length > 0 || variableConflicts.length > 0) && (
         <div
           style={{
             position: "absolute",
@@ -238,6 +257,65 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
             animation: "islandFadeIn 0.2s ease",
           }}
         >
+          {variableConflicts.length > 0 && (
+            <div
+              style={{
+                margin: "6px 12px 4px",
+                padding: "8px 12px",
+                borderRadius: 8,
+                backgroundColor: token.colorWarningBg,
+                border: `1px solid ${token.colorWarningBorder}`,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: token.colorWarning,
+                  marginBottom: 4,
+                }}
+              >
+                <WarningOutlined style={{ fontSize: 12 }} />
+                Variable Conflicts
+              </div>
+              {variableConflicts.map((conflict) => (
+                <div key={conflict.variable_name} style={{ marginTop: 4 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 500,
+                      color: token.colorText,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {`{${conflict.variable_name}}`}
+                  </div>
+                  {conflict.definitions.map((def, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        fontSize: 11,
+                        color: token.colorTextSecondary,
+                        paddingLeft: 8,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      <span style={{ fontWeight: 500 }}>{def.rule_name}</span>
+                      {": "}
+                      <span style={{ fontFamily: "monospace", fontSize: 10 }}>
+                        {def.value_preview}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
           {ownRules.length > 0 && (
             <>
               <div
@@ -305,7 +383,7 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
         </div>
       )}
 
-      {expanded && activeRules.length === 0 && (
+      {expanded && activeRules.length === 0 && variableConflicts.length === 0 && (
         <div
           style={{
             position: "absolute",

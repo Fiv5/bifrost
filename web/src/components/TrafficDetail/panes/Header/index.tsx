@@ -1,5 +1,5 @@
 import { useMemo, useRef, useCallback, useState } from "react";
-import { Table, Typography, theme, ConfigProvider, Button, message, Tag, Space, Radio, Modal } from "antd";
+import { Table, Typography, theme, ConfigProvider, Button, message, Space, Radio, Modal } from "antd";
 import { LockOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { SessionTargetSearchState } from "../../../../types";
@@ -15,7 +15,6 @@ const { Text } = Typography;
 interface HeaderViewProps {
   headers: [string, string][] | null;
   originalHeaders?: [string, string][] | null;
-  actualHeaders?: [string, string][] | null;
   testIdPrefix?: string;
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
@@ -56,7 +55,6 @@ const areHeadersEqual = (
 export const HeaderView = ({
   headers,
   originalHeaders,
-  actualHeaders,
   testIdPrefix = "header-view",
   searchValue,
   onSearch,
@@ -66,20 +64,16 @@ export const HeaderView = ({
 }: HeaderViewProps) => {
   const { token } = theme.useToken();
   const tableRef = useRef<HTMLDivElement>(null);
-  const [viewMode, setViewMode] = useState<'current' | 'original' | 'actual'>('current');
+  const [viewMode, setViewMode] = useState<'current' | 'original'>('current');
 
   const showOriginalTab = !!originalHeaders && !areHeadersEqual(headers, originalHeaders);
-  const showActualTab = !!actualHeaders && !areHeadersEqual(headers, actualHeaders);
-  const hasModifications = showOriginalTab || showActualTab;
+  const hasModifications = showOriginalTab;
   const resolvedViewMode = useMemo(() => {
     if (viewMode === 'original' && !showOriginalTab) {
       return 'current';
     }
-    if (viewMode === 'actual' && !showActualTab) {
-      return 'current';
-    }
     return viewMode;
-  }, [showActualTab, showOriginalTab, viewMode]);
+  }, [showOriginalTab, viewMode]);
 
   const handleAddToInterceptList = useCallback(() => {
     if (!host) {
@@ -151,11 +145,8 @@ export const HeaderView = ({
     if (resolvedViewMode === 'original' && originalHeaders) {
       return originalHeaders;
     }
-    if (resolvedViewMode === 'actual' && actualHeaders) {
-      return actualHeaders;
-    }
     return headers;
-  }, [resolvedViewMode, headers, originalHeaders, actualHeaders]);
+  }, [resolvedViewMode, headers, originalHeaders]);
 
   const dataSource = useMemo<HeaderItem[]>(() => {
     if (!displayHeaders) return [];
@@ -168,12 +159,13 @@ export const HeaderView = ({
         value,
       }));
 
-    if (resolvedViewMode !== 'current' || !showOriginalTab || !originalHeaders) {
+    const baseHeaders = showOriginalTab ? originalHeaders : null;
+    if (resolvedViewMode !== 'current' || !baseHeaders) {
       return sorted;
     }
 
     const origMap = new Map<string, string[]>();
-    for (const [k, v] of originalHeaders) {
+    for (const [k, v] of baseHeaders) {
       const lower = k.toLowerCase();
       const arr = origMap.get(lower);
       if (arr) {
@@ -216,7 +208,7 @@ export const HeaderView = ({
         for (let i = currentCount; i < values.length; i++) {
           deleted.push({
             key: `deleted-${deleted.length}`,
-            name: originalHeaders.find(([n]) => n.toLowerCase() === k)?.[0] ?? k,
+            name: baseHeaders.find(([n]) => n.toLowerCase() === k)?.[0] ?? k,
             value: values[i],
             diffType: 'deleted',
           });
@@ -381,11 +373,6 @@ export const HeaderView = ({
               {showOriginalTab && (
                 <Radio.Button value="original" data-testid={`${testIdPrefix}-tab-original`}>
                   Original
-                </Radio.Button>
-              )}
-              {showActualTab && (
-                <Radio.Button value="actual" data-testid={`${testIdPrefix}-tab-actual`}>
-                  <Tag color="orange" style={{ margin: 0, fontSize: 11 }}>Actual</Tag>
                 </Radio.Button>
               )}
             </Radio.Group>

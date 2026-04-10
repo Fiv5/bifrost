@@ -283,8 +283,11 @@ pub fn run_traffic_get(options: TrafficGetOptions) -> Result<()> {
 
     match options.format {
         OutputFormat::Json => println!("{}", output),
-        OutputFormat::JsonPretty | OutputFormat::Table | OutputFormat::Compact => {
+        OutputFormat::JsonPretty => {
             println!("{}", serde_json::to_string_pretty(&output).unwrap())
+        }
+        OutputFormat::Table | OutputFormat::Compact => {
+            print_traffic_detail(&output, options.format);
         }
     };
 
@@ -892,5 +895,330 @@ fn format_duration(ms: u64) -> String {
         format!("{:.2}s", ms as f64 / 1000.0)
     } else {
         format!("{}ms", ms)
+    }
+}
+
+fn print_traffic_detail(record: &Value, _format: OutputFormat) {
+    let use_color = std::io::stdout().is_terminal();
+
+    let dim = if use_color { "\x1b[90m" } else { "" };
+    let bold = if use_color { "\x1b[1;37m" } else { "" };
+    let green = if use_color { "\x1b[32m" } else { "" };
+    let yellow = if use_color { "\x1b[33m" } else { "" };
+    let red = if use_color { "\x1b[31m" } else { "" };
+    let cyan = if use_color { "\x1b[36m" } else { "" };
+    let reset = if use_color { "\x1b[0m" } else { "" };
+
+    let s = |key: &str| -> String {
+        record
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let u64_val = |key: &str| -> u64 { record.get(key).and_then(|v| v.as_u64()).unwrap_or(0) };
+    let usize_val = |key: &str| -> usize { u64_val(key) as usize };
+    let bool_val =
+        |key: &str| -> bool { record.get(key).and_then(|v| v.as_bool()).unwrap_or(false) };
+
+    let status = u64_val("status") as u16;
+    let status_color = match status {
+        200..=299 => green,
+        300..=399 => yellow,
+        400..=499 => red,
+        500..=599 => red,
+        _ => dim,
+    };
+
+    println!();
+    println!("{bold}── Request Detail ──{reset}  {dim}{}{reset}", s("id"));
+    println!();
+
+    println!(
+        "  {bold}URL:{reset}       {} {cyan}{}{reset}",
+        s("method"),
+        s("url")
+    );
+    println!("  {bold}Status:{reset}    {status_color}{}{reset}", status);
+    println!("  {bold}Protocol:{reset}  {}", s("protocol"));
+    println!(
+        "  {bold}Duration:{reset}  {}",
+        format_duration(u64_val("duration_ms"))
+    );
+    println!(
+        "  {bold}Size:{reset}      req {} / res {}",
+        format_size(usize_val("request_size")),
+        format_size(usize_val("response_size"))
+    );
+    if !s("host").is_empty() {
+        println!("  {bold}Host:{reset}      {}", s("host"));
+    }
+    if !s("client_ip").is_empty() {
+        println!("  {bold}Client:{reset}    {}", s("client_ip"));
+    }
+    if let Some(app) = record.get("client_app").and_then(|v| v.as_str()) {
+        println!("  {bold}App:{reset}       {}", app);
+    }
+    if let Some(err) = record.get("error_message").and_then(|v| v.as_str()) {
+        println!("  {bold}Error:{reset}     {red}{}{reset}", err);
+    }
+
+    if bool_val("has_rule_hit") {
+        if let Some(rules) = record.get("matched_rules").and_then(|v| v.as_array()) {
+            println!();
+            println!("  {bold}Matched Rules ({}):{reset}", rules.len());
+            for rule in rules {
+                let protocol = rule.get("protocol").and_then(|v| v.as_str()).unwrap_or("?");
+                let value = rule.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                let file = rule.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                let display_value = if value.len() > 60 {
+                    format!("{}...", &value[..57])
+                } else {
+                    value.to_string()
+                };
+                println!(
+                    "    {dim}•{reset} {yellow}{}{reset} → {}  {dim}[{}]{reset}",
+                    protocol, display_value, file
+                );
+            }
+        }
+    }
+
+    print_headers_section(
+        record,
+        "request_headers",
+        "original_request_headers",
+        "Request Headers",
+        true,
+        use_color,
+    );
+
+    print_headers_section(
+        record,
+        "actual_response_headers",
+        "response_headers",
+        "Response Headers",
+        false,
+        use_color,
+    );
+
+    if let Some(body) = record.get("request_body") {
+        println!();
+        println!("  {bold}Request Body:{reset}");
+        print_body(body, use_color);
+    }
+
+    if let Some(body) = record.get("response_body") {
+        println!();
+        println!("  {bold}Response Body:{reset}");
+        print_body(body, use_color);
+    }
+
+    if let Some(timing) = record.get("timing") {
+        let fields = [
+            ("dns_ms", "DNS"),
+            ("connect_ms", "Connect"),
+            ("tls_ms", "TLS"),
+            ("send_ms", "Send"),
+            ("wait_ms", "Wait"),
+            ("first_byte_ms", "First Byte"),
+            ("receive_ms", "Receive"),
+        ];
+        let parts: Vec<String> = fields
+            .iter()
+            .filter_map(|(key, label)| {
+                timing
+                    .get(*key)
+                    .and_then(|v| v.as_u64())
+                    .map(|ms| format!("{}: {}ms", label, ms))
+            })
+            .collect();
+        if !parts.is_empty() {
+            println!();
+            println!("  {bold}Timing:{reset}  {dim}{}{reset}", parts.join("  "));
+        }
+    }
+
+    println!();
+}
+
+fn print_headers_section(
+    record: &Value,
+    current_key: &str,
+    original_key: &str,
+    title: &str,
+    is_request: bool,
+    use_color: bool,
+) {
+    let bold = if use_color { "\x1b[1;37m" } else { "" };
+    let dim = if use_color { "\x1b[90m" } else { "" };
+    let green = if use_color { "\x1b[32m" } else { "" };
+    let yellow = if use_color { "\x1b[33m" } else { "" };
+    let red = if use_color { "\x1b[31m" } else { "" };
+    let reset = if use_color { "\x1b[0m" } else { "" };
+
+    let current_headers = if is_request {
+        record.get(current_key).and_then(|v| v.as_array())
+    } else {
+        record
+            .get(current_key)
+            .and_then(|v| v.as_array())
+            .or_else(|| record.get("response_headers").and_then(|v| v.as_array()))
+    };
+
+    let original_headers = record.get(original_key).and_then(|v| v.as_array());
+
+    let has_modifications = if is_request {
+        original_headers.is_some()
+    } else {
+        record.get(current_key).and_then(|v| v.as_array()).is_some()
+    };
+
+    if let Some(headers) = current_headers {
+        println!();
+        if has_modifications {
+            println!("  {bold}{} (Current):{reset}", title);
+        } else {
+            println!("  {bold}{}:{reset}", title);
+        }
+        let mut sorted: Vec<(&str, &str)> = headers
+            .iter()
+            .filter_map(|h| {
+                let arr = h.as_array()?;
+                Some((arr.first()?.as_str()?, arr.get(1)?.as_str()?))
+            })
+            .collect();
+        sorted.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+        if has_modifications {
+            let orig_map: std::collections::HashMap<String, Vec<&str>> =
+                if let Some(orig) = original_headers {
+                    let mut map: std::collections::HashMap<String, Vec<&str>> =
+                        std::collections::HashMap::new();
+                    for h in orig {
+                        if let Some(arr) = h.as_array() {
+                            if let (Some(k), Some(v)) = (
+                                arr.first().and_then(|v| v.as_str()),
+                                arr.get(1).and_then(|v| v.as_str()),
+                            ) {
+                                map.entry(k.to_lowercase()).or_default().push(v);
+                            }
+                        }
+                    }
+                    map
+                } else {
+                    std::collections::HashMap::new()
+                };
+
+            let mut used_idx: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for (name, value) in &sorted {
+                let lower = name.to_lowercase();
+                let orig_values = orig_map.get(&lower);
+                let idx = used_idx.entry(lower.clone()).or_insert(0);
+                let marker = if let Some(values) = orig_values {
+                    if *idx < values.len() {
+                        let orig_val = values[*idx];
+                        *idx += 1;
+                        if orig_val != *value {
+                            format!("{yellow}~{reset}")
+                        } else {
+                            " ".to_string()
+                        }
+                    } else {
+                        format!("{green}+{reset}")
+                    }
+                } else {
+                    format!("{green}+{reset}")
+                };
+                println!("   {} {dim}{}{reset}: {}", marker, name, value);
+            }
+
+            let current_key_count: std::collections::HashMap<String, usize> = {
+                let mut map = std::collections::HashMap::new();
+                for (name, _) in &sorted {
+                    *map.entry(name.to_lowercase()).or_insert(0) += 1;
+                }
+                map
+            };
+            for (key, values) in &orig_map {
+                let cur_count = current_key_count.get(key).copied().unwrap_or(0);
+                if cur_count < values.len() {
+                    for v in &values[cur_count..] {
+                        let display_name = original_headers
+                            .and_then(|h| {
+                                h.iter().find_map(|entry| {
+                                    let arr = entry.as_array()?;
+                                    let k = arr.first()?.as_str()?;
+                                    if k.to_lowercase() == *key {
+                                        Some(k)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .unwrap_or(key);
+                        println!(
+                            "   {red}-{reset} {dim}{}{reset}: {dim}{}{reset}",
+                            display_name, v
+                        );
+                    }
+                }
+            }
+        } else {
+            for (name, value) in &sorted {
+                println!("    {dim}{}{reset}: {}", name, value);
+            }
+        }
+    }
+
+    if has_modifications {
+        if let Some(orig) = original_headers {
+            println!();
+            println!("  {bold}{} (Original):{reset}", title);
+            let mut sorted: Vec<(&str, &str)> = orig
+                .iter()
+                .filter_map(|h| {
+                    let arr = h.as_array()?;
+                    Some((arr.first()?.as_str()?, arr.get(1)?.as_str()?))
+                })
+                .collect();
+            sorted.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+            for (name, value) in &sorted {
+                println!("    {dim}{}{reset}: {}", name, value);
+            }
+        }
+    }
+}
+
+fn print_body(body: &Value, use_color: bool) {
+    let dim = if use_color { "\x1b[90m" } else { "" };
+    let reset = if use_color { "\x1b[0m" } else { "" };
+
+    if let Some(s) = body.as_str() {
+        if s.len() > 2000 {
+            println!("    {}", &s[..2000]);
+            println!("    {dim}... ({} bytes total, truncated){reset}", s.len());
+        } else {
+            println!("    {}", s);
+        }
+    } else if body.is_object() || body.is_array() {
+        let pretty = serde_json::to_string_pretty(body).unwrap_or_default();
+        let lines: Vec<&str> = pretty.lines().collect();
+        if lines.len() > 50 {
+            for line in &lines[..50] {
+                println!("    {}", line);
+            }
+            println!(
+                "    {dim}... ({} lines total, truncated){reset}",
+                lines.len()
+            );
+        } else {
+            for line in &lines {
+                println!("    {}", line);
+            }
+        }
+    } else {
+        println!("    {}", body);
     }
 }

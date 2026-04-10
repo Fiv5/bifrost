@@ -4,7 +4,109 @@ use tracing::debug;
 
 use super::{error_response, full_body, BoxBody};
 use crate::state::SharedAdminState;
+use bifrost_storage::RulesStorage;
 use bifrost_sync::SharedSyncManager;
+
+fn is_group_list_request(method: &Method, api_path: &str) -> bool {
+    *method == Method::GET && (api_path == "/api/group" || api_path == "/api/group/")
+}
+
+fn cleanup_orphaned_group_dirs(state: &SharedAdminState, response_body: &[u8]) {
+    let parsed: serde_json::Value = match serde_json::from_slice(response_body) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let groups = match parsed.pointer("/data").and_then(|d| d.as_array()) {
+        Some(arr) => arr,
+        None => return,
+    };
+
+    let known_group_names: std::collections::HashSet<String> = {
+        let cache = state.group_name_cache();
+        cache.all_dir_names()
+    };
+
+    if known_group_names.is_empty() {
+        return;
+    }
+
+    let remote_group_ids: std::collections::HashSet<String> = groups
+        .iter()
+        .filter_map(|g| {
+            g.get("group_id")
+                .and_then(|id| id.as_str())
+                .map(String::from)
+        })
+        .collect();
+
+    let cache = state.group_name_cache();
+    let local_entries: Vec<(String, String)> = cache.entries();
+    drop(cache);
+
+    let rules_base_dir = state.rules_storage.base_dir();
+
+    for (group_id, dir_name) in &local_entries {
+        if remote_group_ids.contains(group_id) {
+            continue;
+        }
+
+        let dir_path = rules_base_dir.join(dir_name);
+        if !dir_path.exists() {
+            continue;
+        }
+
+        tracing::warn!(
+            target: "bifrost_admin::group",
+            group_id = %group_id,
+            dir = %dir_name,
+            "group no longer exists remotely, cleaning up local directory"
+        );
+
+        if let Ok(storage) = RulesStorage::with_dir(dir_path.clone()) {
+            if let Ok(rules) = storage.load_all() {
+                for rule in &rules {
+                    if rule.enabled {
+                        let _ = storage.set_enabled(&rule.name, false);
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = std::fs::remove_dir_all(&dir_path) {
+            tracing::warn!(
+                target: "bifrost_admin::group",
+                error = %e,
+                dir = %dir_name,
+                "failed to remove orphaned group directory"
+            );
+        } else {
+            tracing::info!(
+                target: "bifrost_admin::group",
+                group_id = %group_id,
+                dir = %dir_name,
+                "removed orphaned group directory"
+            );
+        }
+    }
+
+    {
+        let mut cache = state.group_name_cache();
+        for (group_id, _) in &local_entries {
+            if !remote_group_ids.contains(group_id) {
+                cache.remove(group_id);
+            }
+        }
+        cache.persist(rules_base_dir);
+    }
+
+    let any_removed = local_entries
+        .iter()
+        .any(|(gid, _)| !remote_group_ids.contains(gid));
+    if any_removed {
+        super::rules::notify_rules_changed_pub(state);
+    }
+}
 
 fn is_single_group_detail(method: &Method, api_path: &str) -> Option<String> {
     if *method != Method::GET {
@@ -30,9 +132,8 @@ async fn enrich_group_detail(
     let has_visibility = parsed
         .pointer("/data/visibility")
         .is_some_and(|v| !v.is_null());
-    let has_level = parsed.pointer("/data/level").is_some_and(|v| !v.is_null());
 
-    if has_visibility || has_level {
+    if has_visibility {
         return response_body;
     }
 
@@ -55,9 +156,8 @@ async fn enrich_group_detail(
                         "visibility".to_string(),
                         serde_json::Value::Number(visibility.into()),
                     );
-                    data.insert("level".to_string(), serde_json::Value::Number(level.into()));
                     if let Ok(enriched) = serde_json::to_vec(&root) {
-                        debug!(group_id = %group_id, level = level, "enriched group detail with visibility from setting");
+                        debug!(group_id = %group_id, visibility = visibility, "enriched group detail with visibility from setting");
                         response_body = enriched;
                     }
                 }
@@ -84,6 +184,7 @@ pub async fn handle_group(
     let query = req.uri().query().map(|q| q.to_string());
     let remote_path = path.replacen("/api/group", "/v4/group", 1);
     let detail_group_id = is_single_group_detail(&method, path);
+    let is_list_request = is_group_list_request(&method, path);
 
     let body = match req.collect().await {
         Ok(collected) => {
@@ -122,6 +223,9 @@ pub async fn handle_group(
                 if let Some(ref group_id) = detail_group_id {
                     response_body =
                         enrich_group_detail(&sync_manager, group_id, response_body).await;
+                }
+                if is_list_request {
+                    cleanup_orphaned_group_dirs(&state, &response_body);
                 }
             }
 

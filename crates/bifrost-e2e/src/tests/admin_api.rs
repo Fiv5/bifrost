@@ -1,5 +1,6 @@
 use crate::assertions::{assert_header_contains, assert_header_value, assert_status};
 use crate::{ProxyInstance, TestCase};
+use bifrost_storage::RuleFile;
 use std::net::TcpListener;
 
 pub fn get_all_tests() -> Vec<TestCase> {
@@ -394,6 +395,83 @@ pub fn get_all_tests() -> Vec<TestCase> {
                         "Expected at least one non-loopback LAN IP for external device access, got only: {:?}",
                         ips
                     ));
+                }
+
+                Ok(())
+            },
+        ),
+        TestCase::standalone(
+            "admin_api_delete_synced_rule_succeeds_without_sync_manager",
+            "Validate DELETE /api/rules/{name} succeeds for a synced rule even when sync_manager is unavailable",
+            "admin",
+            || async move {
+                let port = pick_unused_port()?;
+                let (_proxy, admin_state) =
+                    ProxyInstance::start_with_admin(port, vec![], false, true)
+                        .await
+                        .map_err(|e| format!("Failed to start proxy with admin: {}", e))?;
+
+                let mut rule = RuleFile::new("delete-synced-test", "example.com host://127.0.0.1:3000");
+                rule.mark_synced(
+                    "remote-1",
+                    "user-1",
+                    "2026-03-20T09:00:00Z",
+                    "2026-03-20T10:00:00Z",
+                );
+                admin_state
+                    .rules_storage
+                    .save(&rule)
+                    .map_err(|e| format!("Failed to save rule: {}", e))?;
+
+                assert!(
+                    admin_state.rules_storage.exists("delete-synced-test"),
+                    "Rule should exist before deletion"
+                );
+
+                let client = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .no_proxy()
+                    .build()
+                    .map_err(|e| format!("Failed to create client: {}", e))?;
+
+                let response = client
+                    .delete(format!(
+                        "http://127.0.0.1:{}/_bifrost/api/rules/delete-synced-test",
+                        port
+                    ))
+                    .send()
+                    .await
+                    .map_err(|e| format!("DELETE request failed: {}", e))?;
+
+                assert_status(&response, 200)?;
+
+                assert!(
+                    !admin_state.rules_storage.exists("delete-synced-test"),
+                    "Rule should not exist after deletion"
+                );
+
+                let list_response = client
+                    .get(format!(
+                        "http://127.0.0.1:{}/_bifrost/api/rules",
+                        port
+                    ))
+                    .send()
+                    .await
+                    .map_err(|e| format!("GET rules failed: {}", e))?;
+
+                assert_status(&list_response, 200)?;
+                let json: serde_json::Value = list_response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+                let rules = json
+                    .as_array()
+                    .ok_or("Expected rules to be an array")?;
+                let found = rules.iter().any(|r| {
+                    r.get("name").and_then(|n| n.as_str()) == Some("delete-synced-test")
+                });
+                if found {
+                    return Err("Deleted rule still appears in the rules list".to_string());
                 }
 
                 Ok(())

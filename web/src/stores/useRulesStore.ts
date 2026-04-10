@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import type { RuleFile, RuleFileDetail } from '../types';
 import * as api from '../api';
-import { isConnectionIssueError } from '../api/client';
+import { isConnectionIssueError, isNotFoundError, normalizeApiErrorMessage } from '../api/client';
+import { message } from 'antd';
 import {
   fetchGroupRules,
   getGroupRule,
@@ -132,6 +133,15 @@ export const useRulesStore = create<RulesState>((set, get) => ({
           loading: false,
         });
       } catch (e) {
+        if (isNotFoundError(e)) {
+          message.warning(`Rule "${name}" no longer exists, refreshing list`);
+          await get().fetchRules();
+          const rules = get().rules;
+          const nextRule = rules.length > 0 ? rules[0].name : null;
+          set({ selectedRuleName: nextRule, currentRule: null, loading: false });
+          if (nextRule) await get().selectRule(nextRule);
+          return;
+        }
         set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       }
       return;
@@ -141,6 +151,15 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       const rule = await api.getRule(name);
       set({ currentRule: rule, loading: false });
     } catch (e) {
+      if (isNotFoundError(e)) {
+        message.warning(`Rule "${name}" no longer exists, refreshing list`);
+        await get().fetchRules();
+        const rules = get().rules;
+        const nextRule = rules.length > 0 ? rules[0].name : null;
+        set({ selectedRuleName: nextRule, currentRule: null, loading: false });
+        if (nextRule) await get().selectRule(nextRule);
+        return;
+      }
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
@@ -169,6 +188,15 @@ export const useRulesStore = create<RulesState>((set, get) => ({
           loading: false,
         });
       } catch (e) {
+        if (isNotFoundError(e)) {
+          message.warning(`Rule "${name}" no longer exists, refreshing list`);
+          await get().fetchRules();
+          const rules = get().rules;
+          const nextRule = rules.length > 0 ? rules[0].name : null;
+          set({ selectedRuleName: nextRule, currentRule: null, loading: false });
+          if (nextRule) await get().selectRule(nextRule);
+          return;
+        }
         set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       }
       return;
@@ -178,6 +206,15 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       const rule = await api.getRule(name);
       set({ currentRule: rule, loading: false });
     } catch (e) {
+      if (isNotFoundError(e)) {
+        message.warning(`Rule "${name}" no longer exists, refreshing list`);
+        await get().fetchRules();
+        const rules = get().rules;
+        const nextRule = rules.length > 0 ? rules[0].name : null;
+        set({ selectedRuleName: nextRule, currentRule: null, loading: false });
+        if (nextRule) await get().selectRule(nextRule);
+        return;
+      }
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
@@ -305,7 +342,11 @@ export const useRulesStore = create<RulesState>((set, get) => ({
         }
         return true;
       } catch (e) {
-        set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+        const msg = normalizeApiErrorMessage(e, 'Failed to delete rule');
+        if (!isConnectionIssueError(e)) {
+          message.error(msg);
+        }
+        set({ error: isConnectionIssueError(e) ? null : msg, loading: false });
         return false;
       }
     }
@@ -335,7 +376,11 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      const msg = normalizeApiErrorMessage(e, 'Failed to delete rule');
+      if (!isConnectionIssueError(e)) {
+        message.error(msg);
+      }
+      set({ error: isConnectionIssueError(e) ? null : msg, loading: false });
       return false;
     }
   },
@@ -386,6 +431,15 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       }
       return true;
     } catch (e) {
+      if (isNotFoundError(e)) {
+        message.warning(`Rule "${name}" no longer exists, refreshing list`);
+        await get().fetchRules();
+        const rules = get().rules;
+        const nextRule = rules.length > 0 ? rules[0].name : null;
+        set({ selectedRuleName: nextRule, currentRule: null });
+        if (nextRule) await get().selectRule(nextRule);
+        return false;
+      }
       set({ rules: previousRules, error: isConnectionIssueError(e) ? null : (e as Error).message });
       return false;
     }

@@ -16,6 +16,12 @@ pub use types::{
     VariableInfo,
 };
 
+pub fn extract_inline_variables(text: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    extract_markdown_value_blocks(text, &mut values);
+    values
+}
+
 const INCLUDE_FILTER_PREFIX: &str = "includeFilter://";
 const EXCLUDE_FILTER_PREFIX: &str = "excludeFilter://";
 const LINE_PROPS_PREFIX: &str = "lineProps://";
@@ -3388,5 +3394,48 @@ example.com
         assert_eq!(result.errors.len(), 1);
         assert!(result.errors[0].message.contains("Unclosed line block"));
         assert_eq!(result.errors[0].code.as_deref(), Some("E006"));
+    }
+
+    #[test]
+    fn test_extract_inline_variables_basic() {
+        let text = r#"
+example.com reqHeaders://{data}
+
+``` data
+x-tt-env: boe_xxx
+x-tt-env-fe: boe_yyy
+```
+"#;
+        let vars = extract_inline_variables(text);
+        assert_eq!(vars.len(), 1);
+        assert!(vars.contains_key("data"));
+        assert!(vars["data"].contains("x-tt-env"));
+    }
+
+    #[test]
+    fn test_extract_inline_variables_multiple_blocks() {
+        let text = r#"
+example.com reqHeaders://{headers}
+example.com resBody://{body}
+
+``` headers
+x-custom: value
+```
+
+``` body
+{"status":"ok"}
+```
+"#;
+        let vars = extract_inline_variables(text);
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains_key("headers"));
+        assert!(vars.contains_key("body"));
+    }
+
+    #[test]
+    fn test_extract_inline_variables_no_blocks() {
+        let text = "example.com host://127.0.0.1";
+        let vars = extract_inline_variables(text);
+        assert!(vars.is_empty());
     }
 }

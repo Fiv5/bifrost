@@ -8,9 +8,21 @@ export interface ActiveRuleItem {
   group_name: string | null;
 }
 
+export interface VariableDefinition {
+  rule_name: string;
+  group_id: string | null;
+  value_preview: string;
+}
+
+export interface VariableConflict {
+  variable_name: string;
+  definitions: VariableDefinition[];
+}
+
 export interface ActiveSummaryResponse {
   total: number;
   rules: ActiveRuleItem[];
+  variable_conflicts: VariableConflict[];
 }
 
 export async function getActiveSummary(): Promise<ActiveSummaryResponse> {

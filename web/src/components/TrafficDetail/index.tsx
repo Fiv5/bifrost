@@ -497,8 +497,8 @@ export default function TrafficDetail({
         label: "Header",
         children: (
           <HeaderView
-            headers={record.response_headers}
-            actualHeaders={record.actual_response_headers}
+            headers={record.actual_response_headers ?? record.response_headers}
+            originalHeaders={record.actual_response_headers ? record.response_headers : null}
             testIdPrefix="response-header-view"
             searchValue={responseSearch}
             onSearch={setResponseSearch}
@@ -511,10 +511,10 @@ export default function TrafficDetail({
       {
         key: "Set-Cookie",
         label: "Set-Cookie",
-        enable: hasSetCookies(record.response_headers),
+        enable: hasSetCookies(record.actual_response_headers ?? record.response_headers),
         children: (
           <CookieView
-            headers={record.response_headers}
+            headers={record.actual_response_headers ?? record.response_headers}
             type="response"
             searchValue={responseSearch}
             onSearch={setResponseSearch}
@@ -597,7 +597,7 @@ export default function TrafficDetail({
             type="response"
             protocol={record.protocol}
             status={record.status}
-            headers={record.response_headers}
+            headers={record.actual_response_headers ?? record.response_headers}
             body={responseBody}
             searchValue={responseSearch}
             onSearch={setResponseSearch}
