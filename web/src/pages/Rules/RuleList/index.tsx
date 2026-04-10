@@ -39,6 +39,7 @@ import {
   collectFolderPaths,
   flattenVisibleRuleNames,
   getRuleParentPaths,
+  getTopFolderPrefix,
   type RuleTreeFolderNode,
 } from './ruleTree';
 
@@ -532,28 +533,83 @@ export default function RuleList() {
         return;
       }
 
-      const reordered = [...rules];
-      const fromIndex = reordered.findIndex((rule) => rule.name === draggedRuleName);
-      const targetIndex = reordered.findIndex((rule) => rule.name === targetName);
-      if (fromIndex === -1 || targetIndex === -1) {
+      const draggedFolder = getTopFolderPrefix(draggedRuleName);
+      const targetFolder = getTopFolderPrefix(targetName);
+
+      if (draggedFolder && draggedFolder === targetFolder) {
         setDraggedRuleName(null);
         setDropTarget(null);
         stopAutoScroll();
         return;
       }
 
-      const [moved] = reordered.splice(fromIndex, 1);
-      const adjustedTargetIndex =
-        fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
-      const insertIndex =
-        position === 'before' ? adjustedTargetIndex : adjustedTargetIndex + 1;
-      reordered.splice(insertIndex, 0, moved);
+      let reordered = [...rules];
+
+      if (draggedFolder) {
+        const folderPrefix = draggedFolder + '/';
+        const group = reordered.filter((r) => r.name.startsWith(folderPrefix));
+        const rest = reordered.filter((r) => !r.name.startsWith(folderPrefix));
+
+        let insertIdx: number;
+        if (targetFolder) {
+          const targetPrefix = targetFolder + '/';
+          const firstTargetIdx = rest.findIndex((r) => r.name.startsWith(targetPrefix));
+          const lastTargetIdx = rest.reduce(
+            (last, r, i) => (r.name.startsWith(targetPrefix) ? i : last),
+            -1
+          );
+          insertIdx = position === 'before' ? firstTargetIdx : lastTargetIdx + 1;
+        } else {
+          const targetIdx = rest.findIndex((r) => r.name === targetName);
+          if (targetIdx === -1) {
+            setDraggedRuleName(null);
+            setDropTarget(null);
+            stopAutoScroll();
+            return;
+          }
+          insertIdx = position === 'before' ? targetIdx : targetIdx + 1;
+        }
+
+        if (insertIdx === -1) insertIdx = rest.length;
+        rest.splice(insertIdx, 0, ...group);
+        reordered = rest;
+      } else {
+        const fromIndex = reordered.findIndex((r) => r.name === draggedRuleName);
+        const targetIndex = reordered.findIndex((r) => r.name === targetName);
+        if (fromIndex === -1 || targetIndex === -1) {
+          setDraggedRuleName(null);
+          setDropTarget(null);
+          stopAutoScroll();
+          return;
+        }
+
+        const [moved] = reordered.splice(fromIndex, 1);
+
+        let insertIdx: number;
+        if (targetFolder) {
+          const targetPrefix = targetFolder + '/';
+          const remaining = reordered;
+          const firstTargetIdx = remaining.findIndex((r) => r.name.startsWith(targetPrefix));
+          const lastTargetIdx = remaining.reduce(
+            (last, r, i) => (r.name.startsWith(targetPrefix) ? i : last),
+            -1
+          );
+          insertIdx = position === 'before' ? firstTargetIdx : lastTargetIdx + 1;
+        } else {
+          const adjustedTargetIndex =
+            fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+          insertIdx = position === 'before' ? adjustedTargetIndex : adjustedTargetIndex + 1;
+        }
+
+        if (insertIdx === -1) insertIdx = reordered.length;
+        reordered.splice(insertIdx, 0, moved);
+      }
 
       setDraggedRuleName(null);
       setDropTarget(null);
       stopAutoScroll();
 
-      const success = await reorderRules(reordered.map((rule) => rule.name));
+      const success = await reorderRules(reordered.map((r) => r.name));
       if (success) {
         message.success('Rule order updated');
       }

@@ -109,6 +109,12 @@ export function collectFolderPaths(tree: RuleTreeFolderNode): string[] {
   return paths;
 }
 
+export function getTopFolderPrefix(ruleName: string): string | null {
+  const segments = splitRulePath(ruleName);
+  if (segments.length <= 1) return null;
+  return segments[0];
+}
+
 export function flattenVisibleRuleNames(
   tree: RuleTreeFolderNode,
   expandedFolders: Set<string>
