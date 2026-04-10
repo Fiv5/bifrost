@@ -262,3 +262,28 @@
 [data-theme="dark"] .stats {
   color: #666;
 }
+
+.folderItem {
+  user-select: none;
+  font-weight: 500;
+}
+
+.folderCaret {
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #999;
+}
+
+.folderIcon {
+  font-size: 14px;
+  color: #999;
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .folderCaret,
+[data-theme="dark"] .folderIcon {
+  color: #666;
+}
