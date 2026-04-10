@@ -147,6 +147,7 @@ script <ACTION>                   Manage scripts (request/response/decode)
 
 upgrade [OPTIONS]                 Upgrade bifrost to the latest version
   -y, --yes                         Skip confirmation prompt
+  --restart                         Automatically restart the running proxy after upgrade
 
 config [ACTION] (alias: cfg)      Manage runtime configuration
   show [--json] [--section <SECTION>]  Show configuration (default)
@@ -499,6 +500,8 @@ pub enum Commands {
     Upgrade {
         #[arg(short = 'y', long, help = "Skip confirmation prompt")]
         yes: bool,
+        #[arg(long, help = "Automatically restart the running proxy after upgrade")]
+        restart: bool,
     },
     #[command(visible_alias = "cfg", about = "Manage runtime configuration")]
     Config {

@@ -9,6 +9,7 @@ use std::process::Command;
 use super::update_check::{
     get_latest_version, get_latest_version_fresh, is_newer_version, VersionCache,
 };
+use crate::process::{is_process_running, read_pid, read_runtime_info};
 
 const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/tag";
 const GITHUB_DOWNLOAD_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/download";
@@ -526,7 +527,7 @@ fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostErr
     Ok(())
 }
 
-pub fn handle_upgrade(force: bool) -> Result<(), BifrostError> {
+pub fn handle_upgrade(force: bool, restart: bool) -> Result<(), BifrostError> {
     let current_version = env!("CARGO_PKG_VERSION");
 
     println!(
@@ -577,7 +578,7 @@ pub fn handle_upgrade(force: bool) -> Result<(), BifrostError> {
 
     println!();
 
-    match install_method {
+    let upgrade_result = match install_method {
         InstallMethod::Homebrew => upgrade_via_homebrew(&cache.latest_version),
         InstallMethod::Script => upgrade_via_script(),
         InstallMethod::Manual(path) => upgrade_manual(&path, &cache.latest_version),
@@ -596,7 +597,246 @@ pub fn handle_upgrade(force: bool) -> Result<(), BifrostError> {
                 "  Or download from: {}",
                 format!("{}/v{}", GITHUB_RELEASE_URL, cache.latest_version).bright_cyan()
             );
-            Ok(())
+            return Ok(());
         }
+    };
+
+    upgrade_result?;
+
+    maybe_restart_running_proxy(restart)?;
+
+    Ok(())
+}
+
+fn maybe_restart_running_proxy(auto_restart: bool) -> Result<(), BifrostError> {
+    let pid = match read_pid() {
+        Some(pid) if is_process_running(pid) => pid,
+        _ => return Ok(()),
+    };
+
+    println!();
+    println!(
+        "{}",
+        format!("  Detected running Bifrost proxy (PID: {})", pid)
+            .bright_yellow()
+            .bold()
+    );
+
+    let should_restart = if auto_restart {
+        println!(
+            "{}",
+            "  Auto-restarting due to --restart flag...".bright_cyan()
+        );
+        true
+    } else {
+        println!(
+            "{}",
+            "  The proxy needs to be restarted to use the new version.".bright_yellow()
+        );
+        println!(
+            "{}",
+            "  Tip: use `bifrost upgrade --restart` to restart automatically next time.".dimmed()
+        );
+        println!();
+        prompt_confirm("  Restart the proxy now?")
+    };
+
+    if !should_restart {
+        println!(
+            "{}",
+            "  You can restart manually with: bifrost stop && bifrost start -d".dimmed()
+        );
+        return Ok(());
+    }
+
+    let runtime_info = read_runtime_info();
+
+    println!("{}", "  Stopping current proxy...".bright_cyan());
+    super::stop::run_stop()
+        .map_err(|e| BifrostError::Config(format!("Failed to stop running proxy: {}", e)))?;
+
+    let exe_path = env::current_exe().map_err(BifrostError::Io)?;
+    let args = build_restart_args(runtime_info.as_ref());
+
+    println!(
+        "{} {} {}",
+        "  Starting proxy with:".bright_cyan(),
+        exe_path.display(),
+        args.join(" ")
+    );
+
+    let status = Command::new(&exe_path)
+        .args(&args)
+        .status()
+        .map_err(BifrostError::Io)?;
+
+    if status.success() {
+        println!(
+            "{}",
+            "✓ Proxy restarted successfully with the new version!"
+                .bright_green()
+                .bold()
+        );
+    } else {
+        println!(
+            "{}",
+            "⚠ Failed to restart proxy. Please start manually with: bifrost start -d"
+                .bright_yellow()
+        );
+    }
+
+    Ok(())
+}
+
+fn build_restart_args(runtime_info: Option<&crate::process::RuntimeInfo>) -> Vec<String> {
+    let mut args = vec!["start".to_string(), "-d".to_string(), "-y".to_string()];
+
+    if let Some(info) = runtime_info {
+        args.push("-p".to_string());
+        args.push(info.port.to_string());
+
+        if let Some(ref host) = info.host {
+            if host != "127.0.0.1" {
+                args.push("--host".to_string());
+                args.push(host.clone());
+            }
+        }
+
+        if let Some(socks5_port) = info.socks5_port {
+            args.push("--socks5-port".to_string());
+            args.push(socks5_port.to_string());
+        }
+    }
+
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_install_method_returns_valid_variant() {
+        let method = detect_install_method();
+        match method {
+            InstallMethod::Homebrew
+            | InstallMethod::Script
+            | InstallMethod::Manual(_)
+            | InstallMethod::Unknown => {}
+        }
+    }
+
+    #[test]
+    fn test_install_method_display() {
+        assert_eq!(InstallMethod::Homebrew.to_string(), "Homebrew");
+        assert_eq!(InstallMethod::Script.to_string(), "Install script");
+        assert_eq!(
+            InstallMethod::Manual(PathBuf::from("/usr/local/bin/bifrost")).to_string(),
+            "Manual (/usr/local/bin/bifrost)"
+        );
+        assert_eq!(InstallMethod::Unknown.to_string(), "Unknown");
+    }
+
+    #[test]
+    fn test_cli_upgrade_restart_flag_parsed() {
+        use crate::cli::{Cli, Commands};
+        use clap::Parser;
+
+        let cli = Cli::parse_from(["bifrost", "upgrade", "--restart"]);
+        match cli.command {
+            Some(Commands::Upgrade { yes, restart }) => {
+                assert!(!yes);
+                assert!(restart);
+            }
+            _ => panic!("Expected Upgrade command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_upgrade_yes_and_restart_flags() {
+        use crate::cli::{Cli, Commands};
+        use clap::Parser;
+
+        let cli = Cli::parse_from(["bifrost", "upgrade", "-y", "--restart"]);
+        match cli.command {
+            Some(Commands::Upgrade { yes, restart }) => {
+                assert!(yes);
+                assert!(restart);
+            }
+            _ => panic!("Expected Upgrade command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_upgrade_no_flags() {
+        use crate::cli::{Cli, Commands};
+        use clap::Parser;
+
+        let cli = Cli::parse_from(["bifrost", "upgrade"]);
+        match cli.command {
+            Some(Commands::Upgrade { yes, restart }) => {
+                assert!(!yes);
+                assert!(!restart);
+            }
+            _ => panic!("Expected Upgrade command"),
+        }
+    }
+
+    #[test]
+    fn test_build_restart_args_with_runtime_info() {
+        let info = crate::process::RuntimeInfo {
+            pid: 12345,
+            port: 8080,
+            socks5_port: Some(1080),
+            host: Some("0.0.0.0".to_string()),
+        };
+
+        let args = build_restart_args(Some(&info));
+        assert_eq!(
+            args,
+            vec![
+                "start",
+                "-d",
+                "-y",
+                "-p",
+                "8080",
+                "--host",
+                "0.0.0.0",
+                "--socks5-port",
+                "1080"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_restart_args_default_host_skipped() {
+        let info = crate::process::RuntimeInfo {
+            pid: 12345,
+            port: 9900,
+            socks5_port: None,
+            host: Some("127.0.0.1".to_string()),
+        };
+
+        let args = build_restart_args(Some(&info));
+        assert_eq!(args, vec!["start", "-d", "-y", "-p", "9900"]);
+    }
+
+    #[test]
+    fn test_build_restart_args_no_runtime_info() {
+        let args = build_restart_args(None);
+        assert_eq!(args, vec!["start", "-d", "-y"]);
+    }
+
+    #[test]
+    fn test_build_restart_args_no_host() {
+        let info = crate::process::RuntimeInfo {
+            pid: 12345,
+            port: 8800,
+            socks5_port: None,
+            host: None,
+        };
+
+        let args = build_restart_args(Some(&info));
+        assert_eq!(args, vec!["start", "-d", "-y", "-p", "8800"]);
     }
 }

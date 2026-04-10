@@ -152,7 +152,7 @@ fn main() {
         }
         Some(Commands::Value { action }) => handle_value_command(action),
         Some(Commands::Script { action }) => handle_script_command(action),
-        Some(Commands::Upgrade { yes }) => handle_upgrade(yes),
+        Some(Commands::Upgrade { yes, restart }) => handle_upgrade(yes, restart),
         Some(Commands::InstallSkill {
             tool,
             dir,
