@@ -62,15 +62,16 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
   const navigate = useNavigate();
 
   const handleDragOver = useCallback((e: DragEvent) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+
     e.preventDefault();
     e.stopPropagation();
-
-    if (e.dataTransfer?.types.includes("Files")) {
-      setIsDragging(true);
-    }
+    setIsDragging(true);
   }, []);
 
   const handleDragLeave = useCallback((e: DragEvent) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+
     e.preventDefault();
     e.stopPropagation();
 
@@ -85,6 +86,8 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
 
   const handleDrop = useCallback(
     async (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+
       e.preventDefault();
       e.stopPropagation();
       setIsDragging(false);
