@@ -283,7 +283,7 @@ unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY"#.to_string(),
             });
         }
 
-        self.save_backup(backups)?;
+        let _ = self.save_backup(backups);
 
         for config_path in &self.config_paths {
             if !config_path.exists() {

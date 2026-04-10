@@ -57,8 +57,18 @@ start_proxy() {
 
 stop_proxy() {
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
-    "$BIFROST_BIN" stop >/dev/null 2>&1 || true
-    sleep 1
+    "$BIFROST_BIN" stop 2>&1 || true
+
+    local wait_count=0
+    while kill -0 "$PROXY_PID" 2>/dev/null && [[ "$wait_count" -lt 50 ]]; do
+        sleep 0.2
+        wait_count=$((wait_count + 1))
+    done
+
+    if kill -0 "$PROXY_PID" 2>/dev/null; then
+        kill "$PROXY_PID" 2>/dev/null || true
+        sleep 2
+    fi
 }
 
 assert_marker_present() {
