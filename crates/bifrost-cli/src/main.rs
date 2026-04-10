@@ -98,6 +98,7 @@ fn main() {
             ref proxy_bypass,
             cli_proxy,
             ref cli_proxy_no_proxy,
+            yes,
         }) => {
             let effective_port = port.unwrap_or(cli.port);
             let effective_host = host.clone().unwrap_or_else(|| cli.host.clone());
@@ -131,6 +132,7 @@ fn main() {
                 proxy_bypass.clone(),
                 cli_proxy,
                 cli_proxy_no_proxy.clone(),
+                yes,
             )
         }
         Some(Commands::Stop) => run_stop(),
@@ -150,7 +152,7 @@ fn main() {
         }
         Some(Commands::Value { action }) => handle_value_command(action),
         Some(Commands::Script { action }) => handle_script_command(action),
-        Some(Commands::Upgrade { yes }) => handle_upgrade(yes),
+        Some(Commands::Upgrade { yes, restart }) => handle_upgrade(yes, restart),
         Some(Commands::InstallSkill {
             tool,
             dir,
@@ -379,6 +381,7 @@ fn main() {
             None,
             false,
             None,
+            false,
         ),
     };
 

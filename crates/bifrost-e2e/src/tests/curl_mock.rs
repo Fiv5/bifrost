@@ -280,9 +280,9 @@ async fn test_host_plus_reqheaders() -> Result<(), String> {
     let _proxy = ProxyInstance::start(
         port,
         vec![
-            &format!("baidu.com host://127.0.0.1:{}", mock.port),
-            "baidu.com reqHeaders://X-Test=hello",
-            "baidu.com reqHeaders://X-Another=world",
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            "test.local reqHeaders://X-Test=hello",
+            "test.local reqHeaders://X-Another=world",
         ],
     )
     .await
@@ -292,7 +292,7 @@ async fn test_host_plus_reqheaders() -> Result<(), String> {
 
     let result = CurlCommand::with_proxy(
         &format!("http://127.0.0.1:{}", port),
-        "http://baidu.com/api/test",
+        "http://test.local/api/test",
     )
     .execute()
     .await

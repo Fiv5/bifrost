@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -32,6 +33,40 @@ use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_inf
 const ASYNC_TRAFFIC_BUFFER_SIZE: usize = 10000;
 const MAX_PORT_INCREMENT_ATTEMPTS: u16 = 64;
 const PORT_REBIND_OLD_LISTENER_GRACE_PERIOD: Duration = Duration::from_millis(250);
+
+fn parse_yes_no_answer(input: &str) -> Option<bool> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => Some(true),
+        "n" | "no" | "" => Some(false),
+        _ => None,
+    }
+}
+
+fn prompt_restart_if_running(pid: u32) -> bifrost_core::Result<bool> {
+    println!(
+        "Detected an existing Bifrost proxy process (PID: {}). Restart? (y/n)",
+        pid
+    );
+
+    for _ in 0..3 {
+        print!("> ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        let bytes = io::stdin().read_line(&mut input)?;
+        if bytes == 0 {
+            return Ok(false);
+        }
+
+        if let Some(answer) = parse_yes_no_answer(&input) {
+            return Ok(answer);
+        }
+
+        println!("Please answer with y/yes or n/no.");
+    }
+
+    Ok(false)
+}
 
 fn log_startup_phase(phase: &'static str, started_at: Instant) {
     tracing::info!(
@@ -295,15 +330,25 @@ pub fn run_start(
     proxy_bypass: Option<String>,
     cli_proxy: bool,
     cli_proxy_no_proxy: Option<String>,
+    yes: bool,
 ) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
-            return Err(bifrost_core::BifrostError::Config(format!(
-                "Bifrost proxy is already running (PID: {})",
-                pid
-            )));
+            let should_restart = if yes {
+                true
+            } else {
+                prompt_restart_if_running(pid)?
+            };
+
+            if should_restart {
+                super::stop::run_stop()?;
+            } else {
+                println!("Start cancelled.");
+                return Ok(());
+            }
+        } else {
+            remove_pid()?;
         }
-        remove_pid()?;
     }
 
     if !daemon && !skip_cert_check {

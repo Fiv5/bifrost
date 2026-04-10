@@ -115,10 +115,14 @@ test_upgrade_help() {
         ((checks++))
     fi
 
-    if [[ $checks -eq 3 ]]; then
-        pass "upgrade --help 显示正确的帮助信息"
+    if echo "$result" | grep -q "\-\-restart"; then
+        ((checks++))
+    fi
+
+    if [[ $checks -eq 4 ]]; then
+        pass "upgrade --help 显示正确的帮助信息 (包含 --restart)"
     else
-        fail "upgrade --help 信息不完整 ($checks/3): $result"
+        fail "upgrade --help 信息不完整 ($checks/4): $result"
     fi
 }
 
@@ -149,6 +153,36 @@ test_upgrade_yes_flag_recognized() {
         pass "upgrade -y 参数被正确识别"
     else
         fail "upgrade -y 参数输出异常: $result"
+    fi
+}
+
+test_upgrade_restart_flag_recognized() {
+    header "测试 upgrade --restart 参数被识别"
+
+    cd "$PROJECT_DIR"
+
+    local result
+    result=$("$BIFROST_BIN" upgrade --restart 2>&1 || true)
+
+    if echo "$result" | grep -qi "checking for updates\|latest version\|already on the latest\|could not check\|upgrade completed"; then
+        pass "upgrade --restart 参数被正确识别"
+    else
+        fail "upgrade --restart 参数输出异常: $result"
+    fi
+}
+
+test_upgrade_yes_and_restart_combined() {
+    header "测试 upgrade -y --restart 参数组合"
+
+    cd "$PROJECT_DIR"
+
+    local result
+    result=$("$BIFROST_BIN" upgrade -y --restart 2>&1 || true)
+
+    if echo "$result" | grep -qi "checking for updates\|latest version\|already on the latest\|could not check\|upgrade completed"; then
+        pass "upgrade -y --restart 参数组合被正确识别"
+    else
+        fail "upgrade -y --restart 参数组合输出异常: $result"
     fi
 }
 
@@ -376,6 +410,8 @@ main() {
     test_upgrade_help
     test_upgrade_check_output
     test_upgrade_yes_flag_recognized
+    test_upgrade_restart_flag_recognized
+    test_upgrade_yes_and_restart_combined
     test_upgrade_invalid_flag
 
     test_version_cache_creation
