@@ -653,8 +653,8 @@ export default function Settings() {
     schedulePerformanceUpdate(
       "inject_bifrost_badge",
       { inject_bifrost_badge: enabled },
-      enabled ? "已开启注入 Bifrost 小圆点" : "已关闭注入 Bifrost 小圆点",
-      "更新注入 Bifrost 小圆点开关失败",
+      enabled ? "Bifrost badge enabled" : "Bifrost badge disabled",
+      "Failed to update Bifrost badge setting",
     );
   };
 

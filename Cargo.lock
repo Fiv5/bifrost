@@ -434,6 +434,7 @@ dependencies = [
  "chrono",
  "reqwest",
  "rquickjs",
+ "rquickjs-sys",
  "serde",
  "serde_json",
  "tempfile",

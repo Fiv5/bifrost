@@ -63,7 +63,20 @@ impl SystemProxyManager {
         }
 
         if self.is_set {
-            return Ok(());
+            if let Ok(actual) = Self::get_current() {
+                if actual.enable && actual.host == host && actual.port == port {
+                    return Ok(());
+                }
+                tracing::info!(
+                    actual_enabled = actual.enable,
+                    actual_host = %actual.host,
+                    actual_port = actual.port,
+                    expected_host = %host,
+                    expected_port = port,
+                    "System proxy was externally changed, re-applying"
+                );
+            }
+            self.is_set = false;
         }
 
         #[cfg(target_os = "macos")]

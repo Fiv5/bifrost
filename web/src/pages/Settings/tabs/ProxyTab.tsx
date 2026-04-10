@@ -723,7 +723,7 @@ export default function ProxyTab({
 
               <Row justify="space-between" align="middle">
                 <Col>
-                  <Text>注入 Bifrost 小圆点</Text>
+                  <Text>Inject Bifrost Badge</Text>
                 </Col>
                 <Col>
                   {injectBifrostBadge === null ? (
@@ -739,7 +739,7 @@ export default function ProxyTab({
                 </Col>
               </Row>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                仅对 HTML 页面生效，用于提示页面已被 Bifrost 接管
+                Only applies to HTML pages. Indicates that traffic is flowing through Bifrost proxy.
               </Text>
 
               <Divider style={{ margin: "12px 0" }} />
