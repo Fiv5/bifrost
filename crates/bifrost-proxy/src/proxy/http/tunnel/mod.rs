@@ -59,6 +59,7 @@ use crate::transform::collect_all_cookies_from_headers;
 use crate::transform::decompress::get_content_encoding;
 use crate::transform::merge_cookie_header_values;
 use crate::transform::{apply_body_rules, Phase};
+use crate::transform::{compress_body, maybe_inject_bifrost_badge_html};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
@@ -521,6 +522,12 @@ pub async fn handle_connect(
             .as_ref()
             .map(|s| s.get_max_body_probe_size())
             .unwrap_or(proxy_config.max_body_probe_size);
+        let inject_bifrost_badge = admin_state
+            .as_ref()
+            .and_then(|s| s.config_manager.as_ref())
+            .and_then(|cm| cm.try_config())
+            .map(|config| config.traffic.inject_bifrost_badge)
+            .unwrap_or(true);
         return handle_tls_interception(
             req,
             &host,
@@ -531,6 +538,7 @@ pub async fn handle_connect(
             max_body_buffer_size,
             max_body_probe_size,
             tls_intercept_config.unsafe_ssl,
+            inject_bifrost_badge,
             ctx,
             admin_state,
             push_manager,
@@ -792,6 +800,7 @@ async fn handle_tls_interception(
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
     push_manager: Option<SharedPushManager>,
@@ -856,6 +865,7 @@ async fn handle_tls_interception(
             max_body_buffer_size,
             max_body_probe_size,
             unsafe_ssl,
+            inject_bifrost_badge,
             &req_id,
             admin_state.clone(),
             cancel_rx,
@@ -910,6 +920,7 @@ async fn tls_intercept_tunnel(
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
     client_ip: String,
@@ -966,6 +977,7 @@ async fn tls_intercept_tunnel(
                 client_pid,
                 client_path,
                 push_manager,
+                inject_bifrost_badge,
             )
             .await
         }
@@ -1010,6 +1022,7 @@ async fn tls_intercept_tunnel_with_cancel(
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
     cancel_rx: oneshot::Receiver<()>,
@@ -1098,6 +1111,7 @@ async fn tls_intercept_tunnel_with_cancel(
                 client_pid,
                 client_path,
                 push_manager,
+                inject_bifrost_badge,
             )
             .await
         }
@@ -1513,6 +1527,7 @@ async fn handle_intercepted_request_with_protocol(
     client_pid: Option<u32>,
     client_path: Option<String>,
     push_manager: Option<SharedPushManager>,
+    inject_bifrost_badge: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     if original_host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
         if let Some(state) = admin_state.clone() {
@@ -2331,6 +2346,15 @@ async fn handle_intercepted_request_with_protocol(
         .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
+    let res_content_type_str = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    let force_body_processing_for_badge =
+        inject_bifrost_badge && res_content_type_str.starts_with("text/html");
+    let needs_processing = needs_processing || force_body_processing_for_badge;
     let has_res_body_override = resolved_rules.res_body.is_some();
     let needs_res_body_read = needs_processing && !has_res_body_override;
 
@@ -2465,11 +2489,14 @@ async fn handle_intercepted_request_with_protocol(
         let size_display = res_content_length
             .map(|len| len.to_string())
             .unwrap_or_else(|| format!(">{}", res_body_limit));
+        let skip_detail = if force_body_processing_for_badge {
+            "skipping body rules and badge injection"
+        } else {
+            "skipping body rules"
+        };
         warn!(
-            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
-            req_id,
-            size_display,
-            res_body_limit
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), {}, streaming forward",
+            req_id, size_display, res_body_limit, skip_detail
         );
     }
 
@@ -2834,6 +2861,52 @@ async fn handle_intercepted_request_with_protocol(
         verbose_logging,
         &ctx,
     );
+
+    let final_body = if inject_bifrost_badge {
+        let final_res_content_type = res_parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_lowercase();
+        if final_res_content_type.starts_with("text/html") {
+            if let Some(content_encoding) = get_content_encoding(&original_res_headers) {
+                match crate::transform::try_decompress_body_with_limit(
+                    final_body.as_ref(),
+                    &content_encoding,
+                    10 * 1024 * 1024,
+                ) {
+                    Ok(decompressed) => {
+                        let (injected_body, injected) =
+                            maybe_inject_bifrost_badge_html(Bytes::from(decompressed));
+                        if injected {
+                            match compress_body(injected_body.as_ref(), &content_encoding) {
+                                Ok(compressed) => Bytes::from(compressed),
+                                Err(_) => {
+                                    res_parts.headers.remove(hyper::header::CONTENT_ENCODING);
+                                    injected_body
+                                }
+                            }
+                        } else {
+                            final_body
+                        }
+                    }
+                    Err(_) => final_body,
+                }
+            } else {
+                let (injected_body, injected) = maybe_inject_bifrost_badge_html(final_body.clone());
+                if injected {
+                    injected_body
+                } else {
+                    final_body
+                }
+            }
+        } else {
+            final_body
+        }
+    } else {
+        final_body
+    };
 
     if original_res_body_len != final_body.len() {
         res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
