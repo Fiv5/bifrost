@@ -78,7 +78,21 @@ fn get_traffic_type_from_url(url: &str) -> TrafficType {
     }
 }
 
-fn headers_to_pairs(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
+pub(crate) fn headers_pairs_equal_ignore_order(
+    a: &[(String, String)],
+    b: &[(String, String)],
+) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut a_sorted: Vec<(&str, &str)> = a.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut b_sorted: Vec<(&str, &str)> = b.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    a_sorted.sort();
+    b_sorted.sort();
+    a_sorted == b_sorted
+}
+
+pub(crate) fn headers_to_pairs(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
     let mut pairs = Vec::with_capacity(headers.len());
     let mut cookie_values: Vec<&str> = Vec::new();
     let mut cookie_insert_pos: Option<usize> = None;
@@ -397,15 +411,21 @@ fn should_use_metrics_only_forwarding_mode(
     skip_binary_recording && !needs_processing && !is_websocket && !is_sse
 }
 
-fn normalize_req_headers(parts: &mut hyper::http::request::Parts, mode: BodyMode) {
+fn normalize_req_headers(
+    parts: &mut hyper::http::request::Parts,
+    mode: BodyMode,
+    had_content_length: bool,
+) {
     match mode {
         BodyMode::Known(len) => {
             parts.headers.remove(hyper::header::TRANSFER_ENCODING);
             parts.headers.remove(hyper::header::CONTENT_LENGTH);
-            parts.headers.insert(
-                hyper::header::CONTENT_LENGTH,
-                HeaderValue::from_str(&len.to_string()).unwrap(),
-            );
+            if len > 0 || had_content_length {
+                parts.headers.insert(
+                    hyper::header::CONTENT_LENGTH,
+                    HeaderValue::from_str(&len.to_string()).unwrap(),
+                );
+            }
         }
         BodyMode::Stream | BodyMode::StreamWithTrailers => {
             parts.headers.remove(hyper::header::TRANSFER_ENCODING);
@@ -992,7 +1012,7 @@ pub async fn handle_http_request(
     } else {
         BodyMode::Known(final_body.len())
     };
-    normalize_req_headers(&mut parts, req_body_mode);
+    normalize_req_headers(&mut parts, req_body_mode, content_length.is_some());
     let req_headers = headers_to_pairs(&parts.headers);
     let mut req_headers_hashmap_cache: Option<HashMap<String, String>> = None;
     let request_body_size = if !final_body.is_empty() {
@@ -1067,12 +1087,15 @@ pub async fn handle_http_request(
                     receive_ms: None,
                     total_ms,
                 });
-                record.original_request_headers = Some(
-                    original_req_headers
+                {
+                    let orig = original_req_headers
                         .as_ref()
-                        .expect("request headers captured when admin state is enabled")
-                        .clone(),
-                );
+                        .expect("request headers captured when admin state is enabled");
+                    if !headers_pairs_equal_ignore_order(orig, &req_headers) {
+                        record.original_request_headers = Some(orig.clone());
+                    }
+                }
+                record.request_headers = Some(req_headers.clone());
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(error_msg.clone());
@@ -1150,11 +1173,7 @@ pub async fn handle_http_request(
     parts.headers.remove(hyper::header::HOST);
 
     #[cfg(feature = "http3")]
-    let req_headers_for_h3: Vec<(String, String)> = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers_for_h3: Vec<(String, String)> = headers_to_pairs(&parts.headers);
 
     #[cfg(feature = "http3")]
     let use_upstream_proxy = should_use_upstream_proxy(&resolved_rules);
@@ -1959,12 +1978,14 @@ pub async fn handle_http_request(
         if res_headers != *original_res_headers {
             record.actual_response_headers = Some(res_headers.clone());
         }
-        record.original_request_headers = Some(
-            original_req_headers
+        {
+            let orig = original_req_headers
                 .as_ref()
-                .expect("request headers captured when admin state is enabled")
-                .clone(),
-        );
+                .expect("request headers captured when admin state is enabled");
+            if !headers_pairs_equal_ignore_order(orig, &req_headers) {
+                record.original_request_headers = Some(orig.clone());
+            }
+        }
         if host != original_host || port != original_port {
             let actual_scheme = if use_tls { "https" } else { "http" };
             let actual_url = if (use_tls && port == 443) || (!use_tls && port == 80) {
@@ -2309,11 +2330,7 @@ async fn handle_http_websocket(
     }
     let has_rules = !resolved_rules.rules.is_empty() || resolved_rules.host.is_some();
 
-    let req_headers: Vec<(String, String)> = req
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers: Vec<(String, String)> = headers_to_pairs(req.headers());
 
     let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
         let parts: Vec<&str> = host_rule.split(':').collect();
@@ -3000,5 +3017,72 @@ mod tests {
 
         assert_eq!(pairs.len(), 2);
         assert!(pairs.iter().all(|(k, _)| k != "cookie"));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_same_content_different_order() {
+        let a = vec![
+            ("content-length".to_string(), "100".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+            ("host".to_string(), "example.com".to_string()),
+        ];
+        let b = vec![
+            ("accept".to_string(), "*/*".to_string()),
+            ("host".to_string(), "example.com".to_string()),
+            ("content-length".to_string(), "100".to_string()),
+        ];
+        assert!(headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_identical() {
+        let a = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(headers_pairs_equal_ignore_order(&a, &a));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_different_values() {
+        let a = vec![
+            ("host".to_string(), "foo.com".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        let b = vec![
+            ("host".to_string(), "bar.com".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(!headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_different_lengths() {
+        let a = vec![("host".to_string(), "example.com".to_string())];
+        let b = vec![
+            ("host".to_string(), "example.com".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(!headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_empty() {
+        let a: Vec<(String, String)> = vec![];
+        let b: Vec<(String, String)> = vec![];
+        assert!(headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_different_keys() {
+        let a = vec![
+            ("x-custom".to_string(), "value".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        let b = vec![
+            ("x-other".to_string(), "value".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(!headers_pairs_equal_ignore_order(&a, &b));
     }
 }

@@ -32,11 +32,7 @@ pub async fn handle_websocket_upgrade(
     let resolved_rules = rules.resolve(&url, "GET");
     let has_rules = !resolved_rules.rules.is_empty() || resolved_rules.host.is_some();
 
-    let req_headers: Vec<(String, String)> = req
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers: Vec<(String, String)> = crate::proxy::http::headers_to_pairs(req.headers());
 
     let host = req
         .headers()

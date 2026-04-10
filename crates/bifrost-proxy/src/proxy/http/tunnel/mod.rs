@@ -1761,11 +1761,7 @@ async fn handle_intercepted_request_with_protocol(
         method
     };
 
-    let original_req_headers: Vec<(String, String)> = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let original_req_headers: Vec<(String, String)> = super::headers_to_pairs(&parts.headers);
 
     let req_headers = original_req_headers.clone();
 
@@ -2014,7 +2010,9 @@ async fn handle_intercepted_request_with_protocol(
     };
     new_req = new_req.header(hyper::header::HOST, &host_header_value);
     if streaming_body.is_none() {
-        new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
+        if !body_bytes.is_empty() || req_content_length.is_some() {
+            new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
+        }
     } else if let Some(content_length) = req_content_length {
         new_req = new_req.header(hyper::header::CONTENT_LENGTH, content_length);
     }
@@ -2067,11 +2065,7 @@ async fn handle_intercepted_request_with_protocol(
     sanitize_upstream_headers(outgoing_req.headers_mut());
     outgoing_req.headers_mut().remove(hyper::header::HOST);
 
-    let final_req_headers: Vec<(String, String)> = outgoing_req
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let final_req_headers: Vec<(String, String)> = super::headers_to_pairs(outgoing_req.headers());
 
     if let Some(delay_ms) = resolved_rules.req_delay {
         if verbose_logging {
@@ -2126,7 +2120,12 @@ async fn handle_intercepted_request_with_protocol(
                     total_ms,
                 });
                 record.request_headers = Some(final_req_headers.clone());
-                record.original_request_headers = Some(original_req_headers.clone());
+                if !super::headers_pairs_equal_ignore_order(
+                    &original_req_headers,
+                    &final_req_headers,
+                ) {
+                    record.original_request_headers = Some(original_req_headers.clone());
+                }
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(error_msg);
@@ -2160,11 +2159,8 @@ async fn handle_intercepted_request_with_protocol(
     sanitize_upstream_headers(&mut upstream_parts.headers);
 
     #[cfg(feature = "http3")]
-    let req_headers_for_h3: Vec<(String, String)> = upstream_parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers_for_h3: Vec<(String, String)> =
+        super::headers_to_pairs(&upstream_parts.headers);
 
     #[cfg(feature = "http3")]
     let h3_dns_resolver = DnsResolver::new(verbose_logging);
@@ -2572,7 +2568,12 @@ async fn handle_intercepted_request_with_protocol(
                 if res_headers != original_res_headers {
                     record.actual_response_headers = Some(res_headers.clone());
                 }
-                record.original_request_headers = Some(original_req_headers.clone());
+                if !super::headers_pairs_equal_ignore_order(
+                    &original_req_headers,
+                    &final_req_headers,
+                ) {
+                    record.original_request_headers = Some(original_req_headers.clone());
+                }
                 if actual_target_host != original_host || actual_target_port != original_port {
                     let actual_scheme = if actual_use_http { "http" } else { "https" };
                     let actual_url = if (actual_use_http && actual_target_port == 80)
@@ -2764,7 +2765,9 @@ async fn handle_intercepted_request_with_protocol(
         if res_headers != original_res_headers {
             record.actual_response_headers = Some(res_headers.clone());
         }
-        record.original_request_headers = Some(original_req_headers.clone());
+        if !super::headers_pairs_equal_ignore_order(&original_req_headers, &final_req_headers) {
+            record.original_request_headers = Some(original_req_headers.clone());
+        }
         if actual_target_host != original_host || actual_target_port != original_port {
             let actual_scheme = if actual_use_http { "http" } else { "https" };
             let actual_url = if (actual_use_http && actual_target_port == 80)
@@ -3302,11 +3305,7 @@ async fn handle_intercepted_websocket(
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 
-    let req_headers: Vec<(String, String)> = req
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers: Vec<(String, String)> = super::headers_to_pairs(req.headers());
 
     if let Some(ref state) = admin_state {
         state
