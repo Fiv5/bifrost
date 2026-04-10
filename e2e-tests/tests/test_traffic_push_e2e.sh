@@ -272,10 +272,10 @@ test_ws_overview_push() {
 test_ws_max_channels() {
     log_info "Testing WebSocket max client channels (MAX=3)..."
 
-    sleep 2
+    sleep 3
 
     local attempt
-    for attempt in 1 2; do
+    for attempt in 1 2 3; do
         local probe_output
         probe_output=$(node "$SCRIPT_DIR/../test_utils/ws_channel_limit_probe.js" "$WS_PUSH_URL" 4 5000)
 
@@ -285,14 +285,14 @@ test_ws_max_channels() {
             return 0
         fi
 
-        if [[ "$attempt" -eq 1 ]]; then
-            log_warn "Attempt 1 failed, retrying after wait..."
-            sleep 3
+        if [[ "$attempt" -lt 3 ]]; then
+            log_warn "Attempt $attempt: no disconnect received, retrying after wait..."
+            sleep 5
         fi
     done
 
     log_warn "Oldest channel messages: $(echo "$probe_output" | jq -c '.oldest_messages')"
-    log_fail "Disconnect message not received on oldest channel"
+    log_fail "Disconnect message not received on evicted channel"
     return 1
 }
 

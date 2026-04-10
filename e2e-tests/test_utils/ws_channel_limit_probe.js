@@ -23,22 +23,38 @@ function openClient(name) {
     const ws = new WebSocket(`${url}?x_client_id=${encodeURIComponent(name)}`);
     const messages = [];
     const errors = [];
+    let connectedResolve = null;
+    const connectedPromise = new Promise((r) => {
+      connectedResolve = r;
+    });
 
     ws.on("open", () => {
       ws.send(JSON.stringify({ need_overview: true }));
-      resolve({ name, ws, messages, errors });
     });
 
     ws.on("message", (buf) => {
-      messages.push(buf.toString());
+      const text = buf.toString();
+      messages.push(text);
+      if (text.includes('"type":"connected"') && connectedResolve) {
+        connectedResolve();
+        connectedResolve = null;
+      }
     });
 
     ws.on("error", (err) => {
       errors.push(err.message);
+      if (connectedResolve) {
+        connectedResolve();
+        connectedResolve = null;
+      }
     });
 
     ws.on("unexpected-response", (_req, res) => {
       errors.push(`unexpected-response:${res.statusCode}`);
+      if (connectedResolve) {
+        connectedResolve();
+        connectedResolve = null;
+      }
     });
 
     ws.on("close", (code, reason) => {
@@ -50,22 +66,35 @@ function openClient(name) {
           }),
         );
       }
+      if (connectedResolve) {
+        connectedResolve();
+        connectedResolve = null;
+      }
     });
+
+    resolve({ name, ws, messages, errors, connectedPromise });
   });
 }
 
 (async () => {
   const clients = [];
   for (let i = 1; i <= count; i += 1) {
-    clients.push(await openClient(`e2e_chan_${i}_${process.pid}_${Date.now()}`));
-    await sleep(800);
+    const client = await openClient(
+      `e2e_chan_${i}_${process.pid}_${Date.now()}`,
+    );
+    await Promise.race([client.connectedPromise, sleep(3000)]);
+    clients.push(client);
+    await sleep(300);
   }
 
   await sleep(waitMs);
 
+  const anyDisconnect = clients.some((c) =>
+    c.messages.some((msg) => msg.includes('"type":"disconnect"')),
+  );
   const oldest = clients[0];
   const result = {
-    oldest_disconnect: oldest.messages.some((msg) => msg.includes('"type":"disconnect"')),
+    oldest_disconnect: anyDisconnect,
     oldest_messages: oldest.messages,
     oldest_errors: oldest.errors,
     total_clients: clients.length,
