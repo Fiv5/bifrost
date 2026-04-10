@@ -92,8 +92,8 @@ export default function RuleList() {
     name: string;
     position: 'before' | 'after';
   } | null>(null);
-  const [collapsedFolders, setCollapsedFolders] = useState<string[]>([]);
-  const collapsedFolderSet = useMemo(() => new Set(collapsedFolders), [collapsedFolders]);
+  const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
+  const expandedFolderManualSet = useMemo(() => new Set(expandedFolders), [expandedFolders]);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
   const autoScrollVelocityRef = useRef(0);
@@ -144,7 +144,7 @@ export default function RuleList() {
 
 
   const handleGroupChange = useCallback((value: string) => {
-    setCollapsedFolders([]);
+    setExpandedFolders([]);
     setSelectedRules([]);
     lastClickedIndexRef.current = null;
 
@@ -293,15 +293,12 @@ export default function RuleList() {
       return new Set(allFolderPaths);
     }
 
-    const next = new Set(allFolderPaths);
-    for (const path of collapsedFolderSet) {
-      next.delete(path);
-    }
+    const next = new Set(expandedFolderManualSet);
     for (const path of forcedExpandedFolderSet) {
       next.add(path);
     }
     return next;
-  }, [searchKeyword, allFolderPaths, collapsedFolderSet, forcedExpandedFolderSet]);
+  }, [searchKeyword, allFolderPaths, expandedFolderManualSet, forcedExpandedFolderSet]);
 
   const visibleRuleNames = useMemo(
     () => flattenVisibleRuleNames(ruleTree, expandedFolderSet),
@@ -618,7 +615,7 @@ export default function RuleList() {
   }, [selectedRuleName, filteredRules]);
 
   const handleToggleFolder = useCallback((path: string) => {
-    setCollapsedFolders((prev) => {
+    setExpandedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(path)) {
         next.delete(path);
