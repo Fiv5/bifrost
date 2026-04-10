@@ -16,6 +16,7 @@ use crate::connection_monitor::{ConnectionMonitor, SharedConnectionMonitor};
 use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::handlers::scripts::ScriptManager;
+use crate::ip_tls_pending::IpTlsPendingManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::port_rebind::SharedPortRebindManager;
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
@@ -29,6 +30,7 @@ use crate::ws_payload_store::{SharedWsPayloadStore, WsPayloadStore};
 use once_cell::sync::OnceCell;
 
 pub type SharedScriptManager = Arc<RwLock<ScriptManager>>;
+pub type SharedIpTlsPendingManager = Arc<IpTlsPendingManager>;
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
@@ -42,6 +44,8 @@ pub struct RuntimeConfig {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_config_change: bool,
 }
@@ -54,6 +58,8 @@ impl Default for RuntimeConfig {
             intercept_include: Vec::new(),
             app_intercept_exclude: Vec::new(),
             app_intercept_include: Vec::new(),
+            ip_intercept_exclude: Vec::new(),
+            ip_intercept_include: Vec::new(),
             unsafe_ssl: false,
             disconnect_on_config_change: true,
         }
@@ -68,6 +74,8 @@ impl RuntimeConfig {
             intercept_include: tls.intercept_include.clone(),
             app_intercept_exclude: tls.app_intercept_exclude.clone(),
             app_intercept_include: tls.app_intercept_include.clone(),
+            ip_intercept_exclude: tls.ip_intercept_exclude.clone(),
+            ip_intercept_include: tls.ip_intercept_include.clone(),
             unsafe_ssl: tls.unsafe_ssl,
             disconnect_on_config_change: tls.disconnect_on_change,
         }
@@ -104,6 +112,7 @@ pub struct AdminState {
     pub total_size_cleanup_counter: AtomicUsize,
     pub port_rebind_manager: Option<SharedPortRebindManager>,
     pub sync_manager: Option<SharedSyncManager>,
+    pub ip_tls_pending_manager: Option<Arc<IpTlsPendingManager>>,
     group_name_cache: parking_lot::Mutex<HashMap<String, String>>,
     group_cache_resolved: AtomicBool,
 }
@@ -143,6 +152,7 @@ impl AdminState {
             total_size_cleanup_counter: AtomicUsize::new(0),
             port_rebind_manager: None,
             sync_manager: None,
+            ip_tls_pending_manager: None,
             group_name_cache: parking_lot::Mutex::new(HashMap::new()),
             group_cache_resolved: AtomicBool::new(false),
         }
@@ -776,6 +786,11 @@ impl AdminState {
 
     pub fn with_sync_manager_shared(mut self, manager: SharedSyncManager) -> Self {
         self.sync_manager = Some(manager);
+        self
+    }
+
+    pub fn with_ip_tls_pending_manager(mut self, manager: IpTlsPendingManager) -> Self {
+        self.ip_tls_pending_manager = Some(Arc::new(manager));
         self
     }
 

@@ -20,7 +20,7 @@ bifrost-core = { path = "../bifrost-core" }
 bifrost-storage = { path = "../bifrost-storage" }
 
 [target.'cfg(any(target_arch = "arm", all(target_arch = "aarch64", target_os = "windows")))'.dependencies]
-rquickjs-sys = { version = "0.9", features = ["bindgen"] }
+rquickjs = { version = "0.9", features = ["futures", "macro", "bindgen"] }
 
 [dev-dependencies]
 tempfile = "3"

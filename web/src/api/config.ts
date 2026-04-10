@@ -6,6 +6,8 @@ export interface TlsConfig {
   intercept_include: string[];
   app_intercept_exclude: string[];
   app_intercept_include: string[];
+  ip_intercept_exclude: string[];
+  ip_intercept_include: string[];
   unsafe_ssl: boolean;
   disconnect_on_config_change: boolean;
 }
@@ -22,6 +24,8 @@ export interface UpdateTlsConfigRequest {
   intercept_include?: string[];
   app_intercept_exclude?: string[];
   app_intercept_include?: string[];
+  ip_intercept_exclude?: string[];
+  ip_intercept_include?: string[];
   unsafe_ssl?: boolean;
   disconnect_on_config_change?: boolean;
 }
@@ -179,4 +183,26 @@ export async function disconnectByDomain(domain: string): Promise<DisconnectResp
 
 export async function disconnectByApp(app: string): Promise<DisconnectResponse> {
   return post<DisconnectResponse>('/config/connections/disconnect-by-app', { app });
+}
+
+export interface PendingIpTls {
+  ip: string;
+  first_seen: number;
+  attempt_count: number;
+}
+
+export async function getIpTlsPending(): Promise<PendingIpTls[]> {
+  return get<PendingIpTls[]>('/config/ip-tls/pending');
+}
+
+export async function approveIpTls(ip: string): Promise<{ success: boolean; message: string }> {
+  return post('/config/ip-tls/pending/approve', { ip });
+}
+
+export async function skipIpTls(ip: string): Promise<{ success: boolean; message: string }> {
+  return post('/config/ip-tls/pending/skip', { ip });
+}
+
+export async function clearIpTlsPending(): Promise<{ success: boolean; message: string }> {
+  return del('/config/ip-tls/pending');
 }

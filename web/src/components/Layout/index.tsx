@@ -14,6 +14,7 @@ import {
 import type { CSSProperties } from "react";
 import { useEffect, useMemo } from "react";
 import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
+import { usePendingIpTlsStore } from "../../stores/usePendingIpTlsStore";
 import StatusBar from "../StatusBar";
 import { setNavigateCallback, type ReferenceLocation } from "../BifrostEditor";
 import { getDesktopPlatform, isDesktopShell } from "../../runtime";
@@ -38,6 +39,11 @@ export default function AppLayout() {
     fetchPendingList,
     requestNotificationPermission,
   } = usePendingAuthStore();
+  const {
+    startSSE: startIpTlsSSE,
+    stopSSE: stopIpTlsSSE,
+    fetchPendingList: fetchIpTlsPendingList,
+  } = usePendingIpTlsStore();
   const desktopEnabled = isDesktopShell();
   const desktopPlatform = getDesktopPlatform();
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
@@ -73,10 +79,13 @@ export default function AppLayout() {
     fetchPendingList();
     startSSE();
     requestNotificationPermission();
+    fetchIpTlsPendingList();
+    startIpTlsSSE();
     return () => {
       stopSSE();
+      stopIpTlsSSE();
     };
-  }, [fetchPendingList, startSSE, stopSSE, requestNotificationPermission]);
+  }, [fetchPendingList, startSSE, stopSSE, requestNotificationPermission, fetchIpTlsPendingList, startIpTlsSSE, stopIpTlsSSE]);
 
   useEffect(() => {
     const handleNavigate = (location: ReferenceLocation) => {

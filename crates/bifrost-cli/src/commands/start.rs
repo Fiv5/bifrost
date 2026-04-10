@@ -477,6 +477,8 @@ pub fn run_start(
         intercept_include: include_list.clone(),
         app_intercept_exclude: app_exclude_list.clone(),
         app_intercept_include: app_include_list.clone(),
+        ip_intercept_exclude: stored_config.tls.ip_intercept_exclude.clone(),
+        ip_intercept_include: stored_config.tls.ip_intercept_include.clone(),
         unsafe_ssl: unsafe_ssl_final,
         verbose_logging,
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
@@ -712,6 +714,8 @@ pub fn run_foreground(
         intercept_include: config.intercept_include.clone(),
         app_intercept_exclude: config.app_intercept_exclude.clone(),
         app_intercept_include: config.app_intercept_include.clone(),
+        ip_intercept_exclude: config.ip_intercept_exclude.clone(),
+        ip_intercept_include: config.ip_intercept_include.clone(),
         unsafe_ssl: config.unsafe_ssl,
         disconnect_on_config_change,
         active_connections: 0,
@@ -908,6 +912,8 @@ pub fn run_foreground(
                 intercept_include: config.intercept_include.clone(),
                 app_intercept_exclude: config.app_intercept_exclude.clone(),
                 app_intercept_include: config.app_intercept_include.clone(),
+                ip_intercept_exclude: config.ip_intercept_exclude.clone(),
+                ip_intercept_include: config.ip_intercept_include.clone(),
                 unsafe_ssl: config.unsafe_ssl,
                 disconnect_on_config_change,
             };
@@ -973,6 +979,8 @@ pub fn run_foreground(
             );
             let _sync_task = sync_manager.clone().start();
             let admin_state = admin_state.with_sync_manager_shared(sync_manager);
+            let admin_state =
+                admin_state.with_ip_tls_pending_manager(bifrost_admin::IpTlsPendingManager::new());
 
             let db_cleanup_task = bifrost_admin::start_db_cleanup_task(traffic_db_store);
             let connection_cleanup_task =
@@ -1552,6 +1560,8 @@ pub fn run_daemon(
                         intercept_include: config.intercept_include.clone(),
                         app_intercept_exclude: config.app_intercept_exclude.clone(),
                         app_intercept_include: config.app_intercept_include.clone(),
+                        ip_intercept_exclude: config.ip_intercept_exclude.clone(),
+                        ip_intercept_include: config.ip_intercept_include.clone(),
                         unsafe_ssl: config.unsafe_ssl,
                         disconnect_on_config_change: true,
                     };
@@ -1602,6 +1612,8 @@ pub fn run_daemon(
                     );
                     let _sync_task = sync_manager.clone().start();
                     let admin_state = admin_state.with_sync_manager_shared(sync_manager);
+                    let admin_state = admin_state
+                        .with_ip_tls_pending_manager(bifrost_admin::IpTlsPendingManager::new());
 
                     std::mem::drop(bifrost_admin::start_db_cleanup_task(traffic_db_store));
                     std::mem::drop(bifrost_admin::start_connection_cleanup_task(

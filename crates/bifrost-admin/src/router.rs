@@ -109,7 +109,7 @@ impl AdminRouter {
         } else if path.starts_with("/api/proxy") {
             handle_proxy(req, state, path).await
         } else if path.starts_with("/api/config") {
-            handle_config(req, state, path).await
+            handle_config(req, state, push_manager, path).await
         } else if path.starts_with("/api/websocket/connections") {
             frames::list_websocket_connections(state).await
         } else if path.starts_with("/api/push") {

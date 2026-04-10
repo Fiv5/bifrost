@@ -5,6 +5,7 @@ pub mod connection_monitor;
 pub mod connection_registry;
 mod frame_store;
 mod handlers;
+pub mod ip_tls_pending;
 mod metrics;
 pub(crate) mod network;
 mod port_rebind;
@@ -44,6 +45,7 @@ pub use connection_registry::{
 pub use frame_store::{start_frame_cleanup_task, FrameStore, FrameStoreStats, SharedFrameStore};
 pub use handlers::scripts::ScriptManager;
 pub use handlers::sync::handle_sync_login_callback;
+pub use ip_tls_pending::{IpTlsPendingManager, PendingIpTls, PendingIpTlsEvent};
 pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,
@@ -59,8 +61,8 @@ pub use sse::{
     SseEvent, SseHub, MAX_OPENAI_LIKE_SSE_ASSEMBLY_INPUT_BYTES,
 };
 pub use state::{
-    AdminState, RuntimeConfig, SharedAccessControl, SharedRuntimeConfig, SharedScriptManager,
-    SharedSystemProxyManager, SharedValuesStorage,
+    AdminState, RuntimeConfig, SharedAccessControl, SharedIpTlsPendingManager, SharedRuntimeConfig,
+    SharedScriptManager, SharedSystemProxyManager, SharedValuesStorage,
 };
 pub use traffic::{
     FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,

@@ -295,6 +295,8 @@ fn test_proxy_config_custom() {
         intercept_include: vec![],
         app_intercept_exclude: vec![],
         app_intercept_include: vec![],
+        ip_intercept_exclude: vec![],
+        ip_intercept_include: vec![],
         timeout_secs: 60,
         http1_max_header_size: 128 * 1024,
         http2_max_header_list_size: 512 * 1024,

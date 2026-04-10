@@ -86,6 +86,8 @@ export default function FilterItem({
     isAppInPassthrough,
     isDomainInIntercept,
     isDomainInPassthrough,
+    isIpInIntercept,
+    isIpInPassthrough,
     addAppToIntercept,
     removeAppFromIntercept,
     addAppToPassthrough,
@@ -94,23 +96,32 @@ export default function FilterItem({
     removeDomainFromIntercept,
     addDomainToPassthrough,
     removeDomainFromPassthrough,
+    addIpToIntercept,
+    removeIpFromIntercept,
+    addIpToPassthrough,
+    removeIpFromPassthrough,
     config: tlsConfig,
   } = useTlsConfigStore();
 
   const isAppType = type === "client_app";
   const isDomainType = type === "domain";
+  const isIpType = type === "client_ip";
 
   const inIntercept = isAppType
     ? isAppInIntercept(value)
     : isDomainType
       ? isDomainInIntercept(value)
-      : false;
+      : isIpType
+        ? isIpInIntercept(value)
+        : false;
 
   const inPassthrough = isAppType
     ? isAppInPassthrough(value)
     : isDomainType
       ? isDomainInPassthrough(value)
-      : false;
+      : isIpType
+        ? isIpInPassthrough(value)
+        : false;
 
   const handleEnableTlsIntercept = useCallback(async () => {
     let success = false;
@@ -128,11 +139,16 @@ export default function FilterItem({
           `Enabled TLS interception for "${value}" and disconnected active connections`
         );
       }
+    } else if (isIpType) {
+      success = await addIpToIntercept(value);
+      if (success) {
+        message.success(`Enabled TLS interception for IP "${value}"`);
+      }
     }
     if (!success) {
       message.error("Failed to enable TLS interception");
     }
-  }, [isAppType, isDomainType, value, addAppToIntercept, addDomainToIntercept]);
+  }, [isAppType, isDomainType, isIpType, value, addAppToIntercept, addDomainToIntercept, addIpToIntercept]);
 
   const handleDisableTlsIntercept = useCallback(async () => {
     let success = false;
@@ -140,6 +156,8 @@ export default function FilterItem({
       success = await removeAppFromIntercept(value);
     } else if (isDomainType) {
       success = await removeDomainFromIntercept(value);
+    } else if (isIpType) {
+      success = await removeIpFromIntercept(value);
     }
     if (success) {
       message.success(`Removed "${value}" from TLS interception list`);
@@ -149,9 +167,11 @@ export default function FilterItem({
   }, [
     isAppType,
     isDomainType,
+    isIpType,
     value,
     removeAppFromIntercept,
     removeDomainFromIntercept,
+    removeIpFromIntercept,
   ]);
 
   const handleEnablePassthrough = useCallback(async () => {
@@ -160,13 +180,15 @@ export default function FilterItem({
       success = await addAppToPassthrough(value);
     } else if (isDomainType) {
       success = await addDomainToPassthrough(value);
+    } else if (isIpType) {
+      success = await addIpToPassthrough(value);
     }
     if (success) {
       message.success(`Added "${value}" to TLS passthrough list`);
     } else {
       message.error("Failed to enable TLS passthrough");
     }
-  }, [isAppType, isDomainType, value, addAppToPassthrough, addDomainToPassthrough]);
+  }, [isAppType, isDomainType, isIpType, value, addAppToPassthrough, addDomainToPassthrough, addIpToPassthrough]);
 
   const handleDisablePassthrough = useCallback(async () => {
     let success = false;
@@ -174,6 +196,8 @@ export default function FilterItem({
       success = await removeAppFromPassthrough(value);
     } else if (isDomainType) {
       success = await removeDomainFromPassthrough(value);
+    } else if (isIpType) {
+      success = await removeIpFromPassthrough(value);
     }
     if (success) {
       message.success(`Removed "${value}" from TLS passthrough list`);
@@ -183,9 +207,11 @@ export default function FilterItem({
   }, [
     isAppType,
     isDomainType,
+    isIpType,
     value,
     removeAppFromPassthrough,
     removeDomainFromPassthrough,
+    removeIpFromPassthrough,
   ]);
 
   const styles = useMemo<Record<string, CSSProperties>>(
@@ -263,7 +289,7 @@ export default function FilterItem({
       },
     ];
 
-    if ((isAppType || isDomainType) && tlsConfig) {
+    if ((isAppType || isDomainType || isIpType) && tlsConfig) {
       items.push({ type: "divider" });
 
       if (inIntercept) {
@@ -300,6 +326,7 @@ export default function FilterItem({
     alreadyPinned,
     isAppType,
     isDomainType,
+    isIpType,
     tlsConfig,
     inIntercept,
     inPassthrough,

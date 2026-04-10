@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   AutoComplete,
@@ -33,6 +33,8 @@ import type { SystemOverview } from "../../../types";
 import { getProxyQRCodeUrl } from "../../../api/proxy";
 import type { CliProxyStatus, ProxyAddressInfo, SystemProxyStatus } from "../../../api/proxy";
 import type { ProxySettings, TlsConfig } from "../../../api/config";
+import { updateTlsConfig } from "../../../api/config";
+import { useTlsConfigStore } from "../../../stores/useTlsConfigStore";
 
 const { Text } = Typography;
 
@@ -80,6 +82,10 @@ function TlsInterceptionPatternsCard({
   appSuggestions,
 }: TlsInterceptionPatternsCardProps) {
   const { token } = theme.useToken();
+  const config = useTlsConfigStore((s) => s.config);
+  const [newIpInclude, setNewIpInclude] = useState("");
+  const [newIpExclude, setNewIpExclude] = useState("");
+  const [ipLoading, setIpLoading] = useState(false);
 
   const appOptions = useMemo(() => {
     return appSuggestions.map((app) => ({
@@ -87,6 +93,64 @@ function TlsInterceptionPatternsCard({
       label: app,
     }));
   }, [appSuggestions]);
+
+  const handleAddIpInclude = async () => {
+    if (!newIpInclude.trim() || !config) return;
+    setIpLoading(true);
+    try {
+      const updated = [...(config.ip_intercept_include || [])];
+      if (!updated.includes(newIpInclude.trim())) {
+        updated.push(newIpInclude.trim());
+      }
+      const excluded = (config.ip_intercept_exclude || []).filter(
+        (e) => e !== newIpInclude.trim(),
+      );
+      await updateTlsConfig({
+        ip_intercept_include: updated,
+        ip_intercept_exclude: excluded,
+      });
+      useTlsConfigStore.getState().fetchConfig();
+      setNewIpInclude("");
+    } finally {
+      setIpLoading(false);
+    }
+  };
+
+  const handleRemoveIpInclude = async (ip: string) => {
+    if (!config) return;
+    const updated = (config.ip_intercept_include || []).filter((e) => e !== ip);
+    await updateTlsConfig({ ip_intercept_include: updated });
+    useTlsConfigStore.getState().fetchConfig();
+  };
+
+  const handleAddIpExclude = async () => {
+    if (!newIpExclude.trim() || !config) return;
+    setIpLoading(true);
+    try {
+      const updated = [...(config.ip_intercept_exclude || [])];
+      if (!updated.includes(newIpExclude.trim())) {
+        updated.push(newIpExclude.trim());
+      }
+      const included = (config.ip_intercept_include || []).filter(
+        (e) => e !== newIpExclude.trim(),
+      );
+      await updateTlsConfig({
+        ip_intercept_exclude: updated,
+        ip_intercept_include: included,
+      });
+      useTlsConfigStore.getState().fetchConfig();
+      setNewIpExclude("");
+    } finally {
+      setIpLoading(false);
+    }
+  };
+
+  const handleRemoveIpExclude = async (ip: string) => {
+    if (!config) return;
+    const updated = (config.ip_intercept_exclude || []).filter((e) => e !== ip);
+    await updateTlsConfig({ ip_intercept_exclude: updated });
+    useTlsConfigStore.getState().fetchConfig();
+  };
 
   return (
     <Card
@@ -102,12 +166,18 @@ function TlsInterceptionPatternsCard({
         type="secondary"
         style={{ display: "block", marginBottom: 16, fontSize: 12 }}
       >
-        Configure TLS interception behavior by domain or application. Priority:
-        Rules &gt; App Include &gt; App Exclude &gt; Domain Include &gt; Domain
-        Exclude &gt; Global.
+        Configure TLS interception behavior by domain, application, or IP.
+        Priority: Rules &gt; App Include &gt; App Exclude &gt; Domain Include
+        &gt; Domain Exclude &gt; IP Include &gt; IP Exclude &gt; Global.
       </Text>
+
+      <Divider titlePlacement="left" style={{ margin: "0 0 16px 0" }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Domain-based Filtering
+        </Text>
+      </Divider>
       <Row gutter={[16, 16]}>
-        <Col xs={24}>
+        <Col xs={24} md={12}>
           <div
             style={{
               padding: 16,
@@ -142,7 +212,7 @@ function TlsInterceptionPatternsCard({
               }}
             >
               Always intercept these domains, even when global interception is
-              OFF. Highest priority.
+              OFF.
             </Text>
             <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
               <Input
@@ -188,7 +258,7 @@ function TlsInterceptionPatternsCard({
             </div>
           </div>
         </Col>
-        <Col xs={24}>
+        <Col xs={24} md={12}>
           <div
             style={{
               padding: 16,
@@ -207,7 +277,7 @@ function TlsInterceptionPatternsCard({
               <Space>
                 <SafetyCertificateOutlined style={{ color: token.colorWarning }} />
                 <Text strong style={{ color: token.colorWarningText }}>
-                  Passthrough (No Intercept)
+                  Passthrough
                 </Text>
                 <Tag color="orange">
                   {tlsConfig?.intercept_exclude.length || 0}
@@ -223,7 +293,7 @@ function TlsInterceptionPatternsCard({
               }}
             >
               Never intercept these domains, even when global interception is
-              ON. For certificate pinning sites.
+              ON.
             </Text>
             <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
               <Input
@@ -270,13 +340,14 @@ function TlsInterceptionPatternsCard({
           </div>
         </Col>
       </Row>
-      <Divider style={{ margin: "16px 0" }}>
+
+      <Divider titlePlacement="left" style={{ margin: "16px 0" }}>
         <Text type="secondary" style={{ fontSize: 12 }}>
           Application-based Filtering
         </Text>
       </Divider>
       <Row gutter={[16, 16]}>
-        <Col xs={24}>
+        <Col xs={24} md={12}>
           <div
             style={{
               padding: 16,
@@ -295,7 +366,7 @@ function TlsInterceptionPatternsCard({
               <Space>
                 <LockOutlined style={{ color: token.colorSuccess }} />
                 <Text strong style={{ color: token.colorSuccessText }}>
-                  App Force Intercept
+                  Force Intercept
                 </Text>
                 <Tag color="green">
                   {tlsConfig?.app_intercept_include.length || 0}
@@ -311,7 +382,7 @@ function TlsInterceptionPatternsCard({
               }}
             >
               Always intercept traffic from these apps. Supports: exact match,
-              prefix* (starts with), *suffix (ends with).
+              prefix*, *suffix.
             </Text>
             <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
               <AutoComplete
@@ -367,7 +438,7 @@ function TlsInterceptionPatternsCard({
             </div>
           </div>
         </Col>
-        <Col xs={24}>
+        <Col xs={24} md={12}>
           <div
             style={{
               padding: 16,
@@ -386,7 +457,7 @@ function TlsInterceptionPatternsCard({
               <Space>
                 <SafetyCertificateOutlined style={{ color: token.colorWarning }} />
                 <Text strong style={{ color: token.colorWarningText }}>
-                  App Passthrough
+                  Passthrough
                 </Text>
                 <Tag color="orange">
                   {tlsConfig?.app_intercept_exclude.length || 0}
@@ -402,7 +473,7 @@ function TlsInterceptionPatternsCard({
               }}
             >
               Never intercept traffic from these apps. Supports: exact match,
-              prefix* (starts with), *suffix (ends with).
+              prefix*, *suffix.
             </Text>
             <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
               <AutoComplete
@@ -451,6 +522,131 @@ function TlsInterceptionPatternsCard({
                       onClose={() => handleRemoveAppExcludePattern(pattern)}
                     >
                       {pattern}
+                    </Tag>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </div>
+        </Col>
+      </Row>
+
+      <Divider titlePlacement="left" style={{ margin: "16px 0" }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          IP-based Filtering
+        </Text>
+      </Divider>
+      <Row gutter={[16, 16]}>
+        <Col xs={24} md={12}>
+          <div
+            style={{
+              padding: 16,
+              background: token.colorSuccessBg,
+              borderRadius: 8,
+              border: `1px solid ${token.colorSuccessBorder}`,
+            }}
+          >
+            <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 8 }}>
+              <Space>
+                <LockOutlined style={{ color: token.colorSuccess }} />
+                <Text strong style={{ color: token.colorSuccessText }}>
+                  Force Intercept
+                </Text>
+                <Tag color="green">
+                  {config?.ip_intercept_include?.length || 0}
+                </Tag>
+              </Space>
+            </Space>
+            <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 12 }}>
+              Always intercept TLS traffic from these IPs.
+            </Text>
+            <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+              <Input
+                placeholder="192.168.1.100 or 10.0.0.0/8"
+                value={newIpInclude}
+                onChange={(e) => setNewIpInclude(e.target.value)}
+                onPressEnter={handleAddIpInclude}
+                size="small"
+              />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleAddIpInclude}
+                size="small"
+                loading={ipLoading}
+                style={{
+                  background: token.colorSuccess,
+                  borderColor: token.colorSuccess,
+                }}
+              >
+                Add
+              </Button>
+            </Space.Compact>
+            <div>
+              {(config?.ip_intercept_include?.length || 0) === 0 ? (
+                <Text type="secondary">No IPs configured</Text>
+              ) : (
+                <Space wrap>
+                  {config?.ip_intercept_include?.map((ip) => (
+                    <Tag key={ip} color="green" closable onClose={() => handleRemoveIpInclude(ip)}>
+                      {ip}
+                    </Tag>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </div>
+        </Col>
+        <Col xs={24} md={12}>
+          <div
+            style={{
+              padding: 16,
+              background: token.colorWarningBg,
+              borderRadius: 8,
+              border: `1px solid ${token.colorWarningBorder}`,
+            }}
+          >
+            <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 8 }}>
+              <Space>
+                <SafetyCertificateOutlined style={{ color: token.colorWarning }} />
+                <Text strong style={{ color: token.colorWarningText }}>
+                  Passthrough
+                </Text>
+                <Tag color="orange">
+                  {config?.ip_intercept_exclude?.length || 0}
+                </Tag>
+              </Space>
+            </Space>
+            <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 12 }}>
+              Never intercept TLS traffic from these IPs.
+            </Text>
+            <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+              <Input
+                placeholder="192.168.1.100 or 10.0.0.0/8"
+                value={newIpExclude}
+                onChange={(e) => setNewIpExclude(e.target.value)}
+                onPressEnter={handleAddIpExclude}
+                size="small"
+              />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleAddIpExclude}
+                size="small"
+                loading={ipLoading}
+                style={{ background: token.colorWarning, borderColor: token.colorWarning }}
+              >
+                Add
+              </Button>
+            </Space.Compact>
+            <div>
+              {(config?.ip_intercept_exclude?.length || 0) === 0 ? (
+                <Text type="secondary">No IPs configured</Text>
+              ) : (
+                <Space wrap>
+                  {config?.ip_intercept_exclude?.map((ip) => (
+                    <Tag key={ip} color="orange" closable onClose={() => handleRemoveIpExclude(ip)}>
+                      {ip}
                     </Tag>
                   ))}
                 </Space>
@@ -976,6 +1172,8 @@ export default function ProxyTab({
             appSuggestions={appSuggestions}
           />
         </Col>
+
+        
 
         <Col xs={24}>
           <Card title="System Information" size="small">

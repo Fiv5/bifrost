@@ -119,6 +119,8 @@ pub struct TlsInterceptConfig {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
 }
 
@@ -130,6 +132,8 @@ impl TlsInterceptConfig {
             intercept_include: config.intercept_include.clone(),
             app_intercept_exclude: config.app_intercept_exclude.clone(),
             app_intercept_include: config.app_intercept_include.clone(),
+            ip_intercept_exclude: config.ip_intercept_exclude.clone(),
+            ip_intercept_include: config.ip_intercept_include.clone(),
             unsafe_ssl: config.unsafe_ssl,
         }
     }
@@ -144,6 +148,8 @@ pub struct ProxyConfig {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub timeout_secs: u64,
     pub http1_max_header_size: usize,
     pub http2_max_header_list_size: usize,
@@ -185,6 +191,8 @@ impl Default for ProxyConfig {
                 "*Arc*".to_string(),
                 "*Vivaldi*".to_string(),
             ],
+            ip_intercept_exclude: Vec::new(),
+            ip_intercept_include: Vec::new(),
             timeout_secs: 30,
             http1_max_header_size: 64 * 1024,
             http2_max_header_list_size: 256 * 1024,
@@ -1126,6 +1134,8 @@ async fn handle_request(
                 intercept_include: runtime_config.intercept_include.clone(),
                 app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
                 app_intercept_include: runtime_config.app_intercept_include.clone(),
+                ip_intercept_exclude: runtime_config.ip_intercept_exclude.clone(),
+                ip_intercept_include: runtime_config.ip_intercept_include.clone(),
                 unsafe_ssl: runtime_config.unsafe_ssl,
             }
         } else {
@@ -1859,6 +1869,8 @@ mod tests {
             intercept_include: vec!["*.api.com".to_string()],
             app_intercept_exclude: vec![],
             app_intercept_include: vec![],
+            ip_intercept_exclude: vec![],
+            ip_intercept_include: vec![],
             timeout_secs: 60,
             http1_max_header_size: 128 * 1024,
             http2_max_header_list_size: 512 * 1024,

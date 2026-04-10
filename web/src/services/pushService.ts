@@ -11,7 +11,7 @@ import type {
 } from '../types';
 import type { ScriptInfo } from '../api/scripts';
 import type { ValueItem } from '../api/values';
-import type { TlsConfig, PerformanceConfig } from '../api/config';
+import type { TlsConfig, PerformanceConfig, PendingIpTls } from '../api/config';
 import type { CertInfo } from '../api/cert';
 import type {
   CliProxyStatus,
@@ -53,6 +53,7 @@ export interface OverviewData {
   traffic: { recorded: number };
   server: { port: number; admin_url: string };
   pending_authorizations: number;
+  pending_ip_tls: number;
 }
 
 export interface MetricsData {
@@ -83,7 +84,8 @@ export type SettingsScope =
   | 'system_proxy'
   | 'cli_proxy'
   | 'whitelist_status'
-  | 'pending_authorizations';
+  | 'pending_authorizations'
+  | 'pending_ip_tls';
 
 export interface SettingsUpdateData {
   scope: SettingsScope;
@@ -96,7 +98,8 @@ export interface SettingsUpdateData {
     | SystemProxyStatus
     | CliProxyStatus
     | WhitelistStatus
-    | PendingAuth[];
+    | PendingAuth[]
+    | PendingIpTls[];
 }
 
 export interface ReplaySavedRequestsData {

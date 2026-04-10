@@ -442,14 +442,30 @@ pub async fn handle_connect(
         );
     }
 
+    let client_ip_str = peer_addr.ip().to_string();
     let mut intercept = should_intercept_tls_for_client(
         &host,
         ctx.client_app.as_deref(),
         is_local_client,
+        Some(&client_ip_str),
         tls_intercept_config,
         &tls_config,
         &resolved_rules,
     );
+
+    if !is_local_client {
+        if let Some(ref state) = admin_state {
+            if let Some(ref ip_tls_mgr) = state.ip_tls_pending_manager {
+                let peer_ip = peer_addr.ip();
+                if !is_ip_included(&client_ip_str, &tls_intercept_config.ip_intercept_include)
+                    && !is_ip_excluded(&client_ip_str, &tls_intercept_config.ip_intercept_exclude)
+                    && !ip_tls_mgr.is_pending_or_decided(&peer_ip)
+                {
+                    ip_tls_mgr.check_and_add_pending(peer_ip);
+                }
+            }
+        }
+    }
 
     if !intercept
         && is_local_client
@@ -3633,6 +3649,39 @@ fn is_app_included(client_app: Option<&str>, include_list: &[String]) -> bool {
     is_app_matched(client_app, include_list)
 }
 
+fn is_ip_matched(client_ip: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+
+    let parsed_ip: std::net::IpAddr = match client_ip.parse() {
+        Ok(ip) => ip,
+        Err(_) => return false,
+    };
+
+    for pattern in patterns {
+        if let Ok(network) = pattern.parse::<ipnet::IpNet>() {
+            if network.contains(&parsed_ip) {
+                return true;
+            }
+        } else if let Ok(single_ip) = pattern.parse::<std::net::IpAddr>() {
+            if parsed_ip == single_ip {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn is_ip_excluded(client_ip: &str, exclude_list: &[String]) -> bool {
+    is_ip_matched(client_ip, exclude_list)
+}
+
+fn is_ip_included(client_ip: &str, include_list: &[String]) -> bool {
+    is_ip_matched(client_ip, include_list)
+}
+
 pub fn requires_client_app_for_tls_decision(tls_intercept_config: &TlsInterceptConfig) -> bool {
     !tls_intercept_config.app_intercept_include.is_empty()
         || !tls_intercept_config.app_intercept_exclude.is_empty()
@@ -3649,6 +3698,7 @@ pub fn should_intercept_tls(
         host,
         client_app,
         true,
+        None,
         tls_intercept_config,
         tls_config,
         resolved_rules,
@@ -3659,6 +3709,7 @@ pub fn should_intercept_tls_for_client(
     host: &str,
     client_app: Option<&str>,
     is_local_client: bool,
+    client_ip: Option<&str>,
     tls_intercept_config: &TlsInterceptConfig,
     tls_config: &TlsConfig,
     resolved_rules: &ResolvedRules,
@@ -3706,6 +3757,16 @@ pub fn should_intercept_tls_for_client(
 
     if is_domain_excluded(host, &tls_intercept_config.intercept_exclude) {
         return false;
+    }
+
+    if let Some(ip) = client_ip {
+        if is_ip_included(ip, &tls_intercept_config.ip_intercept_include) {
+            return true;
+        }
+
+        if is_ip_excluded(ip, &tls_intercept_config.ip_intercept_exclude) {
+            return false;
+        }
     }
 
     tls_intercept_config.enable_tls_interception
@@ -4006,6 +4067,8 @@ mod tests {
             intercept_include: include,
             app_intercept_exclude: vec![],
             app_intercept_include: vec![],
+            ip_intercept_exclude: vec![],
+            ip_intercept_include: vec![],
             unsafe_ssl: false,
         }
     }
@@ -4479,6 +4542,7 @@ mod tests {
             "example.com",
             None,
             false,
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -4529,5 +4593,224 @@ mod tests {
             !result,
             "App exclude should have higher priority than domain include"
         );
+    }
+
+    #[test]
+    fn test_ip_intercept_include_match() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(result, "IP in include list should force interception");
+    }
+
+    #[test]
+    fn test_ip_intercept_exclude_match() {
+        let mut config = make_tls_intercept_config(true, vec![], vec![]);
+        config.ip_intercept_exclude = vec!["10.0.0.50".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("10.0.0.50"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result,
+            "IP in exclude list should prevent interception even with global enabled"
+        );
+    }
+
+    #[test]
+    fn test_ip_intercept_cidr_match() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["10.0.0.0/8".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("10.1.2.3"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(result, "IP matching CIDR range should force interception");
+
+        let result2 = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.1"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result2,
+            "IP not in CIDR range should not match include list"
+        );
+    }
+
+    #[test]
+    fn test_ip_tls_priority_below_domain_include() {
+        let mut config = make_tls_intercept_config(false, vec![], vec!["example.com".to_string()]);
+        config.ip_intercept_exclude = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "Domain include should override IP exclude (higher priority)"
+        );
+    }
+
+    #[test]
+    fn test_ip_tls_priority_above_global() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "IP include should override global disabled (IP priority > global)"
+        );
+    }
+
+    #[test]
+    fn test_ip_include_priority_above_ip_exclude() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        config.ip_intercept_exclude = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "IP include should have higher priority than IP exclude"
+        );
+    }
+
+    #[test]
+    fn test_ip_no_match_falls_to_global() {
+        let mut config = make_tls_intercept_config(true, vec![], vec![]);
+        config.ip_intercept_include = vec!["10.0.0.1".to_string()];
+        config.ip_intercept_exclude = vec!["10.0.0.2".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("172.16.0.1"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "IP not in any list should fall through to global toggle"
+        );
+    }
+
+    #[test]
+    fn test_ip_none_skips_ip_check() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            true,
+            None,
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result,
+            "When client_ip is None, IP check should be skipped and fall to global"
+        );
+    }
+
+    #[test]
+    fn test_ip_intercept_ipv6() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["::1".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("::1"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(result, "IPv6 loopback should match");
+    }
+
+    #[test]
+    fn test_ip_matched_helper() {
+        assert!(is_ip_matched(
+            "192.168.1.1",
+            &["192.168.1.0/24".to_string()]
+        ));
+        assert!(!is_ip_matched("10.0.0.1", &["192.168.1.0/24".to_string()]));
+        assert!(is_ip_matched("10.0.0.1", &["10.0.0.1".to_string()]));
+        assert!(!is_ip_matched("10.0.0.2", &["10.0.0.1".to_string()]));
+        assert!(!is_ip_matched("invalid-ip", &["10.0.0.1".to_string()]));
+        assert!(is_ip_matched("fe80::1", &["fe80::/10".to_string()]));
+        assert!(!is_ip_matched("::1", &["fe80::/10".to_string()]));
     }
 }

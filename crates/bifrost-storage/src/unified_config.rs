@@ -194,6 +194,8 @@ pub struct TlsConfig {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_change: bool,
 }
@@ -215,6 +217,8 @@ impl Default for TlsConfig {
                 "*Arc*".to_string(),
                 "*Vivaldi*".to_string(),
             ],
+            ip_intercept_exclude: Vec::new(),
+            ip_intercept_include: Vec::new(),
             unsafe_ssl: false,
             disconnect_on_change: true,
         }
@@ -377,6 +381,8 @@ pub struct TlsConfigUpdate {
     pub intercept_include: Option<Vec<String>>,
     pub app_intercept_exclude: Option<Vec<String>>,
     pub app_intercept_include: Option<Vec<String>>,
+    pub ip_intercept_exclude: Option<Vec<String>>,
+    pub ip_intercept_include: Option<Vec<String>>,
     pub unsafe_ssl: Option<bool>,
     pub disconnect_on_change: Option<bool>,
 }

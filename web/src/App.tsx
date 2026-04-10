@@ -4,6 +4,7 @@ import { ConfigProvider, Modal, Steps, App as AntApp, message, theme, Typography
 import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
 import PendingAuthModal from "./components/PendingAuthModal";
+import PendingIpTlsModal from "./components/PendingIpTlsModal";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import TrafficDetailPage from "./pages/TrafficDetailPage";
@@ -256,6 +257,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
         <HashRouter>
           <BifrostFileDropZone>
             <PendingAuthModal />
+            <PendingIpTlsModal />
             <Routes>
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />
@@ -277,6 +279,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
         <BrowserRouter basename={getAdminPrefix()}>
           <BifrostFileDropZone>
             <PendingAuthModal />
+            <PendingIpTlsModal />
             <Routes>
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />

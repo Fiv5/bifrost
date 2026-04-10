@@ -1164,6 +1164,12 @@ impl SocksHandler {
                                     app_intercept_include: runtime_config
                                         .app_intercept_include
                                         .clone(),
+                                    ip_intercept_exclude: runtime_config
+                                        .ip_intercept_exclude
+                                        .clone(),
+                                    ip_intercept_include: runtime_config
+                                        .ip_intercept_include
+                                        .clone(),
                                     unsafe_ssl: runtime_config.unsafe_ssl,
                                 })
                             } else {
@@ -1237,10 +1243,12 @@ impl SocksHandler {
                                 }
                             }
 
+                            let client_ip_str = self.peer_addr.ip().to_string();
                             let do_intercept = crate::proxy::http::should_intercept_tls_for_client(
                                 original_host,
                                 client_app,
                                 is_local_client,
+                                Some(&client_ip_str),
                                 tls_intercept_config,
                                 tls_config,
                                 &tls_resolved_rules,

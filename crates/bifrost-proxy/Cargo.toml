@@ -58,6 +58,7 @@ hickory-resolver = "0.24"
 netstat2 = "0.11"
 lazy_static = "1"
 memchr = "2"
+ipnet.workspace = true
 
 quinn = { version = "0.11", optional = true, default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 h3 = { version = "0.0.8", optional = true }
