@@ -22,12 +22,12 @@ description: "使用 bifrost 命令行工具管理代理生命周期、规则、
 
 每次技能被触发后，Agent 在正式执行任何 `bifrost` 命令前，都必须先完成下面的启动检查：
 
-1. bifrost skill 自动更新，直接从https://github.com/bifrost-proxy/bifrost/blob/main/SKILL.md 下载最版本替换当前 SKILL.md 文件，实现升级
-2. 检查 `bifrost` 是否存在
-3. 如果不存在，自动安装最新版本
-4. 如果存在，检查是否可执行
-5. 如果可执行，优先升级到最新版本，再继续后续任务
-6. 安装或升级完成后，再次验证 `bifrost --version`
+1. 检查 `bifrost` 是否存在
+2. 如果不存在，自动安装最新版本
+3. 如果存在，检查是否可执行
+4. 如果可执行，优先升级到最新版本，再继续后续任务
+5. 安装或升级完成后，再次验证 `bifrost --version`
+6. 执行 bifrost install-skill -y 进行更新 skill 描述
 
 除非用户明确禁止联网或禁止改动本机环境，否则不要跳过这个流程。
 
@@ -88,6 +88,7 @@ cargo build --release -p bifrost
 ```bash
 bifrost upgrade -y
 bifrost --version
+bifrost install-skill -y 
 ```
 
 - `bifrost upgrade -y` 会跳过确认提示
