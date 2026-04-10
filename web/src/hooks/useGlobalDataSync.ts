@@ -8,6 +8,7 @@ import { syncDynamicData } from './useEditorCompletion';
 import pushService from '../services/pushService';
 import { useForceRefreshStore } from '../stores/useForceRefreshStore';
 import { usePendingAuthStore } from '../stores/usePendingAuthStore';
+import { usePendingIpTlsStore } from '../stores/usePendingIpTlsStore';
 
 const VERSION_CHECK_INTERVAL = 60 * 60 * 1000;
 
@@ -97,6 +98,7 @@ export function useGlobalDataSync() {
       stopAllPolling();
       pauseRealtime();
       usePendingAuthStore.getState().stopSSE();
+      usePendingIpTlsStore.getState().stopSSE();
       pushService.disableReconnectUntilRefresh();
       useForceRefreshStore.getState().show(data.reason);
     };

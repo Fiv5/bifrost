@@ -455,6 +455,14 @@ fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<(
             let tls = client.get_tls_config().map_err(BifrostError::Config)?;
             serde_json::json!(tls.app_intercept_include)
         }
+        ConfigKey::TlsIpExclude => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::json!(tls.ip_intercept_exclude)
+        }
+        ConfigKey::TlsIpInclude => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::json!(tls.ip_intercept_include)
+        }
         ConfigKey::TrafficMaxRecords => {
             let perf = client
                 .get_performance_config()
@@ -701,6 +709,26 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
                 .map_err(BifrostError::Config)?;
             println!("✓ TLS app include list set to: {:?}", apps);
         }
+        ConfigKey::TlsIpExclude => {
+            let ips = parse_list(value);
+            client
+                .update_tls_config(&UpdateTlsConfigRequest {
+                    ip_intercept_exclude: Some(ips.clone()),
+                    ..Default::default()
+                })
+                .map_err(BifrostError::Config)?;
+            println!("Set tls.ip-exclude = {:?}", ips);
+        }
+        ConfigKey::TlsIpInclude => {
+            let ips = parse_list(value);
+            client
+                .update_tls_config(&UpdateTlsConfigRequest {
+                    ip_intercept_include: Some(ips.clone()),
+                    ..Default::default()
+                })
+                .map_err(BifrostError::Config)?;
+            println!("Set tls.ip-include = {:?}", ips);
+        }
         ConfigKey::TrafficMaxRecords => {
             let max = value
                 .parse::<usize>()
@@ -928,6 +956,8 @@ fn add_list_item(client: &ConfigApiClient, key: &str, value: &str) -> Result<()>
         ConfigKey::TlsInclude => tls.intercept_include,
         ConfigKey::TlsAppExclude => tls.app_intercept_exclude,
         ConfigKey::TlsAppInclude => tls.app_intercept_include,
+        ConfigKey::TlsIpExclude => tls.ip_intercept_exclude,
+        ConfigKey::TlsIpInclude => tls.ip_intercept_include,
         _ => unreachable!(),
     };
 
@@ -953,6 +983,14 @@ fn add_list_item(client: &ConfigApiClient, key: &str, value: &str) -> Result<()>
         },
         ConfigKey::TlsAppInclude => UpdateTlsConfigRequest {
             app_intercept_include: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsIpExclude => UpdateTlsConfigRequest {
+            ip_intercept_exclude: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsIpInclude => UpdateTlsConfigRequest {
+            ip_intercept_include: Some(list),
             ..Default::default()
         },
         _ => unreachable!(),
@@ -981,6 +1019,8 @@ fn remove_list_item(client: &ConfigApiClient, key: &str, value: &str) -> Result<
         ConfigKey::TlsInclude => tls.intercept_include,
         ConfigKey::TlsAppExclude => tls.app_intercept_exclude,
         ConfigKey::TlsAppInclude => tls.app_intercept_include,
+        ConfigKey::TlsIpExclude => tls.ip_intercept_exclude,
+        ConfigKey::TlsIpInclude => tls.ip_intercept_include,
         _ => unreachable!(),
     };
 
@@ -1007,6 +1047,14 @@ fn remove_list_item(client: &ConfigApiClient, key: &str, value: &str) -> Result<
         },
         ConfigKey::TlsAppInclude => UpdateTlsConfigRequest {
             app_intercept_include: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsIpExclude => UpdateTlsConfigRequest {
+            ip_intercept_exclude: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsIpInclude => UpdateTlsConfigRequest {
+            ip_intercept_include: Some(list),
             ..Default::default()
         },
         _ => unreachable!(),
@@ -1042,6 +1090,8 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
             intercept_include: Some(vec![]),
             app_intercept_exclude: Some(vec![]),
             app_intercept_include: Some(vec![]),
+            ip_intercept_exclude: Some(vec![]),
+            ip_intercept_include: Some(vec![]),
             unsafe_ssl: Some(false),
             disconnect_on_config_change: Some(true),
         };
@@ -1213,6 +1263,26 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
                 .update_tls_config(&req)
                 .map_err(BifrostError::Config)?;
             println!("✓ tls.app-include reset to []");
+        }
+        ConfigKey::TlsIpExclude => {
+            let req = UpdateTlsConfigRequest {
+                ip_intercept_exclude: Some(vec![]),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.ip-exclude reset to []");
+        }
+        ConfigKey::TlsIpInclude => {
+            let req = UpdateTlsConfigRequest {
+                ip_intercept_include: Some(vec![]),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.ip-include reset to []");
         }
         ConfigKey::TrafficMaxRecords => {
             let req = UpdatePerformanceConfigRequest {

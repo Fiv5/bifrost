@@ -272,6 +272,7 @@ pub struct SocksServer {
     dns_resolver: Option<Arc<DnsResolver>>,
     verbose_logging: bool,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
 }
 
 impl SocksServer {
@@ -294,6 +295,7 @@ impl SocksServer {
             dns_resolver: None,
             verbose_logging: false,
             unsafe_ssl: true,
+            inject_bifrost_badge: true,
         }
     }
 
@@ -331,6 +333,11 @@ impl SocksServer {
 
     pub fn with_unsafe_ssl(mut self, unsafe_ssl: bool) -> Self {
         self.unsafe_ssl = unsafe_ssl;
+        self
+    }
+
+    pub fn with_inject_bifrost_badge(mut self, enabled: bool) -> Self {
+        self.inject_bifrost_badge = enabled;
         self
     }
 
@@ -516,6 +523,7 @@ impl SocksServer {
             let dns_resolver = self.dns_resolver.clone();
             let verbose_logging = self.verbose_logging;
             let unsafe_ssl = self.unsafe_ssl;
+            let inject_bifrost_badge = self.inject_bifrost_badge;
             let access_control = Arc::clone(&self.access_control);
 
             tokio::spawn(async move {
@@ -531,6 +539,7 @@ impl SocksServer {
                     handler = handler
                         .with_verbose_logging(verbose_logging)
                         .with_unsafe_ssl(unsafe_ssl)
+                        .with_inject_bifrost_badge(inject_bifrost_badge)
                         .with_access_control(access_control);
                     if let Some(dns) = dns_resolver {
                         handler = handler.with_dns_resolver(dns);
@@ -578,6 +587,7 @@ pub struct SocksHandler {
     dns_resolver: Option<Arc<DnsResolver>>,
     verbose_logging: bool,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
 }
 
 impl SocksHandler {
@@ -608,6 +618,7 @@ impl SocksHandler {
             dns_resolver: None,
             verbose_logging: false,
             unsafe_ssl: true,
+            inject_bifrost_badge: true,
         }
     }
 
@@ -649,6 +660,11 @@ impl SocksHandler {
 
     pub fn with_unsafe_ssl(mut self, unsafe_ssl: bool) -> Self {
         self.unsafe_ssl = unsafe_ssl;
+        self
+    }
+
+    pub fn with_inject_bifrost_badge(mut self, enabled: bool) -> Self {
+        self.inject_bifrost_badge = enabled;
         self
     }
 
@@ -1148,6 +1164,12 @@ impl SocksHandler {
                                     app_intercept_include: runtime_config
                                         .app_intercept_include
                                         .clone(),
+                                    ip_intercept_exclude: runtime_config
+                                        .ip_intercept_exclude
+                                        .clone(),
+                                    ip_intercept_include: runtime_config
+                                        .ip_intercept_include
+                                        .clone(),
                                     unsafe_ssl: runtime_config.unsafe_ssl,
                                 })
                             } else {
@@ -1221,10 +1243,12 @@ impl SocksHandler {
                                 }
                             }
 
+                            let client_ip_str = self.peer_addr.ip().to_string();
                             let do_intercept = crate::proxy::http::should_intercept_tls_for_client(
                                 original_host,
                                 client_app,
                                 is_local_client,
+                                Some(&client_ip_str),
                                 tls_intercept_config,
                                 tls_config,
                                 &tls_resolved_rules,
@@ -1567,6 +1591,7 @@ impl SocksHandler {
             64 * 1024
         };
         let local_addr = self.local_addr;
+        let inject_bifrost_badge = self.inject_bifrost_badge;
 
         let service = service_fn(move |req: Request<Incoming>| {
             let target_host = target_host.clone();
@@ -1585,6 +1610,7 @@ impl SocksHandler {
                     dns_resolver,
                     max_body_buffer_size,
                     max_body_probe_size,
+                    inject_bifrost_badge,
                     verbose_logging,
                     unsafe_ssl,
                     peer_addr,
@@ -1914,6 +1940,7 @@ async fn handle_socks5_intercepted_request(
     dns_resolver: Option<Arc<DnsResolver>>,
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
+    inject_bifrost_badge_default: bool,
     verbose_logging: bool,
     unsafe_ssl: bool,
     peer_addr: SocketAddr,
@@ -2010,6 +2037,12 @@ async fn handle_socks5_intercepted_request(
             peer_addr.ip().to_string(),
         );
 
+    let inject_bifrost_badge = admin_state
+        .as_ref()
+        .and_then(|state| state.config_manager.as_ref().and_then(|cm| cm.try_config()))
+        .map(|config| config.traffic.inject_bifrost_badge)
+        .unwrap_or(inject_bifrost_badge_default);
+
     match handle_http_request(
         new_req,
         rules_resolver,
@@ -2017,6 +2050,7 @@ async fn handle_socks5_intercepted_request(
         unsafe_ssl,
         max_body_buffer_size,
         max_body_probe_size,
+        inject_bifrost_badge,
         &ctx,
         admin_state,
         dns_resolver,

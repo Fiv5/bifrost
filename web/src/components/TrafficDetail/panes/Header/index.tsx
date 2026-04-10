@@ -24,10 +24,14 @@ interface HeaderViewProps {
   clientApp?: string;
 }
 
+type DiffType = 'added' | 'modified' | 'deleted' | 'unchanged';
+
 interface HeaderItem {
   key: string;
   name: string;
   value: string;
+  diffType?: DiffType;
+  originalValue?: string;
 }
 
 const areHeadersEqual = (
@@ -155,12 +159,74 @@ export const HeaderView = ({
 
   const dataSource = useMemo<HeaderItem[]>(() => {
     if (!displayHeaders) return [];
-    return displayHeaders.map(([name, value], index) => ({
-      key: String(index),
-      name,
-      value,
-    }));
-  }, [displayHeaders]);
+
+    const sorted = [...displayHeaders]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, value], index) => ({
+        key: String(index),
+        name,
+        value,
+      }));
+
+    if (resolvedViewMode !== 'current' || !showOriginalTab || !originalHeaders) {
+      return sorted;
+    }
+
+    const origMap = new Map<string, string[]>();
+    for (const [k, v] of originalHeaders) {
+      const lower = k.toLowerCase();
+      const arr = origMap.get(lower);
+      if (arr) {
+        arr.push(v);
+      } else {
+        origMap.set(lower, [v]);
+      }
+    }
+
+    const currentKeyCount = new Map<string, number>();
+    for (const [k] of displayHeaders) {
+      const lower = k.toLowerCase();
+      currentKeyCount.set(lower, (currentKeyCount.get(lower) ?? 0) + 1);
+    }
+
+    const usedOrigIndex = new Map<string, number>();
+
+    const active: HeaderItem[] = sorted.map((item) => {
+      const lowerName = item.name.toLowerCase();
+      const origValues = origMap.get(lowerName);
+      if (!origValues || origValues.length === 0) {
+        return { ...item, diffType: 'added' as DiffType };
+      }
+      const idx = usedOrigIndex.get(lowerName) ?? 0;
+      usedOrigIndex.set(lowerName, idx + 1);
+      if (idx < origValues.length) {
+        const origVal = origValues[idx];
+        if (origVal !== item.value) {
+          return { ...item, diffType: 'modified' as DiffType, originalValue: origVal };
+        }
+        return { ...item, diffType: 'unchanged' as DiffType };
+      }
+      return { ...item, diffType: 'added' as DiffType };
+    });
+
+    const deleted: HeaderItem[] = [];
+    for (const [k, values] of origMap) {
+      const currentCount = currentKeyCount.get(k) ?? 0;
+      if (currentCount < values.length) {
+        for (let i = currentCount; i < values.length; i++) {
+          deleted.push({
+            key: `deleted-${deleted.length}`,
+            name: originalHeaders.find(([n]) => n.toLowerCase() === k)?.[0] ?? k,
+            value: values[i],
+            diffType: 'deleted',
+          });
+        }
+      }
+    }
+    deleted.sort((a, b) => a.name.localeCompare(b.name));
+
+    return [...active, ...deleted];
+  }, [displayHeaders, resolvedViewMode, showOriginalTab, originalHeaders]);
 
   const filteredData = useMemo(() => {
     if (!searchValue.value) return dataSource;
@@ -174,14 +240,30 @@ export const HeaderView = ({
 
   useMarkSearch(searchValue, () => tableRef.current, onSearch);
 
+  const diffColors = useMemo(() => ({
+    added: { bg: token.colorSuccessBg, text: token.colorSuccess },
+    modified: { bg: token.colorWarningBg, text: token.colorWarningText },
+    deleted: { bg: token.colorErrorBg, text: token.colorError },
+  }), [token]);
+
   const columns: ColumnsType<HeaderItem> = [
     {
       title: "Name",
       dataIndex: "name",
       key: "name",
       width: 180,
-      render: (text: string) => (
-        <Text strong style={{ fontFamily: "monospace", fontSize: 12 }}>
+      render: (text: string, record: HeaderItem) => (
+        <Text
+          strong
+          style={{
+            fontFamily: "monospace",
+            fontSize: 12,
+            textDecoration: record.diffType === 'deleted' ? 'line-through' : undefined,
+            color: record.diffType && record.diffType !== 'unchanged'
+              ? diffColors[record.diffType].text
+              : undefined,
+          }}
+        >
           {text}
         </Text>
       ),
@@ -190,13 +272,37 @@ export const HeaderView = ({
       title: "Value",
       dataIndex: "value",
       key: "value",
-      render: (text: string) => (
-        <Text
-          style={{ fontFamily: "monospace", fontSize: 12 }}
-          copyable={{ text }}
-        >
-          {text}
-        </Text>
+      render: (text: string, record: HeaderItem) => (
+        <div>
+          <Text
+            style={{
+              fontFamily: "monospace",
+              fontSize: 12,
+              textDecoration: record.diffType === 'deleted' ? 'line-through' : undefined,
+              color: record.diffType && record.diffType !== 'unchanged'
+                ? diffColors[record.diffType].text
+                : undefined,
+            }}
+            copyable={record.diffType !== 'deleted' ? { text } : undefined}
+          >
+            {text}
+          </Text>
+          {record.diffType === 'modified' && record.originalValue && (
+            <div>
+              <Text
+                type="secondary"
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 11,
+                  textDecoration: 'line-through',
+                  opacity: 0.6,
+                }}
+              >
+                {record.originalValue}
+              </Text>
+            </div>
+          )}
+        </div>
       ),
     },
   ];
@@ -274,7 +380,7 @@ export const HeaderView = ({
               </Radio.Button>
               {showOriginalTab && (
                 <Radio.Button value="original" data-testid={`${testIdPrefix}-tab-original`}>
-                  <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>Original</Tag>
+                  Original
                 </Radio.Button>
               )}
               {showActualTab && (
@@ -301,6 +407,14 @@ export const HeaderView = ({
           columns={columns}
           pagination={false}
           size="small"
+          onRow={(record: HeaderItem) => {
+            if (!record.diffType || record.diffType === 'unchanged') return {};
+            return {
+              style: {
+                backgroundColor: diffColors[record.diffType].bg,
+              },
+            };
+          }}
           style={{
             backgroundColor: token.colorBgLayout,
             borderRadius: 4,

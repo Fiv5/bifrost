@@ -34,6 +34,7 @@ pub const SETTINGS_SCOPE_SYSTEM_PROXY: &str = "system_proxy";
 pub const SETTINGS_SCOPE_CLI_PROXY: &str = "cli_proxy";
 pub const SETTINGS_SCOPE_WHITELIST_STATUS: &str = "whitelist_status";
 pub const SETTINGS_SCOPE_PENDING_AUTHORIZATIONS: &str = "pending_authorizations";
+pub const SETTINGS_SCOPE_PENDING_IP_TLS: &str = "pending_ip_tls";
 
 fn generate_client_id() -> u64 {
     CLIENT_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -147,6 +148,7 @@ pub struct OverviewData {
     pub traffic: TrafficInfo,
     pub server: ServerInfo,
     pub pending_authorizations: usize,
+    pub pending_ip_tls: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +464,13 @@ impl PushManager {
             0
         };
 
+        let pending_ip_tls_count = self
+            .state
+            .ip_tls_pending_manager
+            .as_ref()
+            .map(|m| m.pending_count())
+            .unwrap_or(0);
+
         let overview = OverviewData {
             system: serde_json::to_value(&system_info).unwrap_or_default(),
             metrics: serde_json::to_value(&metrics).unwrap_or_default(),
@@ -477,6 +486,7 @@ impl PushManager {
                 admin_url: format!("http://127.0.0.1:{}/_bifrost/", self.state.port()),
             },
             pending_authorizations: pending_count,
+            pending_ip_tls: pending_ip_tls_count,
         };
 
         *self.overview_cache.write() = Some(overview.clone());
@@ -994,6 +1004,8 @@ impl PushManager {
                         "intercept_include": config.tls.intercept_include,
                         "app_intercept_exclude": config.tls.app_intercept_exclude,
                         "app_intercept_include": config.tls.app_intercept_include,
+                        "ip_intercept_exclude": config.tls.ip_intercept_exclude,
+                        "ip_intercept_include": config.tls.ip_intercept_include,
                         "unsafe_ssl": config.tls.unsafe_ssl,
                         "disconnect_on_config_change": config.tls.disconnect_on_change,
                     },
@@ -1010,6 +1022,8 @@ impl PushManager {
                     "intercept_include": config.tls.intercept_include,
                     "app_intercept_exclude": config.tls.app_intercept_exclude,
                     "app_intercept_include": config.tls.app_intercept_include,
+                    "ip_intercept_exclude": config.tls.ip_intercept_exclude,
+                    "ip_intercept_include": config.tls.ip_intercept_include,
                     "unsafe_ssl": config.tls.unsafe_ssl,
                     "disconnect_on_config_change": config.tls.disconnect_on_change,
                 })
@@ -1158,6 +1172,13 @@ impl PushManager {
                 let access_control = self.state.access_control.as_ref()?;
                 let ac = access_control.read().await;
                 json!(ac.get_pending_authorizations())
+            }
+            SETTINGS_SCOPE_PENDING_IP_TLS => {
+                if let Some(ref manager) = self.state.ip_tls_pending_manager {
+                    json!(manager.get_pending_list())
+                } else {
+                    json!([])
+                }
             }
             _ => return None,
         };

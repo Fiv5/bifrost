@@ -4,14 +4,18 @@ use bifrost_storage::{
     TlsConfigUpdate, TrafficConfigUpdate, UiConfigUpdate, DEFAULT_TRAFFIC_MAX_RECORDS,
     MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS,
 };
+use bytes::Bytes;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 
-use super::{error_response, json_response, method_not_allowed, BoxBody};
+use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
 use crate::frame_store::FrameStoreStats;
 use crate::port_rebind::PortRebindResponse;
+use crate::push::SharedPushManager;
 use crate::resource_alerts::{build_resource_alerts, ResourceAlerts};
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
@@ -24,6 +28,8 @@ pub struct TlsConfig {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_config_change: bool,
 }
@@ -66,6 +72,8 @@ pub struct UpdateTlsConfigRequest {
     pub intercept_include: Option<Vec<String>>,
     pub app_intercept_exclude: Option<Vec<String>>,
     pub app_intercept_include: Option<Vec<String>>,
+    pub ip_intercept_exclude: Option<Vec<String>>,
+    pub ip_intercept_include: Option<Vec<String>>,
     pub unsafe_ssl: Option<bool>,
     pub disconnect_on_config_change: Option<bool>,
 }
@@ -78,6 +86,7 @@ pub struct TrafficConfig {
     pub max_body_buffer_size: usize,
     pub max_body_probe_size: usize,
     pub binary_traffic_performance_mode: bool,
+    pub inject_bifrost_badge: bool,
     pub file_retention_days: u64,
     pub sse_stream_flush_bytes: usize,
     pub sse_stream_flush_interval_ms: u64,
@@ -103,6 +112,7 @@ pub struct UpdateTrafficConfigRequest {
     pub max_body_buffer_size: Option<usize>,
     pub max_body_probe_size: Option<usize>,
     pub binary_traffic_performance_mode: Option<bool>,
+    pub inject_bifrost_badge: Option<bool>,
     pub file_retention_days: Option<u64>,
     pub sse_stream_flush_bytes: Option<usize>,
     pub sse_stream_flush_interval_ms: Option<u64>,
@@ -114,6 +124,7 @@ pub struct UpdateTrafficConfigRequest {
 pub async fn handle_config(
     req: Request<Incoming>,
     state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
     path: &str,
 ) -> Response<BoxBody> {
     let method = req.method().clone();
@@ -167,6 +178,27 @@ pub async fn handle_config(
         "/api/config/ui" | "/api/config/ui/" => match method {
             Method::GET => get_ui_config(state).await,
             Method::PUT => update_ui_config(req, state).await,
+            _ => method_not_allowed(),
+        },
+        "/api/config/ip-tls/pending" | "/api/config/ip-tls/pending/" => match method {
+            Method::GET => get_ip_tls_pending(state).await,
+            Method::DELETE => clear_ip_tls_pending(state, push_manager).await,
+            _ => method_not_allowed(),
+        },
+        "/api/config/ip-tls/pending/stream" | "/api/config/ip-tls/pending/stream/" => {
+            match method {
+                Method::GET => ip_tls_pending_stream(state).await,
+                _ => method_not_allowed(),
+            }
+        }
+        "/api/config/ip-tls/pending/approve" | "/api/config/ip-tls/pending/approve/" => {
+            match method {
+                Method::POST => approve_ip_tls(req, state, push_manager).await,
+                _ => method_not_allowed(),
+            }
+        }
+        "/api/config/ip-tls/pending/skip" | "/api/config/ip-tls/pending/skip/" => match method {
+            Method::POST => skip_ip_tls(req, state, push_manager).await,
             _ => method_not_allowed(),
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -393,6 +425,8 @@ async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
             intercept_include: runtime_config.intercept_include.clone(),
             app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
             app_intercept_include: runtime_config.app_intercept_include.clone(),
+            ip_intercept_exclude: runtime_config.ip_intercept_exclude.clone(),
+            ip_intercept_include: runtime_config.ip_intercept_include.clone(),
             unsafe_ssl: runtime_config.unsafe_ssl,
             disconnect_on_config_change: runtime_config.disconnect_on_config_change,
         },
@@ -548,6 +582,8 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
         intercept_include: runtime_config.intercept_include.clone(),
         app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
         app_intercept_include: runtime_config.app_intercept_include.clone(),
+        ip_intercept_exclude: runtime_config.ip_intercept_exclude.clone(),
+        ip_intercept_include: runtime_config.ip_intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,
         disconnect_on_config_change: runtime_config.disconnect_on_config_change,
     };
@@ -724,6 +760,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
             max_body_buffer_size: config.traffic.max_body_buffer_size,
             max_body_probe_size: config.traffic.max_body_probe_size,
             binary_traffic_performance_mode: config.traffic.binary_traffic_performance_mode,
+            inject_bifrost_badge: config.traffic.inject_bifrost_badge,
             file_retention_days: config.traffic.file_retention_days,
             sse_stream_flush_bytes: config.traffic.sse_stream_flush_bytes,
             sse_stream_flush_interval_ms: config.traffic.sse_stream_flush_interval_ms,
@@ -739,6 +776,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
             max_body_buffer_size: 10 * 1024 * 1024,
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
+            inject_bifrost_badge: true,
             file_retention_days: 7,
             sse_stream_flush_bytes: 256 * 1024,
             sse_stream_flush_interval_ms: 1000,
@@ -809,6 +847,7 @@ async fn update_performance_config(
             max_body_buffer_size: request.max_body_buffer_size,
             max_body_probe_size: request.max_body_probe_size,
             binary_traffic_performance_mode: request.binary_traffic_performance_mode,
+            inject_bifrost_badge: request.inject_bifrost_badge,
             file_retention_days: request.file_retention_days,
             sse_stream_flush_bytes: request.sse_stream_flush_bytes,
             sse_stream_flush_interval_ms: request.sse_stream_flush_interval_ms,
@@ -1077,6 +1116,28 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
             runtime_config.app_intercept_include = app_include.clone();
         }
 
+        if let Some(ref ip_exclude) = request.ip_intercept_exclude {
+            if *ip_exclude != old_config.ip_intercept_exclude {
+                tracing::info!(
+                    "TLS config changed: ip_intercept_exclude {:?} -> {:?}",
+                    old_config.ip_intercept_exclude,
+                    ip_exclude
+                );
+            }
+            runtime_config.ip_intercept_exclude = ip_exclude.clone();
+        }
+
+        if let Some(ref ip_include) = request.ip_intercept_include {
+            if *ip_include != old_config.ip_intercept_include {
+                tracing::info!(
+                    "TLS config changed: ip_intercept_include {:?} -> {:?}",
+                    old_config.ip_intercept_include,
+                    ip_include
+                );
+            }
+            runtime_config.ip_intercept_include = ip_include.clone();
+        }
+
         if let Some(unsafe_ssl) = request.unsafe_ssl {
             runtime_config.unsafe_ssl = unsafe_ssl;
         }
@@ -1097,6 +1158,8 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
             intercept_include: request.intercept_include.clone(),
             app_intercept_exclude: request.app_intercept_exclude.clone(),
             app_intercept_include: request.app_intercept_include.clone(),
+            ip_intercept_exclude: request.ip_intercept_exclude.clone(),
+            ip_intercept_include: request.ip_intercept_include.clone(),
             unsafe_ssl: request.unsafe_ssl,
             disconnect_on_change: request.disconnect_on_config_change,
         };
@@ -1159,6 +1222,8 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
         intercept_include: runtime_config.intercept_include.clone(),
         app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
         app_intercept_include: runtime_config.app_intercept_include.clone(),
+        ip_intercept_exclude: runtime_config.ip_intercept_exclude.clone(),
+        ip_intercept_include: runtime_config.ip_intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,
         disconnect_on_config_change: runtime_config.disconnect_on_config_change,
     };
@@ -1383,4 +1448,237 @@ async fn update_ui_config(req: Request<Incoming>, state: SharedAdminState) -> Re
             )
         }
     }
+}
+
+async fn get_ip_tls_pending(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref manager) = state.ip_tls_pending_manager else {
+        return json_response(&Vec::<serde_json::Value>::new());
+    };
+    let pending = manager.get_pending_list();
+    json_response(&pending)
+}
+
+async fn ip_tls_pending_stream(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref manager) = state.ip_tls_pending_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "IP TLS pending manager not available",
+        );
+    };
+    let receiver = manager.subscribe();
+
+    let stream = BroadcastStream::new(receiver).filter_map(|result| match result {
+        Ok(event) => {
+            let data = serde_json::to_string(&event).ok()?;
+            let sse_data = format!("data: {}\n\n", data);
+            Some(sse_data)
+        }
+        Err(_) => None,
+    });
+
+    let body_stream = http_body_util::StreamBody::new(
+        stream.map(|s| Ok::<_, hyper::Error>(hyper::body::Frame::data(Bytes::from(s)))),
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(BoxBody::new(body_stream))
+        .unwrap()
+}
+
+#[derive(Deserialize)]
+struct IpTlsRequest {
+    ip: String,
+}
+
+async fn approve_ip_tls(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let Some(ref manager) = state.ip_tls_pending_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "IP TLS pending manager not available",
+        );
+    };
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: IpTlsRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let ip: std::net::IpAddr = match request.ip.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid IP address: {}", e),
+            )
+        }
+    };
+
+    if manager.approve(&ip) {
+        let Some(ref config_manager) = state.config_manager else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Config manager not available",
+            );
+        };
+
+        let mut config = config_manager.config().await;
+        let ip_str = ip.to_string();
+        if !config.tls.ip_intercept_include.contains(&ip_str) {
+            config.tls.ip_intercept_include.push(ip_str.clone());
+        }
+        config.tls.ip_intercept_exclude.retain(|e| e != &ip_str);
+
+        let update = bifrost_storage::TlsConfigUpdate {
+            ip_intercept_include: Some(config.tls.ip_intercept_include.clone()),
+            ip_intercept_exclude: Some(config.tls.ip_intercept_exclude.clone()),
+            ..Default::default()
+        };
+
+        if let Err(e) = config_manager.update_tls_config(update).await {
+            tracing::error!("Failed to persist IP TLS config: {}", e);
+        }
+
+        {
+            let mut runtime_config = state.runtime_config.write().await;
+            runtime_config.ip_intercept_include = config.tls.ip_intercept_include;
+            runtime_config.ip_intercept_exclude = config.tls.ip_intercept_exclude;
+        }
+
+        if let Some(ref pm) = push_manager {
+            pm.broadcast_settings_scope(crate::push::SETTINGS_SCOPE_TLS_CONFIG)
+                .await;
+            pm.broadcast_settings_scope(crate::push::SETTINGS_SCOPE_PENDING_IP_TLS)
+                .await;
+        }
+
+        tracing::info!("Approved TLS interception for IP {} via API", ip);
+        success_response(&format!(
+            "Approved TLS interception for {} and added to ip_intercept_include",
+            ip
+        ))
+    } else {
+        error_response(
+            StatusCode::NOT_FOUND,
+            &format!("{} not found in pending IP TLS list", ip),
+        )
+    }
+}
+
+async fn skip_ip_tls(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let Some(ref manager) = state.ip_tls_pending_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "IP TLS pending manager not available",
+        );
+    };
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: IpTlsRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let ip: std::net::IpAddr = match request.ip.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid IP address: {}", e),
+            )
+        }
+    };
+
+    if manager.skip(&ip) {
+        let Some(ref config_manager) = state.config_manager else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Config manager not available",
+            );
+        };
+
+        let mut config = config_manager.config().await;
+        let ip_str = ip.to_string();
+        if !config.tls.ip_intercept_exclude.contains(&ip_str) {
+            config.tls.ip_intercept_exclude.push(ip_str.clone());
+        }
+        config.tls.ip_intercept_include.retain(|e| e != &ip_str);
+
+        let update = bifrost_storage::TlsConfigUpdate {
+            ip_intercept_include: Some(config.tls.ip_intercept_include.clone()),
+            ip_intercept_exclude: Some(config.tls.ip_intercept_exclude.clone()),
+            ..Default::default()
+        };
+
+        if let Err(e) = config_manager.update_tls_config(update).await {
+            tracing::error!("Failed to persist IP TLS config: {}", e);
+        }
+
+        {
+            let mut runtime_config = state.runtime_config.write().await;
+            runtime_config.ip_intercept_include = config.tls.ip_intercept_include;
+            runtime_config.ip_intercept_exclude = config.tls.ip_intercept_exclude;
+        }
+
+        if let Some(ref pm) = push_manager {
+            pm.broadcast_settings_scope(crate::push::SETTINGS_SCOPE_TLS_CONFIG)
+                .await;
+            pm.broadcast_settings_scope(crate::push::SETTINGS_SCOPE_PENDING_IP_TLS)
+                .await;
+        }
+
+        tracing::info!("Skipped TLS interception for IP {} via API", ip);
+        success_response(&format!(
+            "Skipped TLS interception for {} and added to ip_intercept_exclude",
+            ip
+        ))
+    } else {
+        error_response(
+            StatusCode::NOT_FOUND,
+            &format!("{} not found in pending IP TLS list", ip),
+        )
+    }
+}
+
+async fn clear_ip_tls_pending(
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    let Some(ref manager) = state.ip_tls_pending_manager else {
+        return success_response("No pending IP TLS decisions");
+    };
+    manager.clear_pending();
+
+    if let Some(ref pm) = push_manager {
+        pm.broadcast_settings_scope(crate::push::SETTINGS_SCOPE_PENDING_IP_TLS)
+            .await;
+    }
+
+    tracing::info!("Cleared all pending IP TLS decisions via API");
+    success_response("Cleared all pending IP TLS decisions")
 }

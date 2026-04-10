@@ -24,6 +24,12 @@ interface TlsConfigState {
   isAppInPassthrough: (app: string) => boolean;
   isDomainInIntercept: (domain: string) => boolean;
   isDomainInPassthrough: (domain: string) => boolean;
+  addIpToIntercept: (ip: string) => Promise<boolean>;
+  removeIpFromIntercept: (ip: string) => Promise<boolean>;
+  addIpToPassthrough: (ip: string) => Promise<boolean>;
+  removeIpFromPassthrough: (ip: string) => Promise<boolean>;
+  isIpInIntercept: (ip: string) => boolean;
+  isIpInPassthrough: (ip: string) => boolean;
 }
 
 export const useTlsConfigStore = create<TlsConfigState>((set, get) => ({
@@ -230,5 +236,97 @@ export const useTlsConfigStore = create<TlsConfigState>((set, get) => ({
   isDomainInPassthrough: (domain: string) => {
     const { config } = get();
     return config?.intercept_exclude.includes(domain) ?? false;
+  },
+
+  addIpToIntercept: async (ip: string) => {
+    const { config } = get();
+    if (!config) return false;
+
+    if ((config.ip_intercept_include || []).includes(ip)) return true;
+
+    const newList = [...(config.ip_intercept_include || []), ip];
+    const fromPassthrough = (config.ip_intercept_exclude || []).includes(ip);
+    const excludeList = fromPassthrough
+      ? (config.ip_intercept_exclude || []).filter((p) => p !== ip)
+      : (config.ip_intercept_exclude || []);
+
+    try {
+      const updatedConfig = await updateTlsConfig({
+        ip_intercept_include: newList,
+        ip_intercept_exclude: excludeList,
+      });
+      set({ config: updatedConfig });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  removeIpFromIntercept: async (ip: string) => {
+    const { config } = get();
+    if (!config) return false;
+
+    const newList = (config.ip_intercept_include || []).filter((p) => p !== ip);
+
+    try {
+      const updatedConfig = await updateTlsConfig({
+        ip_intercept_include: newList,
+      });
+      set({ config: updatedConfig });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  addIpToPassthrough: async (ip: string) => {
+    const { config } = get();
+    if (!config) return false;
+
+    if ((config.ip_intercept_exclude || []).includes(ip)) return true;
+
+    const newList = [...(config.ip_intercept_exclude || []), ip];
+    const fromIntercept = (config.ip_intercept_include || []).includes(ip);
+    const includeList = fromIntercept
+      ? (config.ip_intercept_include || []).filter((p) => p !== ip)
+      : (config.ip_intercept_include || []);
+
+    try {
+      const updatedConfig = await updateTlsConfig({
+        ip_intercept_exclude: newList,
+        ip_intercept_include: includeList,
+      });
+      set({ config: updatedConfig });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  removeIpFromPassthrough: async (ip: string) => {
+    const { config } = get();
+    if (!config) return false;
+
+    const newList = (config.ip_intercept_exclude || []).filter((p) => p !== ip);
+
+    try {
+      const updatedConfig = await updateTlsConfig({
+        ip_intercept_exclude: newList,
+      });
+      set({ config: updatedConfig });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  isIpInIntercept: (ip: string) => {
+    const { config } = get();
+    return (config?.ip_intercept_include || []).includes(ip) ?? false;
+  },
+
+  isIpInPassthrough: (ip: string) => {
+    const { config } = get();
+    return (config?.ip_intercept_exclude || []).includes(ip) ?? false;
   },
 }));

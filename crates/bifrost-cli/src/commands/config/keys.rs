@@ -14,6 +14,8 @@ pub enum ConfigKey {
     TlsInclude,
     TlsAppExclude,
     TlsAppInclude,
+    TlsIpExclude,
+    TlsIpInclude,
 
     TrafficMaxRecords,
     TrafficMaxDbSize,
@@ -41,6 +43,8 @@ impl ConfigKey {
                 | Self::TlsInclude
                 | Self::TlsAppExclude
                 | Self::TlsAppInclude
+                | Self::TlsIpExclude
+                | Self::TlsIpInclude
                 | Self::AccessUserPassAccounts
         )
     }
@@ -72,6 +76,8 @@ impl ConfigKey {
             "tls.include",
             "tls.app-exclude",
             "tls.app-include",
+            "tls.ip-exclude",
+            "tls.ip-include",
             "traffic.max-records",
             "traffic.max-db-size",
             "traffic.max-body-size",
@@ -109,6 +115,8 @@ impl FromStr for ConfigKey {
             "tls.include" => Ok(Self::TlsInclude),
             "tls.app-exclude" => Ok(Self::TlsAppExclude),
             "tls.app-include" => Ok(Self::TlsAppInclude),
+            "tls.ip-exclude" => Ok(Self::TlsIpExclude),
+            "tls.ip-include" => Ok(Self::TlsIpInclude),
             "traffic.max-records" => Ok(Self::TrafficMaxRecords),
             "traffic.max-db-size" => Ok(Self::TrafficMaxDbSize),
             "traffic.max-body-size" => Ok(Self::TrafficMaxBodySize),
@@ -155,6 +163,8 @@ impl std::fmt::Display for ConfigKey {
             Self::TlsInclude => "tls.include",
             Self::TlsAppExclude => "tls.app-exclude",
             Self::TlsAppInclude => "tls.app-include",
+            Self::TlsIpExclude => "tls.ip-exclude",
+            Self::TlsIpInclude => "tls.ip-include",
             Self::TrafficMaxRecords => "traffic.max-records",
             Self::TrafficMaxDbSize => "traffic.max-db-size",
             Self::TrafficMaxBodySize => "traffic.max-body-size",

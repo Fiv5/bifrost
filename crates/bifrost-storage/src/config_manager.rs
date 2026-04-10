@@ -126,6 +126,12 @@ impl ConfigManager {
         if let Some(app_include) = update.app_intercept_include {
             config.tls.app_intercept_include = app_include;
         }
+        if let Some(ip_exclude) = update.ip_intercept_exclude {
+            config.tls.ip_intercept_exclude = ip_exclude;
+        }
+        if let Some(ip_include) = update.ip_intercept_include {
+            config.tls.ip_intercept_include = ip_include;
+        }
         if let Some(unsafe_ssl) = update.unsafe_ssl {
             config.tls.unsafe_ssl = unsafe_ssl;
         }
@@ -251,6 +257,9 @@ impl ConfigManager {
         }
         if let Some(binary_traffic_performance_mode) = update.binary_traffic_performance_mode {
             config.traffic.binary_traffic_performance_mode = binary_traffic_performance_mode;
+        }
+        if let Some(inject_bifrost_badge) = update.inject_bifrost_badge {
+            config.traffic.inject_bifrost_badge = inject_bifrost_badge;
         }
         if let Some(file_retention_days) = update.file_retention_days {
             config.traffic.file_retention_days = file_retention_days;
@@ -533,6 +542,7 @@ impl ConfigManager {
         self.change_notifier.subscribe()
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn notify(
         &self,
         event: ConfigChangeEvent,
@@ -625,6 +635,8 @@ impl ConfigManager {
                 intercept_include: legacy.intercept_include.clone(),
                 app_intercept_exclude: Vec::new(),
                 app_intercept_include: Vec::new(),
+                ip_intercept_exclude: Vec::new(),
+                ip_intercept_include: Vec::new(),
                 unsafe_ssl: false,
                 disconnect_on_change: legacy.disconnect_on_config_change,
             },
@@ -661,6 +673,7 @@ impl ConfigManager {
                 ws_payload_flush_bytes: legacy.traffic.ws_payload_flush_bytes,
                 ws_payload_flush_interval_ms: legacy.traffic.ws_payload_flush_interval_ms,
                 ws_payload_max_open_files: legacy.traffic.ws_payload_max_open_files,
+                inject_bifrost_badge: true,
             },
             sandbox: SandboxConfig::default(),
             paths: PathsConfig::for_data_dir(data_dir),

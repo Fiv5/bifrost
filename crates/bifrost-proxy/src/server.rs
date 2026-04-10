@@ -119,6 +119,8 @@ pub struct TlsInterceptConfig {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
 }
 
@@ -130,6 +132,8 @@ impl TlsInterceptConfig {
             intercept_include: config.intercept_include.clone(),
             app_intercept_exclude: config.app_intercept_exclude.clone(),
             app_intercept_include: config.app_intercept_include.clone(),
+            ip_intercept_exclude: config.ip_intercept_exclude.clone(),
+            ip_intercept_include: config.ip_intercept_include.clone(),
             unsafe_ssl: config.unsafe_ssl,
         }
     }
@@ -144,6 +148,8 @@ pub struct ProxyConfig {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub timeout_secs: u64,
     pub http1_max_header_size: usize,
     pub http2_max_header_list_size: usize,
@@ -162,6 +168,7 @@ pub struct ProxyConfig {
     pub max_body_buffer_size: usize,
     pub max_body_probe_size: usize,
     pub binary_traffic_performance_mode: bool,
+    pub inject_bifrost_badge: bool,
     pub enable_socks: bool,
 }
 
@@ -184,6 +191,8 @@ impl Default for ProxyConfig {
                 "*Arc*".to_string(),
                 "*Vivaldi*".to_string(),
             ],
+            ip_intercept_exclude: Vec::new(),
+            ip_intercept_include: Vec::new(),
             timeout_secs: 30,
             http1_max_header_size: 64 * 1024,
             http2_max_header_list_size: 256 * 1024,
@@ -202,6 +211,7 @@ impl Default for ProxyConfig {
             max_body_buffer_size: 10 * 1024 * 1024, // 10MB
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
+            inject_bifrost_badge: true,
             enable_socks: true,
         }
     }
@@ -717,6 +727,7 @@ impl ProxyServer {
                 .with_access_control(Arc::clone(&self.access_control))
                 .with_verbose_logging(self.config.verbose_logging)
                 .with_unsafe_ssl(self.config.unsafe_ssl)
+                .with_inject_bifrost_badge(self.config.inject_bifrost_badge)
                 .with_dns_resolver(Arc::clone(&self.dns_resolver))
                 .with_tls_intercept(
                     Arc::clone(&self.tls_config),
@@ -1123,6 +1134,8 @@ async fn handle_request(
                 intercept_include: runtime_config.intercept_include.clone(),
                 app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
                 app_intercept_include: runtime_config.app_intercept_include.clone(),
+                ip_intercept_exclude: runtime_config.ip_intercept_exclude.clone(),
+                ip_intercept_include: runtime_config.ip_intercept_include.clone(),
                 unsafe_ssl: runtime_config.unsafe_ssl,
             }
         } else {
@@ -1464,14 +1477,28 @@ async fn handle_request(
             }
         }
     } else {
-        let (unsafe_ssl, max_body_buffer_size) = if let Some(ref state) = admin_state {
-            (
-                state.runtime_config.read().await.unsafe_ssl,
-                state.get_max_body_buffer_size(),
-            )
-        } else {
-            (proxy_config.unsafe_ssl, proxy_config.max_body_buffer_size)
-        };
+        let (unsafe_ssl, max_body_buffer_size, inject_bifrost_badge) =
+            if let Some(ref state) = admin_state {
+                let unsafe_ssl = state.runtime_config.read().await.unsafe_ssl;
+                let inject_bifrost_badge = state
+                    .config_manager
+                    .as_ref()
+                    .and_then(|cm| cm.try_config())
+                    .map(|config| config.traffic.inject_bifrost_badge)
+                    .unwrap_or(proxy_config.inject_bifrost_badge);
+
+                (
+                    unsafe_ssl,
+                    state.get_max_body_buffer_size(),
+                    inject_bifrost_badge,
+                )
+            } else {
+                (
+                    proxy_config.unsafe_ssl,
+                    proxy_config.max_body_buffer_size,
+                    proxy_config.inject_bifrost_badge,
+                )
+            };
         let max_body_probe_size = if let Some(ref state) = admin_state {
             state.get_max_body_probe_size()
         } else {
@@ -1485,6 +1512,7 @@ async fn handle_request(
             unsafe_ssl,
             max_body_buffer_size,
             max_body_probe_size,
+            inject_bifrost_badge,
             &ctx,
             admin_state.clone(),
             Some(dns_resolver),
@@ -1841,6 +1869,8 @@ mod tests {
             intercept_include: vec!["*.api.com".to_string()],
             app_intercept_exclude: vec![],
             app_intercept_include: vec![],
+            ip_intercept_exclude: vec![],
+            ip_intercept_include: vec![],
             timeout_secs: 60,
             http1_max_header_size: 128 * 1024,
             http2_max_header_list_size: 512 * 1024,
@@ -1857,6 +1887,7 @@ mod tests {
             max_body_buffer_size: 10 * 1024 * 1024,
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
+            inject_bifrost_badge: true,
             enable_socks: true,
             userpass_auth: None,
             userpass_last_connected_at: HashMap::new(),

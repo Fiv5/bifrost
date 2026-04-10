@@ -1110,32 +1110,47 @@ test_websocket_forward() {
     echo "    请求: $test_url"
     echo "    目标: $target"
 
-    local tmpfile=$(mktemp)
-    local headers_file=$(mktemp)
-
-    # WebSocket 握手会升级连接并保持打开；如果 max-time 过大，curl 会一直等待直到超时，
-    # 导致测试套件耗时暴涨。这里使用独立的握手超时，确保只验证握手阶段。
     local ws_timeout="${WS_HANDSHAKE_TIMEOUT:-5}"
-    local ws_response_code
-    ws_response_code=$(curl -s -w "%{http_code}" \
-        --proxy "$PROXY" \
-        -k \
-        --connect-timeout 5 \
-        --max-time "$ws_timeout" \
-        -H "Upgrade: websocket" \
-        -H "Connection: Upgrade" \
-        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-        -H "Sec-WebSocket-Version: 13" \
-        -D "$headers_file" \
-        -o "$tmpfile" \
-        "$test_url" 2>/dev/null) || ws_response_code="000"
+    local ws_connect_timeout="${WS_CONNECT_TIMEOUT:-5}"
+    local ws_retries="${BIFROST_E2E_HTTP_RETRIES:-2}"
+    local attempt=0
+    local ws_response_code=""
+    local ws_headers=""
 
-    local ws_headers=$(cat "$headers_file" 2>/dev/null || echo "")
-    rm -f "$tmpfile" "$headers_file"
+    while [[ $attempt -le $ws_retries ]]; do
+        local tmpfile=$(mktemp)
+        local headers_file=$(mktemp)
 
-    if [[ "$ws_response_code" == "000" ]] && [[ "$ws_headers" == *"101"* ]]; then
-        ws_response_code="101"
-    fi
+        ws_response_code=$(curl -s -w "%{http_code}" \
+            --proxy "$PROXY" \
+            -k \
+            --connect-timeout "$ws_connect_timeout" \
+            --max-time "$ws_timeout" \
+            -H "Upgrade: websocket" \
+            -H "Connection: Upgrade" \
+            -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+            -H "Sec-WebSocket-Version: 13" \
+            -D "$headers_file" \
+            -o "$tmpfile" \
+            "$test_url" 2>/dev/null) || ws_response_code="000"
+
+        ws_headers=$(cat "$headers_file" 2>/dev/null || echo "")
+        rm -f "$tmpfile" "$headers_file"
+
+        if [[ "$ws_response_code" == "000" ]] && [[ "$ws_headers" == *"101"* ]]; then
+            ws_response_code="101"
+        fi
+
+        if [[ "$ws_response_code" == "101" ]]; then
+            break
+        fi
+
+        attempt=$((attempt + 1))
+        if [[ $attempt -le $ws_retries ]]; then
+            echo "    WebSocket 握手失败 (status=$ws_response_code)，重试 ${attempt}/${ws_retries}..."
+            sleep 2
+        fi
+    done
 
     assert_status "101" "$ws_response_code" "WebSocket 握手应返回 101"
     assert_header_contains "Upgrade" "websocket" "$ws_headers" "响应应包含 Upgrade: websocket"

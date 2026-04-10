@@ -648,6 +648,16 @@ export default function Settings() {
     );
   };
 
+  const handleInjectBifrostBadgeChange = (enabled: boolean) => {
+    updatePerfDraft({ inject_bifrost_badge: enabled });
+    schedulePerformanceUpdate(
+      "inject_bifrost_badge",
+      { inject_bifrost_badge: enabled },
+      enabled ? "Bifrost badge enabled" : "Bifrost badge disabled",
+      "Failed to update Bifrost badge setting",
+    );
+  };
+
   const handleFileRetentionDaysChange = (value: number) => {
     updatePerfDraft({ file_retention_days: value });
     schedulePerformanceUpdate(
@@ -681,6 +691,7 @@ export default function Settings() {
           fetchProxyAddressInfo(),
           fetchSystemProxy(),
           fetchCliProxy(),
+          fetchPerformanceConfig(),
         ]);
         break;
       case "certificate":
@@ -1037,6 +1048,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
           onToggleTlsInterception={handleTlsInterceptionToggle}
           onToggleUnsafeSsl={handleUnsafeSslToggle}
           onToggleDisconnectOnConfigChange={handleDisconnectOnConfigChangeToggle}
+          injectBifrostBadge={trafficDraft?.inject_bifrost_badge ?? null}
+          injectBifrostBadgeLoading={perfLoading}
+          onToggleInjectBifrostBadge={handleInjectBifrostBadgeChange}
           newIncludePattern={newIncludePattern}
           newExcludePattern={newExcludePattern}
           newAppIncludePattern={newAppIncludePattern}

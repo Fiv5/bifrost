@@ -397,6 +397,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "ipnet",
  "lazy_static 1.5.0",
  "libc",
  "memchr",

@@ -453,6 +453,12 @@ ensure_mock_servers_alive() {
     if ! is_https_echo_ready; then
         need_restart=true
     fi
+    if ! is_ws_echo_ready; then
+        need_restart=true
+    fi
+    if ! is_wss_echo_ready; then
+        need_restart=true
+    fi
 
     if [[ "$need_restart" == "false" ]]; then
         return 0
@@ -464,7 +470,7 @@ ensure_mock_servers_alive() {
     "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
     sleep 2
 
-    if is_http_echo_ready && is_https_echo_ready; then
+    if is_http_echo_ready && is_https_echo_ready && is_ws_echo_ready && is_wss_echo_ready; then
         echo -e "${GREEN}✓${NC} Mock 服务器已重启"
         return 0
     fi
@@ -578,6 +584,24 @@ is_http_echo_ready() {
 
 is_https_echo_ready() {
     curl -skf --connect-timeout 2 --max-time 5 "https://127.0.0.1:${HTTPS_PORT:-3443}/health" >/dev/null 2>&1
+}
+
+check_tcp_port_ready() {
+    local host=$1
+    local port=$2
+    if command -v nc &>/dev/null; then
+        nc -z "$host" "$port" >/dev/null 2>&1
+    else
+        (echo > /dev/tcp/"$host"/"$port") >/dev/null 2>&1
+    fi
+}
+
+is_ws_echo_ready() {
+    check_tcp_port_ready 127.0.0.1 "${ECHO_WS_PORT:-3020}"
+}
+
+is_wss_echo_ready() {
+    check_tcp_port_ready 127.0.0.1 "${ECHO_WSS_PORT:-3021}"
 }
 
 ensure_cargo_on_path
@@ -702,7 +726,7 @@ main() {
     sleep 2
 
     if is_http_echo_ready && is_https_echo_ready; then
-        echo -e "${GREEN}✓${NC} Mock 服务器已启动 (所有测试共享)"
+        echo -e "${GREEN}✓${NC} HTTP/HTTPS Mock 服务器已启动"
     else
         if ! is_http_echo_ready; then
             echo -e "${RED}✗${NC} HTTP Mock 服务器启动失败"
@@ -711,6 +735,26 @@ main() {
             echo -e "${RED}✗${NC} HTTPS Mock 服务器启动失败"
         fi
         exit 1
+    fi
+
+    local ws_wait=0
+    local ws_max_wait=15
+    while [[ $ws_wait -lt $ws_max_wait ]]; do
+        if is_ws_echo_ready && is_wss_echo_ready; then
+            break
+        fi
+        sleep 1
+        ws_wait=$((ws_wait + 1))
+    done
+    if is_ws_echo_ready && is_wss_echo_ready; then
+        echo -e "${GREEN}✓${NC} WebSocket Mock 服务器已启动 (${ws_wait}s)"
+    else
+        if ! is_ws_echo_ready; then
+            echo -e "${YELLOW}⚠${NC} WebSocket (ws) Mock 服务器未就绪"
+        fi
+        if ! is_wss_echo_ready; then
+            echo -e "${YELLOW}⚠${NC} WebSocket (wss) Mock 服务器未就绪"
+        fi
     fi
 
     header "收集测试文件"

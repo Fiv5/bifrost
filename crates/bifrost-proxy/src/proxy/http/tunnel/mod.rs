@@ -59,6 +59,7 @@ use crate::transform::collect_all_cookies_from_headers;
 use crate::transform::decompress::get_content_encoding;
 use crate::transform::merge_cookie_header_values;
 use crate::transform::{apply_body_rules, Phase};
+use crate::transform::{compress_body, maybe_inject_bifrost_badge_html};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
@@ -441,14 +442,30 @@ pub async fn handle_connect(
         );
     }
 
+    let client_ip_str = peer_addr.ip().to_string();
     let mut intercept = should_intercept_tls_for_client(
         &host,
         ctx.client_app.as_deref(),
         is_local_client,
+        Some(&client_ip_str),
         tls_intercept_config,
         &tls_config,
         &resolved_rules,
     );
+
+    if !is_local_client {
+        if let Some(ref state) = admin_state {
+            if let Some(ref ip_tls_mgr) = state.ip_tls_pending_manager {
+                let peer_ip = peer_addr.ip();
+                if !is_ip_included(&client_ip_str, &tls_intercept_config.ip_intercept_include)
+                    && !is_ip_excluded(&client_ip_str, &tls_intercept_config.ip_intercept_exclude)
+                    && !ip_tls_mgr.is_pending_or_decided(&peer_ip)
+                {
+                    ip_tls_mgr.check_and_add_pending(peer_ip);
+                }
+            }
+        }
+    }
 
     if !intercept
         && is_local_client
@@ -521,6 +538,12 @@ pub async fn handle_connect(
             .as_ref()
             .map(|s| s.get_max_body_probe_size())
             .unwrap_or(proxy_config.max_body_probe_size);
+        let inject_bifrost_badge = admin_state
+            .as_ref()
+            .and_then(|s| s.config_manager.as_ref())
+            .and_then(|cm| cm.try_config())
+            .map(|config| config.traffic.inject_bifrost_badge)
+            .unwrap_or(true);
         return handle_tls_interception(
             req,
             &host,
@@ -531,6 +554,7 @@ pub async fn handle_connect(
             max_body_buffer_size,
             max_body_probe_size,
             tls_intercept_config.unsafe_ssl,
+            inject_bifrost_badge,
             ctx,
             admin_state,
             push_manager,
@@ -792,6 +816,7 @@ async fn handle_tls_interception(
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
     push_manager: Option<SharedPushManager>,
@@ -856,6 +881,7 @@ async fn handle_tls_interception(
             max_body_buffer_size,
             max_body_probe_size,
             unsafe_ssl,
+            inject_bifrost_badge,
             &req_id,
             admin_state.clone(),
             cancel_rx,
@@ -910,6 +936,7 @@ async fn tls_intercept_tunnel(
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
     client_ip: String,
@@ -966,6 +993,7 @@ async fn tls_intercept_tunnel(
                 client_pid,
                 client_path,
                 push_manager,
+                inject_bifrost_badge,
             )
             .await
         }
@@ -1010,6 +1038,7 @@ async fn tls_intercept_tunnel_with_cancel(
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
     unsafe_ssl: bool,
+    inject_bifrost_badge: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
     cancel_rx: oneshot::Receiver<()>,
@@ -1098,6 +1127,7 @@ async fn tls_intercept_tunnel_with_cancel(
                 client_pid,
                 client_path,
                 push_manager,
+                inject_bifrost_badge,
             )
             .await
         }
@@ -1513,6 +1543,7 @@ async fn handle_intercepted_request_with_protocol(
     client_pid: Option<u32>,
     client_path: Option<String>,
     push_manager: Option<SharedPushManager>,
+    inject_bifrost_badge: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     if original_host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
         if let Some(state) = admin_state.clone() {
@@ -1730,11 +1761,7 @@ async fn handle_intercepted_request_with_protocol(
         method
     };
 
-    let original_req_headers: Vec<(String, String)> = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let original_req_headers: Vec<(String, String)> = super::headers_to_pairs(&parts.headers);
 
     let req_headers = original_req_headers.clone();
 
@@ -1983,7 +2010,9 @@ async fn handle_intercepted_request_with_protocol(
     };
     new_req = new_req.header(hyper::header::HOST, &host_header_value);
     if streaming_body.is_none() {
-        new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
+        if !body_bytes.is_empty() || req_content_length.is_some() {
+            new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
+        }
     } else if let Some(content_length) = req_content_length {
         new_req = new_req.header(hyper::header::CONTENT_LENGTH, content_length);
     }
@@ -2036,11 +2065,7 @@ async fn handle_intercepted_request_with_protocol(
     sanitize_upstream_headers(outgoing_req.headers_mut());
     outgoing_req.headers_mut().remove(hyper::header::HOST);
 
-    let final_req_headers: Vec<(String, String)> = outgoing_req
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let final_req_headers: Vec<(String, String)> = super::headers_to_pairs(outgoing_req.headers());
 
     if let Some(delay_ms) = resolved_rules.req_delay {
         if verbose_logging {
@@ -2095,7 +2120,12 @@ async fn handle_intercepted_request_with_protocol(
                     total_ms,
                 });
                 record.request_headers = Some(final_req_headers.clone());
-                record.original_request_headers = Some(original_req_headers.clone());
+                if !super::headers_pairs_equal_ignore_order(
+                    &original_req_headers,
+                    &final_req_headers,
+                ) {
+                    record.original_request_headers = Some(original_req_headers.clone());
+                }
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(error_msg);
@@ -2129,11 +2159,8 @@ async fn handle_intercepted_request_with_protocol(
     sanitize_upstream_headers(&mut upstream_parts.headers);
 
     #[cfg(feature = "http3")]
-    let req_headers_for_h3: Vec<(String, String)> = upstream_parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers_for_h3: Vec<(String, String)> =
+        super::headers_to_pairs(&upstream_parts.headers);
 
     #[cfg(feature = "http3")]
     let h3_dns_resolver = DnsResolver::new(verbose_logging);
@@ -2331,6 +2358,15 @@ async fn handle_intercepted_request_with_protocol(
         .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
+    let res_content_type_str = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    let force_body_processing_for_badge =
+        inject_bifrost_badge && res_content_type_str.starts_with("text/html");
+    let needs_processing = needs_processing || force_body_processing_for_badge;
     let has_res_body_override = resolved_rules.res_body.is_some();
     let needs_res_body_read = needs_processing && !has_res_body_override;
 
@@ -2465,11 +2501,14 @@ async fn handle_intercepted_request_with_protocol(
         let size_display = res_content_length
             .map(|len| len.to_string())
             .unwrap_or_else(|| format!(">{}", res_body_limit));
+        let skip_detail = if force_body_processing_for_badge {
+            "skipping body rules and badge injection"
+        } else {
+            "skipping body rules"
+        };
         warn!(
-            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
-            req_id,
-            size_display,
-            res_body_limit
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), {}, streaming forward",
+            req_id, size_display, res_body_limit, skip_detail
         );
     }
 
@@ -2529,7 +2568,12 @@ async fn handle_intercepted_request_with_protocol(
                 if res_headers != original_res_headers {
                     record.actual_response_headers = Some(res_headers.clone());
                 }
-                record.original_request_headers = Some(original_req_headers.clone());
+                if !super::headers_pairs_equal_ignore_order(
+                    &original_req_headers,
+                    &final_req_headers,
+                ) {
+                    record.original_request_headers = Some(original_req_headers.clone());
+                }
                 if actual_target_host != original_host || actual_target_port != original_port {
                     let actual_scheme = if actual_use_http { "http" } else { "https" };
                     let actual_url = if (actual_use_http && actual_target_port == 80)
@@ -2721,7 +2765,9 @@ async fn handle_intercepted_request_with_protocol(
         if res_headers != original_res_headers {
             record.actual_response_headers = Some(res_headers.clone());
         }
-        record.original_request_headers = Some(original_req_headers.clone());
+        if !super::headers_pairs_equal_ignore_order(&original_req_headers, &final_req_headers) {
+            record.original_request_headers = Some(original_req_headers.clone());
+        }
         if actual_target_host != original_host || actual_target_port != original_port {
             let actual_scheme = if actual_use_http { "http" } else { "https" };
             let actual_url = if (actual_use_http && actual_target_port == 80)
@@ -2834,6 +2880,52 @@ async fn handle_intercepted_request_with_protocol(
         verbose_logging,
         &ctx,
     );
+
+    let final_body = if inject_bifrost_badge {
+        let final_res_content_type = res_parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_lowercase();
+        if final_res_content_type.starts_with("text/html") {
+            if let Some(content_encoding) = get_content_encoding(&original_res_headers) {
+                match crate::transform::try_decompress_body_with_limit(
+                    final_body.as_ref(),
+                    &content_encoding,
+                    10 * 1024 * 1024,
+                ) {
+                    Ok(decompressed) => {
+                        let (injected_body, injected) =
+                            maybe_inject_bifrost_badge_html(Bytes::from(decompressed));
+                        if injected {
+                            match compress_body(injected_body.as_ref(), &content_encoding) {
+                                Ok(compressed) => Bytes::from(compressed),
+                                Err(_) => {
+                                    res_parts.headers.remove(hyper::header::CONTENT_ENCODING);
+                                    injected_body
+                                }
+                            }
+                        } else {
+                            final_body
+                        }
+                    }
+                    Err(_) => final_body,
+                }
+            } else {
+                let (injected_body, injected) = maybe_inject_bifrost_badge_html(final_body.clone());
+                if injected {
+                    injected_body
+                } else {
+                    final_body
+                }
+            }
+        } else {
+            final_body
+        }
+    } else {
+        final_body
+    };
 
     if original_res_body_len != final_body.len() {
         res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
@@ -3213,11 +3305,7 @@ async fn handle_intercepted_websocket(
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 
-    let req_headers: Vec<(String, String)> = req
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers: Vec<(String, String)> = super::headers_to_pairs(req.headers());
 
     if let Some(ref state) = admin_state {
         state
@@ -3560,6 +3648,39 @@ fn is_app_included(client_app: Option<&str>, include_list: &[String]) -> bool {
     is_app_matched(client_app, include_list)
 }
 
+fn is_ip_matched(client_ip: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+
+    let parsed_ip: std::net::IpAddr = match client_ip.parse() {
+        Ok(ip) => ip,
+        Err(_) => return false,
+    };
+
+    for pattern in patterns {
+        if let Ok(network) = pattern.parse::<ipnet::IpNet>() {
+            if network.contains(&parsed_ip) {
+                return true;
+            }
+        } else if let Ok(single_ip) = pattern.parse::<std::net::IpAddr>() {
+            if parsed_ip == single_ip {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn is_ip_excluded(client_ip: &str, exclude_list: &[String]) -> bool {
+    is_ip_matched(client_ip, exclude_list)
+}
+
+fn is_ip_included(client_ip: &str, include_list: &[String]) -> bool {
+    is_ip_matched(client_ip, include_list)
+}
+
 pub fn requires_client_app_for_tls_decision(tls_intercept_config: &TlsInterceptConfig) -> bool {
     !tls_intercept_config.app_intercept_include.is_empty()
         || !tls_intercept_config.app_intercept_exclude.is_empty()
@@ -3576,6 +3697,7 @@ pub fn should_intercept_tls(
         host,
         client_app,
         true,
+        None,
         tls_intercept_config,
         tls_config,
         resolved_rules,
@@ -3586,6 +3708,7 @@ pub fn should_intercept_tls_for_client(
     host: &str,
     client_app: Option<&str>,
     is_local_client: bool,
+    client_ip: Option<&str>,
     tls_intercept_config: &TlsInterceptConfig,
     tls_config: &TlsConfig,
     resolved_rules: &ResolvedRules,
@@ -3633,6 +3756,16 @@ pub fn should_intercept_tls_for_client(
 
     if is_domain_excluded(host, &tls_intercept_config.intercept_exclude) {
         return false;
+    }
+
+    if let Some(ip) = client_ip {
+        if is_ip_included(ip, &tls_intercept_config.ip_intercept_include) {
+            return true;
+        }
+
+        if is_ip_excluded(ip, &tls_intercept_config.ip_intercept_exclude) {
+            return false;
+        }
     }
 
     tls_intercept_config.enable_tls_interception
@@ -3933,6 +4066,8 @@ mod tests {
             intercept_include: include,
             app_intercept_exclude: vec![],
             app_intercept_include: vec![],
+            ip_intercept_exclude: vec![],
+            ip_intercept_include: vec![],
             unsafe_ssl: false,
         }
     }
@@ -4406,6 +4541,7 @@ mod tests {
             "example.com",
             None,
             false,
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -4456,5 +4592,224 @@ mod tests {
             !result,
             "App exclude should have higher priority than domain include"
         );
+    }
+
+    #[test]
+    fn test_ip_intercept_include_match() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(result, "IP in include list should force interception");
+    }
+
+    #[test]
+    fn test_ip_intercept_exclude_match() {
+        let mut config = make_tls_intercept_config(true, vec![], vec![]);
+        config.ip_intercept_exclude = vec!["10.0.0.50".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("10.0.0.50"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result,
+            "IP in exclude list should prevent interception even with global enabled"
+        );
+    }
+
+    #[test]
+    fn test_ip_intercept_cidr_match() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["10.0.0.0/8".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("10.1.2.3"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(result, "IP matching CIDR range should force interception");
+
+        let result2 = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.1"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result2,
+            "IP not in CIDR range should not match include list"
+        );
+    }
+
+    #[test]
+    fn test_ip_tls_priority_below_domain_include() {
+        let mut config = make_tls_intercept_config(false, vec![], vec!["example.com".to_string()]);
+        config.ip_intercept_exclude = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "Domain include should override IP exclude (higher priority)"
+        );
+    }
+
+    #[test]
+    fn test_ip_tls_priority_above_global() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "IP include should override global disabled (IP priority > global)"
+        );
+    }
+
+    #[test]
+    fn test_ip_include_priority_above_ip_exclude() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        config.ip_intercept_exclude = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("192.168.1.100"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "IP include should have higher priority than IP exclude"
+        );
+    }
+
+    #[test]
+    fn test_ip_no_match_falls_to_global() {
+        let mut config = make_tls_intercept_config(true, vec![], vec![]);
+        config.ip_intercept_include = vec!["10.0.0.1".to_string()];
+        config.ip_intercept_exclude = vec!["10.0.0.2".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("172.16.0.1"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "IP not in any list should fall through to global toggle"
+        );
+    }
+
+    #[test]
+    fn test_ip_none_skips_ip_check() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["192.168.1.100".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            true,
+            None,
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result,
+            "When client_ip is None, IP check should be skipped and fall to global"
+        );
+    }
+
+    #[test]
+    fn test_ip_intercept_ipv6() {
+        let mut config = make_tls_intercept_config(false, vec![], vec![]);
+        config.ip_intercept_include = vec!["::1".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            Some("::1"),
+            &config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(result, "IPv6 loopback should match");
+    }
+
+    #[test]
+    fn test_ip_matched_helper() {
+        assert!(is_ip_matched(
+            "192.168.1.1",
+            &["192.168.1.0/24".to_string()]
+        ));
+        assert!(!is_ip_matched("10.0.0.1", &["192.168.1.0/24".to_string()]));
+        assert!(is_ip_matched("10.0.0.1", &["10.0.0.1".to_string()]));
+        assert!(!is_ip_matched("10.0.0.2", &["10.0.0.1".to_string()]));
+        assert!(!is_ip_matched("invalid-ip", &["10.0.0.1".to_string()]));
+        assert!(is_ip_matched("fe80::1", &["fe80::/10".to_string()]));
+        assert!(!is_ip_matched("::1", &["fe80::/10".to_string()]));
     }
 }

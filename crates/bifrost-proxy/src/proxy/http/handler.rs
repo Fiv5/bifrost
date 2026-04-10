@@ -37,7 +37,10 @@ use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
 use crate::transform::collect_all_cookies_from_headers;
 use crate::transform::decompress_body_with_limit;
-use crate::transform::{apply_body_rules, apply_content_injection, Phase};
+use crate::transform::{
+    apply_body_rules, apply_content_injection, compress_body, maybe_inject_bifrost_badge_html,
+    try_decompress_body_with_limit, Phase,
+};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
@@ -75,7 +78,21 @@ fn get_traffic_type_from_url(url: &str) -> TrafficType {
     }
 }
 
-fn headers_to_pairs(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
+pub(crate) fn headers_pairs_equal_ignore_order(
+    a: &[(String, String)],
+    b: &[(String, String)],
+) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut a_sorted: Vec<(&str, &str)> = a.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut b_sorted: Vec<(&str, &str)> = b.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    a_sorted.sort();
+    b_sorted.sort();
+    a_sorted == b_sorted
+}
+
+pub(crate) fn headers_to_pairs(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
     let mut pairs = Vec::with_capacity(headers.len());
     let mut cookie_values: Vec<&str> = Vec::new();
     let mut cookie_insert_pos: Option<usize> = None;
@@ -394,15 +411,21 @@ fn should_use_metrics_only_forwarding_mode(
     skip_binary_recording && !needs_processing && !is_websocket && !is_sse
 }
 
-fn normalize_req_headers(parts: &mut hyper::http::request::Parts, mode: BodyMode) {
+fn normalize_req_headers(
+    parts: &mut hyper::http::request::Parts,
+    mode: BodyMode,
+    had_content_length: bool,
+) {
     match mode {
         BodyMode::Known(len) => {
             parts.headers.remove(hyper::header::TRANSFER_ENCODING);
             parts.headers.remove(hyper::header::CONTENT_LENGTH);
-            parts.headers.insert(
-                hyper::header::CONTENT_LENGTH,
-                HeaderValue::from_str(&len.to_string()).unwrap(),
-            );
+            if len > 0 || had_content_length {
+                parts.headers.insert(
+                    hyper::header::CONTENT_LENGTH,
+                    HeaderValue::from_str(&len.to_string()).unwrap(),
+                );
+            }
         }
         BodyMode::Stream | BodyMode::StreamWithTrailers => {
             parts.headers.remove(hyper::header::TRANSFER_ENCODING);
@@ -564,6 +587,7 @@ pub async fn handle_http_request(
     unsafe_ssl: bool,
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
+    inject_bifrost_badge: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
@@ -988,7 +1012,7 @@ pub async fn handle_http_request(
     } else {
         BodyMode::Known(final_body.len())
     };
-    normalize_req_headers(&mut parts, req_body_mode);
+    normalize_req_headers(&mut parts, req_body_mode, content_length.is_some());
     let req_headers = headers_to_pairs(&parts.headers);
     let mut req_headers_hashmap_cache: Option<HashMap<String, String>> = None;
     let request_body_size = if !final_body.is_empty() {
@@ -1063,12 +1087,15 @@ pub async fn handle_http_request(
                     receive_ms: None,
                     total_ms,
                 });
-                record.original_request_headers = Some(
-                    original_req_headers
+                {
+                    let orig = original_req_headers
                         .as_ref()
-                        .expect("request headers captured when admin state is enabled")
-                        .clone(),
-                );
+                        .expect("request headers captured when admin state is enabled");
+                    if !headers_pairs_equal_ignore_order(orig, &req_headers) {
+                        record.original_request_headers = Some(orig.clone());
+                    }
+                }
+                record.request_headers = Some(req_headers.clone());
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(error_msg.clone());
@@ -1146,11 +1173,7 @@ pub async fn handle_http_request(
     parts.headers.remove(hyper::header::HOST);
 
     #[cfg(feature = "http3")]
-    let req_headers_for_h3: Vec<(String, String)> = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers_for_h3: Vec<(String, String)> = headers_to_pairs(&parts.headers);
 
     #[cfg(feature = "http3")]
     let use_upstream_proxy = should_use_upstream_proxy(&resolved_rules);
@@ -1424,7 +1447,11 @@ pub async fn handle_http_request(
 
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, ctx);
 
-    let needs_processing = needs_body_processing(&resolved_rules);
+    let res_content_type = get_content_type(&res_parts);
+    let force_body_processing_for_badge =
+        inject_bifrost_badge && res_content_type.starts_with("text/html");
+    let needs_processing =
+        needs_body_processing(&resolved_rules) || force_body_processing_for_badge;
     let has_res_body_override = resolved_rules.res_body.is_some();
     let needs_res_body_read = needs_processing && !has_res_body_override;
 
@@ -1442,7 +1469,6 @@ pub async fn handle_http_request(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
 
-    let res_content_type = get_content_type(&res_parts);
     let is_sse = is_sse_response(&res_parts);
     let binary_traffic_performance_mode = admin_state
         .as_ref()
@@ -1451,7 +1477,8 @@ pub async fn handle_http_request(
     let skip_binary_recording =
         should_use_binary_performance_mode(&res_parts, binary_traffic_performance_mode)
             && !is_websocket
-            && !is_sse;
+            && !is_sse
+            && !needs_processing;
     let metrics_only_forwarding = should_use_metrics_only_forwarding_mode(
         skip_binary_recording,
         has_rules,
@@ -1542,11 +1569,17 @@ pub async fn handle_http_request(
         let size_display = res_content_length
             .map(|len| len.to_string())
             .unwrap_or_else(|| format!(">{}", res_body_limit));
+        let skip_detail = if force_body_processing_for_badge {
+            "skipping body rules and badge injection"
+        } else {
+            "skipping body rules"
+        };
         warn!(
-            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), {}, streaming forward",
             ctx.id_str(),
             size_display,
-            res_body_limit
+            res_body_limit,
+            skip_detail
         );
     }
 
@@ -1842,6 +1875,54 @@ pub async fn handle_http_request(
     } else {
         Vec::new()
     };
+
+    if inject_bifrost_badge {
+        let final_res_content_type = get_content_type(&res_parts);
+        if final_res_content_type.starts_with("text/html") {
+            if let Some(content_encoding) = response_content_encoding(&res_parts) {
+                match try_decompress_body_with_limit(
+                    final_res_body.as_ref(),
+                    &content_encoding,
+                    max_decompress_output_bytes,
+                ) {
+                    Ok(decompressed) => {
+                        let (injected_body, injected) =
+                            maybe_inject_bifrost_badge_html(Bytes::from(decompressed));
+                        if injected {
+                            match compress_body(injected_body.as_ref(), &content_encoding) {
+                                Ok(compressed) => {
+                                    final_res_body = Bytes::from(compressed);
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        "[{}] [BADGE] Failed to recompress response body ({}), fallback to identity",
+                                        ctx.id_str(),
+                                        e
+                                    );
+                                    res_parts.headers.remove(hyper::header::CONTENT_ENCODING);
+                                    final_res_body = injected_body;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "[{}] [BADGE] Skip badge injection: failed to decompress response body ({}).",
+                            ctx.id_str(),
+                            e
+                        );
+                    }
+                }
+            } else {
+                let (injected_body, injected) =
+                    maybe_inject_bifrost_badge_html(final_res_body.clone());
+                if injected {
+                    final_res_body = injected_body;
+                }
+            }
+        }
+    }
+
     normalize_res_headers(
         &mut res_parts,
         BodyMode::Known(final_res_body.len()),
@@ -1897,12 +1978,14 @@ pub async fn handle_http_request(
         if res_headers != *original_res_headers {
             record.actual_response_headers = Some(res_headers.clone());
         }
-        record.original_request_headers = Some(
-            original_req_headers
+        {
+            let orig = original_req_headers
                 .as_ref()
-                .expect("request headers captured when admin state is enabled")
-                .clone(),
-        );
+                .expect("request headers captured when admin state is enabled");
+            if !headers_pairs_equal_ignore_order(orig, &req_headers) {
+                record.original_request_headers = Some(orig.clone());
+            }
+        }
         if host != original_host || port != original_port {
             let actual_scheme = if use_tls { "https" } else { "http" };
             let actual_url = if (use_tls && port == 443) || (!use_tls && port == 80) {
@@ -2247,11 +2330,7 @@ async fn handle_http_websocket(
     }
     let has_rules = !resolved_rules.rules.is_empty() || resolved_rules.host.is_some();
 
-    let req_headers: Vec<(String, String)> = req
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers: Vec<(String, String)> = headers_to_pairs(req.headers());
 
     let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
         let parts: Vec<&str> = host_rule.split(':').collect();
@@ -2938,5 +3017,72 @@ mod tests {
 
         assert_eq!(pairs.len(), 2);
         assert!(pairs.iter().all(|(k, _)| k != "cookie"));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_same_content_different_order() {
+        let a = vec![
+            ("content-length".to_string(), "100".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+            ("host".to_string(), "example.com".to_string()),
+        ];
+        let b = vec![
+            ("accept".to_string(), "*/*".to_string()),
+            ("host".to_string(), "example.com".to_string()),
+            ("content-length".to_string(), "100".to_string()),
+        ];
+        assert!(headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_identical() {
+        let a = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(headers_pairs_equal_ignore_order(&a, &a));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_different_values() {
+        let a = vec![
+            ("host".to_string(), "foo.com".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        let b = vec![
+            ("host".to_string(), "bar.com".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(!headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_different_lengths() {
+        let a = vec![("host".to_string(), "example.com".to_string())];
+        let b = vec![
+            ("host".to_string(), "example.com".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(!headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_empty() {
+        let a: Vec<(String, String)> = vec![];
+        let b: Vec<(String, String)> = vec![];
+        assert!(headers_pairs_equal_ignore_order(&a, &b));
+    }
+
+    #[test]
+    fn test_headers_pairs_equal_ignore_order_different_keys() {
+        let a = vec![
+            ("x-custom".to_string(), "value".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        let b = vec![
+            ("x-other".to_string(), "value".to_string()),
+            ("accept".to_string(), "*/*".to_string()),
+        ];
+        assert!(!headers_pairs_equal_ignore_order(&a, &b));
     }
 }

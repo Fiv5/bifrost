@@ -45,14 +45,17 @@ export default function TrafficContextMenu({
     fetchConfig: fetchTlsConfig,
     addDomainToIntercept,
     addAppToIntercept,
+    addIpToIntercept,
     isDomainInIntercept,
     isAppInIntercept,
+    isIpInIntercept,
     config: tlsConfig,
   } = useTlsConfigStore();
 
   const isTunnel = record?.is_tunnel || record?.method === 'CONNECT';
   const hasHost = !!record?.host;
   const hasClientApp = !!record?.client_app;
+  const hasClientIp = !!record?.client_ip;
 
   const hasMultipleSelected = selectedRecords.length > 1;
 
@@ -64,6 +67,7 @@ export default function TrafficContextMenu({
 
   const domainAlreadyInIntercept = record?.host ? isDomainInIntercept(record.host) : false;
   const appAlreadyInIntercept = record?.client_app ? isAppInIntercept(record.client_app) : false;
+  const ipAlreadyInIntercept = record?.client_ip ? isIpInIntercept(record.client_ip) : false;
 
   useLayoutEffect(() => {
     const menuEl = menuRef.current;
@@ -233,6 +237,33 @@ export default function TrafficContextMenu({
     });
   }, [record, onClose, addAppToIntercept]);
 
+  const addIpToInterceptList = useCallback(() => {
+    if (!record?.client_ip) return;
+
+    const ip = record.client_ip;
+    onClose();
+
+    Modal.confirm({
+      title: 'Add Client IP to Intercept List',
+      content: `Add "${ip}" to IP TLS intercept list? This will enable HTTPS decryption for traffic from this IP.`,
+      okText: 'Add',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const success = await addIpToIntercept(ip);
+          if (success) {
+            showTlsWhitelistChangeSuccess(`Added "${ip}" to IP intercept list`);
+          } else {
+            message.error('Failed to add IP to intercept list');
+          }
+        } catch (error) {
+          message.error('Failed to add IP to intercept list');
+          console.error(error);
+        }
+      },
+    });
+  }, [record, onClose, addIpToIntercept]);
+
   const replayRequest = useCallback(async () => {
     if (!record) return;
     onClose();
@@ -267,8 +298,16 @@ export default function TrafficContextMenu({
         onClick: addAppToInterceptList,
       });
     }
+    if (hasClientIp && !ipAlreadyInIntercept) {
+      items.push({
+        key: 'add-ip-intercept',
+        icon: <UnlockOutlined />,
+        label: `Intercept IP ${record?.client_ip}`,
+        onClick: addIpToInterceptList,
+      });
+    }
     return items;
-  }, [hasHost, hasClientApp, domainAlreadyInIntercept, appAlreadyInIntercept, record, addDomainToInterceptList, addAppToInterceptList]);
+  }, [hasHost, hasClientApp, hasClientIp, domainAlreadyInIntercept, appAlreadyInIntercept, ipAlreadyInIntercept, record, addDomainToInterceptList, addAppToInterceptList, addIpToInterceptList]);
 
   if (!visible || !record) return null;
 

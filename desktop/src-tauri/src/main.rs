@@ -368,6 +368,7 @@ fn create_main_webview(window: &Window) -> tauri::Result<()> {
     let webview = WebviewBuilder::new(MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
         .background_color(Color(8, 17, 23, 255))
         .auto_resize()
+        .disable_drag_drop_handler()
         .on_page_load(|webview, payload| {
             if let Some(state) = webview.try_state::<BackendState>() {
                 if payload.event() == tauri::webview::PageLoadEvent::Finished {

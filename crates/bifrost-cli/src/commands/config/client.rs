@@ -396,6 +396,8 @@ pub struct TlsConfigResponse {
     pub intercept_include: Vec<String>,
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
+    pub ip_intercept_exclude: Vec<String>,
+    pub ip_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_config_change: bool,
 }
@@ -432,6 +434,10 @@ pub struct UpdateTlsConfigRequest {
     pub app_intercept_exclude: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_intercept_include: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_intercept_exclude: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_intercept_include: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unsafe_ssl: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
