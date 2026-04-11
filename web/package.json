@@ -23,7 +23,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@tanstack/react-virtual": "^3.13.18",
     "antd": "^6.2.3",
-    "axios": "^1.13.5",
+    "axios": "^1.15.0",
     "dayjs": "^1.11.19",
     "echarts": "^6.0.0",
     "echarts-for-react": "^3.0.5",
