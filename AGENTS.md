@@ -136,6 +136,10 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsa
   cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
   ```
 
+## 代码格式化要求（Cargo Fmt）
+
+**所有 Rust 代码在提交或推送至远端前，必须执行 `cargo fmt --all -- --check` 检查。如果不符合规范，必须执行 `cargo fmt --all` 进行格式化后再提交，以保证通过 CI 流水线的代码风格检查。**
+
 ## 日志配置规范
 
 ### 日志级别优先级（从高到低）
