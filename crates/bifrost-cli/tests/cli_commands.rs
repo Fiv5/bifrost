@@ -791,7 +791,8 @@ fn ca_subcommands_parse() {
 fn rule_subcommands_complete_list() {
     let help = run_help(&["rule"]);
     for sub in &[
-        "list", "add", "update", "delete", "enable", "disable", "show", "rename", "reorder",
+        "list", "active", "add", "update", "delete", "enable", "disable", "show", "rename",
+        "reorder",
     ] {
         assert!(
             help.contains(sub),

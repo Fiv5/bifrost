@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { theme, Badge, Tooltip } from "antd";
-import { ThunderboltOutlined, TeamOutlined, WarningOutlined } from "@ant-design/icons";
+import { ThunderboltOutlined, TeamOutlined, WarningOutlined, CodeOutlined } from "@ant-design/icons";
 import { getActiveSummary, type ActiveRuleItem, type VariableConflict } from "../../api/rules";
 import { useRulesStore } from "../../stores/useRulesStore";
 
@@ -19,6 +19,8 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
   );
   const [activeRules, setActiveRules] = useState<ActiveRuleItem[]>([]);
   const [variableConflicts, setVariableConflicts] = useState<VariableConflict[]>([]);
+  const [mergedContent, setMergedContent] = useState("");
+  const [showMerged, setShowMerged] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef({
     startX: 0,
@@ -38,12 +40,14 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
         if (id === requestIdRef.current) {
           setActiveRules(resp.rules);
           setVariableConflicts(resp.variable_conflicts ?? []);
+          setMergedContent(resp.merged_content ?? "");
         }
       })
       .catch(() => {
         if (id === requestIdRef.current) {
           setActiveRules([]);
           setVariableConflicts([]);
+          setMergedContent("");
         }
       });
   }, []);
@@ -245,9 +249,10 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
             left: "50%",
             transform: "translateX(-50%)",
             marginTop: 4,
-            minWidth: 240,
-            maxWidth: 380,
-            maxHeight: 400,
+            minWidth: 360,
+            maxWidth: 570,
+            width: "max-content",
+            maxHeight: 500,
             overflowY: "auto",
             backgroundColor: token.colorBgElevated,
             border: `1px solid ${token.colorBorderSecondary}`,
@@ -380,6 +385,50 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
               ))}
             </div>
           ))}
+          {mergedContent.trim() && (
+            <div style={{ margin: "4px 12px 8px" }}>
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowMerged((v) => !v);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 4px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: token.colorPrimary,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  borderTop: `1px solid ${token.colorBorderSecondary}`,
+                }}
+              >
+                <CodeOutlined style={{ fontSize: 11 }} />
+                {showMerged ? "Hide" : "Show"} Merged Rules
+              </div>
+              {showMerged && (
+                <pre
+                  style={{
+                    margin: 0,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    backgroundColor: token.colorFillQuaternary,
+                    border: `1px solid ${token.colorBorderSecondary}`,
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    fontFamily: "monospace",
+                    color: token.colorText,
+                    whiteSpace: "pre",
+                    overflowX: "auto",
+                  }}
+                >
+                  {mergedContent.trim()}
+                </pre>
+              )}
+            </div>
+          )}
         </div>
       )}
 

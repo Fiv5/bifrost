@@ -11,6 +11,7 @@ use bifrost_proxy::{
     ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
+use bifrost_storage::RulesStorage;
 use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator, SniResolver};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -1235,12 +1236,16 @@ impl ProxyInstance {
                 .expect("failed to create traffic db store"),
         );
 
-        let frame_store = Arc::new(bifrost_admin::FrameStore::new(temp_dir, Some(24)));
+        let frame_store = Arc::new(bifrost_admin::FrameStore::new(temp_dir.clone(), Some(24)));
         std::mem::drop(start_frame_cleanup_task(frame_store.clone()));
 
         let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
         let _async_traffic_task =
             start_async_traffic_processor(async_traffic_rx, traffic_db_store.clone());
+
+        let rules_dir = temp_dir.join("rules");
+        let rules_storage =
+            RulesStorage::with_dir(rules_dir).expect("failed to create temp rules storage");
 
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
@@ -1249,7 +1254,8 @@ impl ProxyInstance {
             .with_ws_payload_store(ws_payload_store)
             .with_traffic_db_store_shared(traffic_db_store)
             .with_async_traffic_writer(async_traffic_writer)
-            .with_frame_store_shared(frame_store);
+            .with_frame_store_shared(frame_store)
+            .with_rules_storage(rules_storage);
         std::mem::drop(start_connection_cleanup_task(
             admin_state.connection_monitor.clone(),
         ));
@@ -1418,6 +1424,10 @@ impl ProxyInstance {
                 .expect("failed to create sync manager"),
         );
 
+        let rules_dir = temp_dir.join("rules");
+        let rules_storage =
+            RulesStorage::with_dir(rules_dir).expect("failed to create temp rules storage");
+
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
@@ -1426,7 +1436,8 @@ impl ProxyInstance {
             .with_traffic_db_store_shared(traffic_db_store)
             .with_async_traffic_writer(async_traffic_writer)
             .with_frame_store_shared(frame_store)
-            .with_sync_manager_shared(sync_manager);
+            .with_sync_manager_shared(sync_manager)
+            .with_rules_storage(rules_storage);
         std::mem::drop(start_connection_cleanup_task(
             admin_state.connection_monitor.clone(),
         ));

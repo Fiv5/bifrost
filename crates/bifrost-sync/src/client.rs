@@ -118,12 +118,21 @@ impl SyncHttpClient {
         if response.status().as_u16() == 401 {
             return Ok(None);
         }
+        if !response.status().is_success() {
+            return Err(BifrostError::Network(format!(
+                "sync user info returned HTTP {}",
+                response.status()
+            )));
+        }
         let body = response
             .json::<ApiEnvelope<UserEnvelope>>()
             .await
             .map_err(|e| BifrostError::Network(format!("invalid sync user info response: {e}")))?;
         if body.code != 0 {
-            return Ok(None);
+            return Err(BifrostError::Network(format!(
+                "sync user info returned error code: {}",
+                body.code
+            )));
         }
         let Some(data) = body.data else {
             return Ok(None);

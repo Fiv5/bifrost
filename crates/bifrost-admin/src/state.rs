@@ -881,6 +881,27 @@ impl AdminState {
             }
         }
     }
+
+    pub fn clear_group_name_cache(&self) {
+        {
+            let mut cache = self.group_name_cache.lock();
+            cache.clear();
+        }
+        let path = self.group_cache_path();
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!(
+                    target: "bifrost_admin::state",
+                    error = %e,
+                    "failed to remove group name cache file"
+                );
+            }
+        }
+        tracing::info!(
+            target: "bifrost_admin::state",
+            "group name cache cleared"
+        );
+    }
 }
 
 pub struct GroupNameCacheGuard<'a> {

@@ -87,7 +87,7 @@ struct SerializedDetailFields {
     raw_req_body_blob: SerializedBlob,
     raw_res_body_blob: SerializedBlob,
     orig_req_headers_blob: SerializedBlob,
-    actual_res_headers_blob: SerializedBlob,
+    res_headers_modified_blob: SerializedBlob,
     req_script_results_blob: SerializedBlob,
     res_script_results_blob: SerializedBlob,
     decode_req_results_blob: SerializedBlob,
@@ -346,7 +346,7 @@ impl TrafficDbStore {
             .as_ref()
             .and_then(|h| bincode::serialize(h).ok());
         let res_headers_blob = record
-            .response_headers
+            .original_response_headers
             .as_ref()
             .and_then(|h| bincode::serialize(h).ok());
         let rules_blob = record
@@ -381,8 +381,8 @@ impl TrafficDbStore {
             .original_request_headers
             .as_ref()
             .and_then(|h| bincode::serialize(h).ok());
-        let actual_res_headers_blob = record
-            .actual_response_headers
+        let res_headers_modified_blob = record
+            .response_headers
             .as_ref()
             .and_then(|h| bincode::serialize(h).ok());
         let req_script_results_blob = record
@@ -414,7 +414,7 @@ impl TrafficDbStore {
             raw_req_body_blob,
             raw_res_body_blob,
             orig_req_headers_blob,
-            actual_res_headers_blob,
+            res_headers_modified_blob,
             req_script_results_blob,
             res_script_results_blob,
             decode_req_results_blob,
@@ -451,7 +451,7 @@ impl TrafficDbStore {
             raw_req_body_blob,
             raw_res_body_blob,
             orig_req_headers_blob,
-            actual_res_headers_blob,
+            res_headers_modified_blob,
             req_script_results_blob,
             res_script_results_blob,
             decode_req_results_blob,
@@ -508,7 +508,7 @@ impl TrafficDbStore {
                 &record.actual_url,
                 &record.actual_host,
                 orig_req_headers_blob,
-                actual_res_headers_blob,
+                res_headers_modified_blob,
                 socket_status_blob,
                 req_script_results_blob,
                 res_script_results_blob,
@@ -673,7 +673,7 @@ impl TrafficDbStore {
             raw_req_body_blob,
             raw_res_body_blob,
             orig_req_headers_blob,
-            actual_res_headers_blob,
+            res_headers_modified_blob,
             req_script_results_blob,
             res_script_results_blob,
             decode_req_results_blob,
@@ -724,7 +724,7 @@ impl TrafficDbStore {
                     &record.actual_url,
                     &record.actual_host,
                     orig_req_headers_blob,
-                    actual_res_headers_blob,
+                    res_headers_modified_blob,
                     socket_status_blob,
                     req_script_results_blob,
                     res_script_results_blob,
@@ -921,7 +921,7 @@ impl TrafficDbStore {
             columns.push("td.request_headers_blob");
         }
         if need_response_headers {
-            columns.push("td.response_headers_blob");
+            columns.push("td.original_response_headers_blob");
         }
         if need_request_body_ref {
             columns.push("td.request_body_ref_blob");
@@ -1199,7 +1199,7 @@ impl TrafficDbStore {
             last_frame_id: row.get::<_, i64>("last_frame_id")? as u64,
             timing: None,
             request_headers: None,
-            response_headers: None,
+            original_response_headers: None,
             matched_rules: None,
             socket_status: build_socket_status_summary(
                 row.get::<_, bool>("socket_is_open")?,
@@ -1217,7 +1217,7 @@ impl TrafficDbStore {
             actual_url: None,
             actual_host: None,
             original_request_headers: None,
-            actual_response_headers: None,
+            response_headers: None,
             error_message: None,
             req_script_results: None,
             res_script_results: None,
@@ -1229,10 +1229,10 @@ impl TrafficDbStore {
     fn load_record_details(conn: &Connection, id: &str, record: &mut TrafficRecord) {
         let _ = conn
             .query_row(
-                "SELECT timing_blob, request_headers_blob, response_headers_blob, \
+                "SELECT timing_blob, request_headers_blob, original_response_headers_blob, \
                  matched_rules_blob, request_body_ref_blob, response_body_ref_blob, \
                  derived_response_body_ref_blob, raw_request_body_ref_blob, raw_response_body_ref_blob, actual_url, actual_host, \
-                 original_request_headers_blob, actual_response_headers_blob, \
+                 original_request_headers_blob, response_headers_blob, \
                  socket_status_blob, req_script_results_blob, res_script_results_blob, \
                  decode_req_script_results_blob, decode_res_script_results_blob, error_message \
                  FROM traffic_record_details WHERE id = ?",
@@ -1248,7 +1248,7 @@ impl TrafficDbStore {
                     let raw_req_body_blob: Option<Vec<u8>> = row.get(7)?;
                     let raw_res_body_blob: Option<Vec<u8>> = row.get(8)?;
                     let orig_req_headers_blob: Option<Vec<u8>> = row.get(11)?;
-                    let actual_res_headers_blob: Option<Vec<u8>> = row.get(12)?;
+                    let res_headers_modified_blob: Option<Vec<u8>> = row.get(12)?;
                     let socket_status_blob: Option<Vec<u8>> = row.get(13)?;
                     let req_script_results_blob: Option<Vec<u8>> = row.get(14)?;
                     let res_script_results_blob: Option<Vec<u8>> = row.get(15)?;
@@ -1258,7 +1258,7 @@ impl TrafficDbStore {
                     record.timing = timing_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.request_headers =
                         req_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
-                    record.response_headers =
+                    record.original_response_headers =
                         res_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.matched_rules = rules_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.request_body_ref =
@@ -1275,8 +1275,8 @@ impl TrafficDbStore {
                     record.actual_host = row.get(10)?;
                     record.original_request_headers =
                         orig_req_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
-                    record.actual_response_headers =
-                        actual_res_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.response_headers =
+                        res_headers_modified_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.socket_status = socket_status_blob
                         .and_then(|b| bincode::deserialize(&b).ok())
                         .or_else(|| record.socket_status.clone());
@@ -1989,7 +1989,7 @@ mod tests {
             "https://a.com/p1".to_string(),
         );
         record.request_headers = Some(vec![("X-Test".to_string(), "1".to_string())]);
-        record.response_headers = Some(vec![("Y-Test".to_string(), "2".to_string())]);
+        record.original_response_headers = Some(vec![("Y-Test".to_string(), "2".to_string())]);
         record.request_body_ref = Some(BodyRef::Inline {
             data: "hello".to_string(),
         });
@@ -2041,7 +2041,8 @@ mod tests {
             "Content-Type".to_string(),
             "application/json".to_string(),
         )]);
-        record.response_headers = Some(vec![("X-Trace".to_string(), "trace-1".to_string())]);
+        record.original_response_headers =
+            Some(vec![("X-Trace".to_string(), "trace-1".to_string())]);
         record.request_body_ref = Some(BodyRef::Inline {
             data: "{\"hello\":1}".to_string(),
         });

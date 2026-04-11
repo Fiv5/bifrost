@@ -112,7 +112,7 @@ pub struct TrafficRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_headers: Option<Vec<(String, String)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_headers: Option<Vec<(String, String)>>,
+    pub original_response_headers: Option<Vec<(String, String)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_body_ref: Option<BodyRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,7 +142,7 @@ pub struct TrafficRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_request_headers: Option<Vec<(String, String)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actual_response_headers: Option<Vec<(String, String)>>,
+    pub response_headers: Option<Vec<(String, String)>>,
     #[serde(default)]
     pub is_tunnel: bool,
     #[serde(default)]
@@ -211,7 +211,7 @@ impl TrafficRecord {
             duration_ms: 0,
             timing: None,
             request_headers: None,
-            response_headers: None,
+            original_response_headers: None,
             request_body_ref: None,
             response_body_ref: None,
             derived_response_body_ref: None,
@@ -227,7 +227,7 @@ impl TrafficRecord {
             actual_url: None,
             actual_host: None,
             original_request_headers: None,
-            actual_response_headers: None,
+            response_headers: None,
             is_tunnel: false,
             has_rule_hit: false,
             matched_rules: None,

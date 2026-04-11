@@ -2179,13 +2179,13 @@ async fn handle_intercepted_request_with_protocol(
                             .push(("x-bifrost-error".to_string(), error_type.to_string()));
                     }
                     if !res_header_pairs.is_empty() {
-                        record.response_headers = Some(res_header_pairs);
+                        record.original_response_headers = Some(res_header_pairs);
                     }
                 }
 
                 record.response_size = calculate_response_size(
                     record.status,
-                    record.response_headers.as_deref().unwrap_or(&[]),
+                    record.original_response_headers.as_deref().unwrap_or(&[]),
                     response_body.len(),
                 );
 
@@ -2614,9 +2614,9 @@ async fn handle_intercepted_request_with_protocol(
                     total_ms,
                 });
                 record.request_headers = Some(final_req_headers.clone());
-                record.response_headers = Some(original_res_headers.clone());
+                record.original_response_headers = Some(original_res_headers.clone());
                 if res_headers != original_res_headers {
-                    record.actual_response_headers = Some(res_headers.clone());
+                    record.response_headers = Some(res_headers.clone());
                 }
                 if !super::headers_pairs_equal_ignore_order(
                     &original_req_headers,
@@ -2811,9 +2811,9 @@ async fn handle_intercepted_request_with_protocol(
             total_ms,
         });
         record.request_headers = Some(final_req_headers.clone());
-        record.response_headers = Some(original_res_headers.clone());
+        record.original_response_headers = Some(original_res_headers.clone());
         if res_headers != original_res_headers {
-            record.actual_response_headers = Some(res_headers.clone());
+            record.response_headers = Some(res_headers.clone());
         }
         if !super::headers_pairs_equal_ignore_order(&original_req_headers, &final_req_headers) {
             record.original_request_headers = Some(original_req_headers.clone());

@@ -996,16 +996,14 @@ fn print_traffic_detail(record: &Value, _format: OutputFormat) {
         "request_headers",
         "original_request_headers",
         "Request Headers",
-        true,
         use_color,
     );
 
     print_headers_section(
         record,
-        "actual_response_headers",
         "response_headers",
+        "original_response_headers",
         "Response Headers",
-        false,
         use_color,
     );
 
@@ -1054,7 +1052,6 @@ fn print_headers_section(
     current_key: &str,
     original_key: &str,
     title: &str,
-    is_request: bool,
     use_color: bool,
 ) {
     let bold = if use_color { "\x1b[1;37m" } else { "" };
@@ -1064,22 +1061,9 @@ fn print_headers_section(
     let red = if use_color { "\x1b[31m" } else { "" };
     let reset = if use_color { "\x1b[0m" } else { "" };
 
-    let current_headers = if is_request {
-        record.get(current_key).and_then(|v| v.as_array())
-    } else {
-        record
-            .get(current_key)
-            .and_then(|v| v.as_array())
-            .or_else(|| record.get("response_headers").and_then(|v| v.as_array()))
-    };
-
+    let current_headers = record.get(current_key).and_then(|v| v.as_array());
     let original_headers = record.get(original_key).and_then(|v| v.as_array());
-
-    let has_modifications = if is_request {
-        original_headers.is_some()
-    } else {
-        record.get(current_key).and_then(|v| v.as_array()).is_some()
-    };
+    let has_modifications = original_headers.is_some();
 
     if let Some(headers) = current_headers {
         println!();

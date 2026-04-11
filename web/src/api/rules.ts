@@ -23,6 +23,7 @@ export interface ActiveSummaryResponse {
   total: number;
   rules: ActiveRuleItem[];
   variable_conflicts: VariableConflict[];
+  merged_content: string;
 }
 
 export async function getActiveSummary(): Promise<ActiveSummaryResponse> {

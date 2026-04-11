@@ -708,7 +708,7 @@ pub async fn handle_http_request(
                 total_ms,
             });
             record.request_headers = Some(req_headers_pairs);
-            record.response_headers = Some(mock_res_headers);
+            record.original_response_headers = Some(mock_res_headers);
             record.has_rule_hit = has_rules;
             record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
             record.client_ip = ctx.client_ip.clone();
@@ -723,7 +723,7 @@ pub async fn handle_http_request(
             };
             record.response_size = calculate_response_size(
                 mock_status,
-                record.response_headers.as_deref().unwrap_or(&[]),
+                record.original_response_headers.as_deref().unwrap_or(&[]),
                 mock_body_len,
             );
             state.record_traffic(record);
@@ -1219,13 +1219,13 @@ pub async fn handle_http_request(
                             .push(("x-bifrost-error".to_string(), error_type.to_string()));
                     }
                     if !res_header_pairs.is_empty() {
-                        record.response_headers = Some(res_header_pairs);
+                        record.original_response_headers = Some(res_header_pairs);
                     }
                 }
 
                 record.response_size = calculate_response_size(
                     record.status,
-                    record.response_headers.as_deref().unwrap_or(&[]),
+                    record.original_response_headers.as_deref().unwrap_or(&[]),
                     response_body.len(),
                 );
 
@@ -1766,9 +1766,9 @@ pub async fn handle_http_request(
                     total_ms,
                 });
                 record.request_headers = Some(req_headers.clone());
-                record.response_headers = Some(original_res_headers.clone());
+                record.original_response_headers = Some(original_res_headers.clone());
                 if res_headers != *original_res_headers {
-                    record.actual_response_headers = Some(res_headers.clone());
+                    record.response_headers = Some(res_headers.clone());
                 }
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
@@ -2070,9 +2070,9 @@ pub async fn handle_http_request(
             total_ms,
         });
         record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(original_res_headers.clone());
+        record.original_response_headers = Some(original_res_headers.clone());
         if res_headers != *original_res_headers {
-            record.actual_response_headers = Some(res_headers.clone());
+            record.response_headers = Some(res_headers.clone());
         }
         {
             let orig = original_req_headers
@@ -2574,7 +2574,7 @@ async fn handle_http_websocket(
             total_ms,
         });
         record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(response_headers.clone());
+        record.original_response_headers = Some(response_headers.clone());
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         record.client_ip = ctx.client_ip.clone();

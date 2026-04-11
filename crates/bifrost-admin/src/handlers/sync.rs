@@ -106,7 +106,11 @@ pub async fn handle_sync(
     if path == "/api/sync/logout" || path == "/api/sync/logout/" {
         return match req.method() {
             &Method::POST => match sync_manager.logout().await {
-                Ok(status) => json_response(&status),
+                Ok(status) => {
+                    state.clear_group_name_cache();
+                    super::rules::notify_rules_changed_pub(&state);
+                    json_response(&status)
+                }
                 Err(error) => error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     &format!("Failed to clear sync session: {error}"),

@@ -85,6 +85,7 @@ struct ActiveSummaryResponse {
     total: usize,
     rules: Vec<ActiveRuleItem>,
     variable_conflicts: Vec<VariableConflict>,
+    merged_content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,15 +213,52 @@ fn collect_enabled_from_storage(
     group_id: Option<&str>,
     group_name: Option<&str>,
     var_map: &mut HashMap<String, Vec<InlineVarEntry>>,
+    content_parts: &mut Vec<String>,
 ) -> Vec<ActiveRuleItem> {
-    let names = match storage.list() {
-        Ok(n) => n,
+    let rules = match storage.load_enabled() {
+        Ok(r) => r,
         Err(_) => return Vec::new(),
     };
     let mut items = Vec::new();
-    for name in &names {
-        if let Ok(rule) = storage.load(name) {
-            if rule.enabled {
+    for rule in rules {
+        let rule_count = rule
+            .content
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with('#')
+            })
+            .count();
+
+        let inline_vars = extract_inline_variables(&rule.content);
+        for (var_name, var_value) in inline_vars {
+            var_map.entry(var_name).or_default().push(InlineVarEntry {
+                rule_name: rule.name.clone(),
+                group_id: group_id.map(|s| s.to_string()),
+                value: var_value,
+            });
+        }
+
+        content_parts.push(rule.content.clone());
+
+        items.push(ActiveRuleItem {
+            name: rule.name,
+            rule_count,
+            group_id: group_id.map(|s| s.to_string()),
+            group_name: group_name.map(|s| s.to_string()),
+        });
+    }
+    items
+}
+
+async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
+    let mut all_rules = Vec::new();
+    let mut var_map: HashMap<String, Vec<InlineVarEntry>> = HashMap::new();
+    let mut content_parts: Vec<String> = Vec::new();
+
+    match state.rules_storage.load_enabled() {
+        Ok(rules) => {
+            for rule in rules {
                 let rule_count = rule
                     .content
                     .lines()
@@ -234,58 +272,19 @@ fn collect_enabled_from_storage(
                 for (var_name, var_value) in inline_vars {
                     var_map.entry(var_name).or_default().push(InlineVarEntry {
                         rule_name: rule.name.clone(),
-                        group_id: group_id.map(|s| s.to_string()),
+                        group_id: None,
                         value: var_value,
                     });
                 }
 
-                items.push(ActiveRuleItem {
+                content_parts.push(rule.content.clone());
+
+                all_rules.push(ActiveRuleItem {
                     name: rule.name,
                     rule_count,
-                    group_id: group_id.map(|s| s.to_string()),
-                    group_name: group_name.map(|s| s.to_string()),
+                    group_id: None,
+                    group_name: None,
                 });
-            }
-        }
-    }
-    items
-}
-
-async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
-    let mut all_rules = Vec::new();
-    let mut var_map: HashMap<String, Vec<InlineVarEntry>> = HashMap::new();
-
-    match state.rules_storage.list() {
-        Ok(names) => {
-            for name in &names {
-                if let Ok(rule) = state.rules_storage.load(name) {
-                    if rule.enabled {
-                        let rule_count = rule
-                            .content
-                            .lines()
-                            .filter(|l| {
-                                let t = l.trim();
-                                !t.is_empty() && !t.starts_with('#')
-                            })
-                            .count();
-
-                        let inline_vars = extract_inline_variables(&rule.content);
-                        for (var_name, var_value) in inline_vars {
-                            var_map.entry(var_name).or_default().push(InlineVarEntry {
-                                rule_name: rule.name.clone(),
-                                group_id: None,
-                                value: var_value,
-                            });
-                        }
-
-                        all_rules.push(ActiveRuleItem {
-                            name: rule.name,
-                            rule_count,
-                            group_id: None,
-                            group_name: None,
-                        });
-                    }
-                }
             }
         }
         Err(e) => {
@@ -417,16 +416,20 @@ async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
             group_id.as_deref(),
             Some(dir_name),
             &mut var_map,
+            &mut content_parts,
         );
         all_rules.extend(group_rules);
     }
 
     let variable_conflicts = build_variable_conflicts(var_map);
 
+    let merged_content = content_parts.join("\n");
+
     let resp = ActiveSummaryResponse {
         total: all_rules.len(),
         rules: all_rules,
         variable_conflicts,
+        merged_content,
     };
     json_response(&resp)
 }
