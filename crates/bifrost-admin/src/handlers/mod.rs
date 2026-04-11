@@ -1,4 +1,6 @@
 pub mod app_icon;
+pub mod auth;
+pub mod audit;
 pub mod bifrost_file;
 pub mod cert;
 pub mod config;

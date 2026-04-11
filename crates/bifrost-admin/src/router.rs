@@ -2,7 +2,9 @@ use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use tracing::debug;
 
 use crate::handlers::{
+    auth::{extract_bearer_token, handle_auth},
     app_icon::handle_app_icon,
+    audit::handle_audit,
     bifrost_file::handle_bifrost_file,
     cert::{handle_cert, handle_cert_public, handle_proxy_public},
     config::handle_config,
@@ -31,7 +33,7 @@ use crate::handlers::{
 use crate::push::SharedPushManager;
 use crate::state::SharedAdminState;
 use crate::static_files::serve_static_file;
-use crate::ADMIN_PATH_PREFIX;
+use crate::{is_remote_access_enabled, validate_admin_jwt, ADMIN_PATH_PREFIX};
 
 pub struct AdminRouter;
 
@@ -77,6 +79,25 @@ impl AdminRouter {
         push_manager: Option<SharedPushManager>,
         path: &str,
     ) -> Response<BoxBody> {
+        // 远程访问开启时：除登录/状态接口外，所有管理端 API 强制 JWT 鉴权。
+        if is_remote_access_enabled(&state) && !path.starts_with("/api/auth/") {
+            let token = extract_bearer_token(&req);
+            let Some(token) = token else {
+                return error_response(StatusCode::UNAUTHORIZED, "Missing bearer token");
+            };
+            if let Err(e) = validate_admin_jwt(&state, &token) {
+                return error_response(StatusCode::UNAUTHORIZED, &format!("Unauthorized: {e}"));
+            }
+        }
+
+        if path.starts_with("/api/auth") {
+            return handle_auth(req, state, path).await;
+        }
+
+        if path.starts_with("/api/admin/audit") {
+            return handle_audit(req, path).await;
+        }
+
         if path.starts_with("/api/rules") {
             handle_rules(req, state, push_manager.clone(), path).await
         } else if path.starts_with("/api/traffic") {

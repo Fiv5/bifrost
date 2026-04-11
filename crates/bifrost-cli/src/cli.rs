@@ -520,6 +520,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ConfigCommands>,
     },
+    #[command(about = "Manage admin remote access and authentication")]
+    Admin {
+        #[command(subcommand)]
+        action: AdminCommands,
+    },
     #[command(about = "Inspect and query traffic records")]
     Traffic {
         #[command(subcommand)]
@@ -642,6 +647,41 @@ pub enum Commands {
     },
     #[command(about = "Check for new version without upgrading")]
     VersionCheck,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum AdminCommands {
+    #[command(about = "Toggle remote admin access (enable/disable/status)")]
+    Remote {
+        #[command(subcommand)]
+        action: AdminRemoteCommands,
+    },
+    #[command(about = "Set or change admin password (hidden input)")]
+    Passwd {
+        #[arg(long, default_value = "admin", help = "Admin username")]
+        username: String,
+    },
+    #[command(about = "Revoke all existing admin sessions")]
+    RevokeAll,
+    #[command(about = "Read admin login audit logs")]
+    Audit {
+        #[arg(long, default_value = "50", help = "Maximum records to return")]
+        limit: usize,
+        #[arg(long, default_value = "0", help = "Offset for pagination")]
+        offset: usize,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum AdminRemoteCommands {
+    #[command(about = "Enable remote access")]
+    Enable,
+    #[command(about = "Disable remote access")]
+    Disable,
+    #[command(about = "Show current remote access status")]
+    Status,
 }
 
 #[derive(Subcommand, Clone)]

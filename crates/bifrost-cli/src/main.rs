@@ -16,9 +16,10 @@ use commands::{
     check_and_print_update_notice, handle_ca_command, handle_config_command, handle_export_command,
     handle_group_command, handle_import_command, handle_install_skill, handle_metrics_command,
     handle_rule_command, handle_script_command, handle_sync_command, handle_system_proxy_command,
-    handle_upgrade, handle_value_command, handle_whitelist_command, run_search, run_start,
-    run_status, run_status_tui, run_stop, run_traffic_clear, run_traffic_get, run_traffic_list,
-    spawn_update_check_notice, OutputFormat, SearchOptions, TrafficGetOptions, TrafficListOptions,
+    handle_upgrade, handle_value_command, handle_whitelist_command, handle_admin_command,
+    run_search, run_start, run_status, run_status_tui, run_stop, run_traffic_clear,
+    run_traffic_get, run_traffic_list, spawn_update_check_notice, OutputFormat, SearchOptions,
+    TrafficGetOptions, TrafficListOptions,
 };
 use process::read_runtime_port;
 
@@ -156,6 +157,7 @@ fn main() {
         }
         Some(Commands::Value { action }) => handle_value_command(action),
         Some(Commands::Script { action }) => handle_script_command(action),
+        Some(Commands::Admin { action }) => handle_admin_command(action),
         Some(Commands::Upgrade { yes, restart }) => handle_upgrade(yes, restart),
         Some(Commands::InstallSkill {
             tool,

@@ -11,6 +11,7 @@ import TrafficDetailPage from "./pages/TrafficDetailPage";
 import Replay from "./pages/Replay";
 import Settings from "./pages/Settings";
 import SyncLogin from "./pages/SyncLogin";
+import Login from "./pages/Login";
 import Values from "./pages/Values";
 import Scripts from "./pages/Scripts";
 import Groups from "./pages/Groups";
@@ -24,6 +25,7 @@ import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 import { useEditorCompletion } from "./hooks/useEditorCompletion";
 import { useForceRefreshStore } from "./stores/useForceRefreshStore";
 import { useDesktopCoreStore } from "./stores/useDesktopCoreStore";
+import AdminAuthGate from "./components/AdminAuthGate";
 import {
   getDesktopPlatform,
   getAdminPrefix,
@@ -259,9 +261,17 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
             <PendingAuthModal />
             <PendingIpTlsModal />
             <Routes>
+              <Route path="/login" element={<Login />} />
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />
-              <Route path="/" element={<AppLayout />}>
+              <Route
+                path="/"
+                element={
+                  <AdminAuthGate>
+                    <AppLayout />
+                  </AdminAuthGate>
+                }
+              >
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />
                 <Route path="replay" element={<Replay />} />
@@ -281,9 +291,17 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
             <PendingAuthModal />
             <PendingIpTlsModal />
             <Routes>
+              <Route path="/login" element={<Login />} />
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />
-              <Route path="/" element={<AppLayout />}>
+              <Route
+                path="/"
+                element={
+                  <AdminAuthGate>
+                    <AppLayout />
+                  </AdminAuthGate>
+                }
+              >
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />
                 <Route path="replay" element={<Replay />} />

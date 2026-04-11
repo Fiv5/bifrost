@@ -1338,6 +1338,13 @@ async fn handle_request(
 
     if path.starts_with(ADMIN_PATH_PREFIX) {
         if let Some(state) = admin_state {
+            if let Ok(value) = hyper::header::HeaderValue::from_str(&peer_addr.ip().to_string()) {
+                req.headers_mut().insert(
+                    hyper::header::HeaderName::from_static("x-bifrost-peer-ip"),
+                    value,
+                );
+            }
+            let allow_remote_admin = bifrost_admin::is_remote_access_enabled(&state);
             if is_loopback && !req.uri().path().is_empty() {
                 debug!(
                     "Loopback admin request from {}: {} {}",
@@ -1354,7 +1361,9 @@ async fn handle_request(
                 return Ok(convert_admin_response(
                     AdminRouter::handle(req, state, push_manager).await,
                 ));
-            } else if path.starts_with(&format!("{ADMIN_PATH_PREFIX}/public/")) && is_loopback {
+            } else if path.starts_with(&format!("{ADMIN_PATH_PREFIX}/public/"))
+                && (is_loopback || allow_remote_admin)
+            {
                 debug!(
                     "Public admin request from {}: {} {}",
                     peer_addr, method, path
@@ -1362,7 +1371,8 @@ async fn handle_request(
                 return Ok(convert_admin_response(
                     AdminRouter::handle(req, state, push_manager).await,
                 ));
-            } else if is_valid_admin_request(&req, peer_addr, &admin_security_config) {
+            } else if is_valid_admin_request(&req, peer_addr, &admin_security_config, allow_remote_admin)
+            {
                 debug!(
                     "Valid admin request from {}: {} {}",
                     peer_addr, method, path
