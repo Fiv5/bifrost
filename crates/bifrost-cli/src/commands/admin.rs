@@ -26,6 +26,20 @@ fn prompt_new_password() -> std::result::Result<String, dialoguer::Error> {
         .interact()
 }
 
+fn read_password_from_stdin() -> Result<String> {
+    use std::io::Read;
+
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| BifrostError::Config(format!("Failed to read stdin: {e}")))?;
+    let pwd = buf.trim_end_matches(['\n', '\r']).to_string();
+    if pwd.is_empty() {
+        return Err(BifrostError::Config("Password cannot be empty".to_string()));
+    }
+    Ok(pwd)
+}
+
 fn set_password(storage: &mut ValuesStorage, password: &str) -> Result<()> {
     let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST)
         .map_err(|e| BifrostError::Storage(format!("Failed to hash password: {e}")))?;
@@ -108,11 +122,19 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                 }
             }
         }
-        AdminCommands::Passwd { username } => {
+        AdminCommands::Passwd {
+            username,
+            password_stdin,
+        } => {
             let mut storage = open_values_storage()?;
             ensure_username(&mut storage, &username)?;
-            let pwd = prompt_new_password()
-                .map_err(|e| BifrostError::Config(format!("Failed to read password: {e}")))?;
+
+            let pwd = if password_stdin {
+                read_password_from_stdin()?
+            } else {
+                prompt_new_password()
+                    .map_err(|e| BifrostError::Config(format!("Failed to read password: {e}")))?
+            };
             set_password(&mut storage, &pwd)?;
             println!("Admin password updated.");
         }

@@ -228,3 +228,112 @@ pub fn validate_admin_jwt(state: &AdminState, token: &str) -> Result<AdminJwtCla
 
     Ok(claims)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bifrost_storage::ValuesStorage;
+
+    fn new_state() -> (AdminState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let values_dir = tmp.path().join("values");
+        let storage = ValuesStorage::with_dir(values_dir).expect("values storage");
+
+        (AdminState::new(19999).with_values_storage(storage), tmp)
+    }
+
+    fn encode_with_secret(secret: &str, claims: &AdminJwtClaims) -> String {
+        let mut header = Header::new(Algorithm::HS256);
+        header.typ = Some("JWT".to_string());
+        jsonwebtoken::encode(
+            &header,
+            claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("encode jwt")
+    }
+
+    #[test]
+    fn test_issue_admin_jwt_sets_7d_ttl_and_round_trip_validate() {
+        let (state, _tmp) = new_state();
+        let (token, claims) = issue_admin_jwt(&state, "admin").expect("issue token");
+        assert!(claims.exp > claims.iat);
+        assert_eq!(claims.exp - claims.iat, JWT_TTL.as_secs() as i64);
+
+        let parsed = validate_admin_jwt(&state, &token).expect("validate token");
+        assert_eq!(parsed.sub, "admin");
+        assert_eq!(parsed.iat, claims.iat);
+        assert_eq!(parsed.exp, claims.exp);
+        assert_eq!(parsed.jti, claims.jti);
+    }
+
+    #[test]
+    fn test_validate_admin_jwt_rejects_invalid_timestamps_and_too_long_ttl() {
+        let (state, _tmp) = new_state();
+        ensure_admin_auth_material(&state).expect("init auth material");
+        let secret = state
+            .values_storage
+            .as_ref()
+            .unwrap()
+            .read()
+            .get_value(ADMIN_AUTH_JWT_SECRET_KEY)
+            .expect("jwt secret");
+
+        let now = now_unix();
+
+        // exp 仍在未来，但 iat > exp，应被自定义校验拒绝。
+        let claims = AdminJwtClaims {
+            sub: "admin".to_string(),
+            iat: now + 120,
+            exp: now + 60,
+            jti: uuid::Uuid::new_v4().to_string(),
+        };
+        let token = encode_with_secret(&secret, &claims);
+        let err = validate_admin_jwt(&state, &token).unwrap_err().to_string();
+        assert!(err.contains("Invalid token timestamps"));
+
+        // TTL 超过 7 天，应被自定义校验拒绝。
+        let claims = AdminJwtClaims {
+            sub: "admin".to_string(),
+            iat: now,
+            exp: now + (JWT_TTL.as_secs() as i64) + 60,
+            jti: uuid::Uuid::new_v4().to_string(),
+        };
+        let token = encode_with_secret(&secret, &claims);
+        let err = validate_admin_jwt(&state, &token).unwrap_err().to_string();
+        assert!(err.contains("Token lifetime exceeds 7 days"));
+    }
+
+    #[test]
+    fn test_validate_admin_jwt_respects_revoke_before() {
+        let (state, _tmp) = new_state();
+        ensure_admin_auth_material(&state).expect("init auth material");
+        let secret = state
+            .values_storage
+            .as_ref()
+            .unwrap()
+            .read()
+            .get_value(ADMIN_AUTH_JWT_SECRET_KEY)
+            .expect("jwt secret");
+
+        let now = now_unix();
+        let revoke_before = now + 10;
+        state
+            .values_storage
+            .as_ref()
+            .unwrap()
+            .write()
+            .set_value(ADMIN_AUTH_REVOKE_BEFORE_KEY, &revoke_before.to_string())
+            .expect("set revoke_before");
+
+        let claims = AdminJwtClaims {
+            sub: "admin".to_string(),
+            iat: now,
+            exp: now + 60,
+            jti: uuid::Uuid::new_v4().to_string(),
+        };
+        let token = encode_with_secret(&secret, &claims);
+        let err = validate_admin_jwt(&state, &token).unwrap_err().to_string();
+        assert!(err.contains("Token revoked"));
+    }
+}

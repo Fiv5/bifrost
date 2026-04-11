@@ -150,7 +150,7 @@ pub async fn handle_auth(
     error_response(StatusCode::NOT_FOUND, "API endpoint not found")
 }
 
-pub fn extract_bearer_token(req: &Request<Incoming>) -> Option<String> {
+pub fn extract_bearer_token<T>(req: &Request<T>) -> Option<String> {
     let header_val = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     let v = header_val.trim();
     let token = v
@@ -161,4 +161,37 @@ pub fn extract_bearer_token(req: &Request<Incoming>) -> Option<String> {
         return None;
     }
     Some(token.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper::Request;
+
+    #[test]
+    fn test_extract_bearer_token_accepts_bearer_and_lowercase() {
+        let req = Request::builder()
+            .uri("/")
+            .header(header::AUTHORIZATION, "Bearer abc")
+            .body(())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&req), Some("abc".to_string()));
+
+        let req = Request::builder()
+            .uri("/")
+            .header(header::AUTHORIZATION, "bearer def")
+            .body(())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&req), Some("def".to_string()));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_rejects_empty_token() {
+        let req = Request::builder()
+            .uri("/")
+            .header(header::AUTHORIZATION, "Bearer   ")
+            .body(())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&req), None);
+    }
 }

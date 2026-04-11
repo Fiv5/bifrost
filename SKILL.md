@@ -146,6 +146,8 @@ bifrost start [OPTIONS]
       --app-intercept-exclude <APPS>  排除应用不拦截（逗号分隔，支持通配符）
       --app-intercept-include <APPS>  强制拦截应用（最高优先级）
       --unsafe-ssl                    跳过上游 TLS 证书校验（危险，仅测试用）
+      --enable-badge-injection        启用 HTML 页面注入 Bifrost 徽章
+      --disable-badge-injection       禁用 HTML 页面注入 Bifrost 徽章
       --no-disconnect-on-config-change  TLS 配置变更时不自动断开受影响连接
       --rules <RULE>                  代理规则（可重复指定）
       --rules-file <PATH>             规则文件路径
@@ -153,6 +155,7 @@ bifrost start [OPTIONS]
       --proxy-bypass <LIST>           系统代理绕行列表（逗号分隔）
       --cli-proxy                     代理运行期间启用 CLI 代理环境变量
       --cli-proxy-no-proxy <LIST>     CLI 代理 no-proxy 列表（逗号分隔）
+      -y, --yes                       自动回答 yes
 ```
 
 TLS 拦截优先级（从高到低）：
@@ -501,13 +504,36 @@ bifrost sync run                               # 手动触发同步
 bifrost sync config                            # 查看/更新同步配置
 ```
 
-### 17. 流量清理
+### 17. 管理端远程访问 (Admin)
+
+用于启用/禁用管理端（Web UI）的远程访问权限，并管理认证密码和审计日志。
+
+```bash
+# 远程访问状态与开关
+bifrost admin remote status                    # 查看当前远程访问状态
+bifrost admin remote enable                    # 开启管理端远程访问
+bifrost admin remote disable                   # 关闭管理端远程访问
+
+# 认证管理
+bifrost admin passwd                           # 修改 admin 账户密码（交互式或 --password-stdin）
+bifrost admin revoke-all                       # 吊销所有现有的管理端登录会话（JWT）
+
+# 审计日志
+bifrost admin audit                            # 查看管理端登录审计日志
+bifrost admin audit --limit 100 --json         # 以 JSON 格式输出最近 100 条审计记录
+```
+
+- `admin remote enable/disable` 修改的是运行时配置，重启代理后是否生效取决于配置文件设置
+- `admin passwd` 会更新本地认证凭据
+- `admin revoke-all` 会立即让所有已登录的管理端会话失效
+
+### 18. 流量清理
 
 ```bash
 bifrost traffic clear                          # 清除流量记录
 ```
 
-### 18. 实时指标
+### 19. 实时指标
 
 ```bash
 bifrost metrics summary                        # 查看指标摘要（默认）
@@ -516,12 +542,22 @@ bifrost metrics hosts                          # 按域名查看流量指标
 bifrost metrics history                        # 查看指标历史
 ```
 
-### 19. Shell 补全
+### 20. Shell 补全
 
 ```bash
 bifrost completions bash                       # 生成 bash 补全脚本
 bifrost completions zsh                        # 生成 zsh 补全脚本
 bifrost completions fish                       # 生成 fish 补全脚本
+```
+
+### 21. 安装 Skill 到 AI 工具
+
+bifrost 支持将自身的 `SKILL.md` 文档安装到各种 AI 编码辅助工具中（如 Claude Code, Trae, Cursor 等），以便这些工具能更好地理解和使用 bifrost。
+
+```bash
+bifrost install-skill --cwd                    # 安装到当前项目目录 (.trae/skills/ 或 .cursor/rules/)
+bifrost install-skill -t trae                  # 仅安装到 Trae
+bifrost install-skill -t all -y                # 自动安装到所有支持的工具
 ```
 
 ## 环境变量

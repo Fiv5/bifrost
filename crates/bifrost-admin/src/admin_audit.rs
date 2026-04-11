@@ -63,9 +63,9 @@ pub fn list_logins(limit: usize, offset: usize) -> Result<Vec<AdminLoginAuditEnt
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, ts, username, ip, ua\
-             FROM admin_login_audit\
-             ORDER BY id DESC\
+            "SELECT id, ts, username, ip, ua \
+             FROM admin_login_audit \
+             ORDER BY id DESC \
              LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| BifrostError::Storage(format!("Failed to prepare query: {e}")))?;

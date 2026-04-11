@@ -79,15 +79,8 @@ impl AdminRouter {
         push_manager: Option<SharedPushManager>,
         path: &str,
     ) -> Response<BoxBody> {
-        // 远程访问开启时：除登录/状态接口外，所有管理端 API 强制 JWT 鉴权。
-        if is_remote_access_enabled(&state) && !path.starts_with("/api/auth/") {
-            let token = extract_bearer_token(&req);
-            let Some(token) = token else {
-                return error_response(StatusCode::UNAUTHORIZED, "Missing bearer token");
-            };
-            if let Err(e) = validate_admin_jwt(&state, &token) {
-                return error_response(StatusCode::UNAUTHORIZED, &format!("Unauthorized: {e}"));
-            }
+        if let Some(resp) = Self::check_api_auth(&req, &state, path) {
+            return resp;
         }
 
         if path.starts_with("/api/auth") {
@@ -184,5 +177,71 @@ impl AdminRouter {
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }
+    }
+
+    fn check_api_auth<T>(
+        req: &Request<T>,
+        state: &SharedAdminState,
+        path: &str,
+    ) -> Option<Response<BoxBody>> {
+        // 远程访问开启时：除登录/状态接口外，所有管理端 API 强制 JWT 鉴权。
+        if is_remote_access_enabled(state) && !path.starts_with("/api/auth/") {
+            let token = extract_bearer_token(req);
+            let Some(token) = token else {
+                return Some(error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "Missing bearer token",
+                ));
+            };
+            if let Err(e) = validate_admin_jwt(state, &token) {
+                return Some(error_response(
+                    StatusCode::UNAUTHORIZED,
+                    &format!("Unauthorized: {e}"),
+                ));
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bifrost_storage::ValuesStorage;
+    use crate::admin_auth::ADMIN_REMOTE_ACCESS_ENABLED_KEY;
+    use crate::state::AdminState;
+
+    fn new_state_remote_enabled() -> (SharedAdminState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let values_dir = tmp.path().join("values");
+        let storage = ValuesStorage::with_dir(values_dir).expect("values storage");
+
+        let state = AdminState::new(19998).with_values_storage(storage);
+        let state = std::sync::Arc::new(state);
+        state
+            .values_storage
+            .as_ref()
+            .unwrap()
+            .write()
+            .set_value(ADMIN_REMOTE_ACCESS_ENABLED_KEY, "true")
+            .expect("enable remote access");
+        (state, tmp)
+    }
+
+    #[test]
+    fn test_check_api_auth_requires_token_when_remote_enabled() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder().uri("/_bifrost/api/system/status").body(()).unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status")
+            .expect("should reject without token");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_check_api_auth_skips_auth_endpoints() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder().uri("/_bifrost/api/auth/status").body(()).unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/status");
+        assert!(resp.is_none());
     }
 }

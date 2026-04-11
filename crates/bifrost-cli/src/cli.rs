@@ -660,6 +660,8 @@ pub enum AdminCommands {
     Passwd {
         #[arg(long, default_value = "admin", help = "Admin username")]
         username: String,
+        #[arg(long, help = "Read password from stdin (non-interactive)")]
+        password_stdin: bool,
     },
     #[command(about = "Revoke all existing admin sessions")]
     RevokeAll,
