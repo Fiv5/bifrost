@@ -293,10 +293,10 @@ bifrost whitelist allow-lan true
 bifrost whitelist mode                         # 查看当前访问模式
 bifrost whitelist mode interactive             # 设置访问模式
 bifrost whitelist pending                      # 查看待处理的访问请求
-bifrost whitelist approve <request_id>         # 批准访问请求
-bifrost whitelist reject <request_id>          # 拒绝访问请求
+bifrost whitelist approve <ip>                 # 批准访问请求（按 IP）
+bifrost whitelist reject <ip>                  # 拒绝访问请求（按 IP）
 bifrost whitelist clear-pending                # 清空待处理请求
-bifrost whitelist add-temporary <IP> [--ttl]   # 添加临时白名单
+bifrost whitelist add-temporary <ip>           # 添加临时白名单
 bifrost whitelist remove-temporary <IP>        # 移除临时白名单
 ```
 
@@ -347,6 +347,8 @@ bifrost config disconnect example.com
 bifrost config disconnect-by-app Chrome       # 按应用断开连接
 bifrost config performance                    # 查看性能概览
 bifrost config websocket                      # 查看活跃 WebSocket 连接
+bifrost config connections                    # 查看活跃代理连接
+bifrost config memory                         # 查看内存诊断信息
 bifrost config export -o ./config.toml --format toml
 bifrost config export --format json
 ```
@@ -515,15 +517,18 @@ bifrost admin remote enable                    # 开启管理端远程访问
 bifrost admin remote disable                   # 关闭管理端远程访问
 
 # 认证管理
-bifrost admin passwd                           # 修改 admin 账户密码（交互式或 --password-stdin）
+bifrost admin passwd                           # 修改 admin 账户密码（交互式）
+bifrost admin passwd --username admin
+printf '%s\n' 'new_password' | bifrost admin passwd --password-stdin
 bifrost admin revoke-all                       # 吊销所有现有的管理端登录会话（JWT）
 
 # 审计日志
 bifrost admin audit                            # 查看管理端登录审计日志
+bifrost admin audit --limit 100 --offset 0
 bifrost admin audit --limit 100 --json         # 以 JSON 格式输出最近 100 条审计记录
 ```
 
-- `admin remote enable/disable` 修改的是运行时配置，重启代理后是否生效取决于配置文件设置
+- `admin remote enable/disable` 修改本机 `~/.bifrost/values` 中的远程访问开关（管理端会在请求时读取该值）
 - `admin passwd` 会更新本地认证凭据
 - `admin revoke-all` 会立即让所有已登录的管理端会话失效
 
@@ -531,6 +536,7 @@ bifrost admin audit --limit 100 --json         # 以 JSON 格式输出最近 100
 
 ```bash
 bifrost traffic clear                          # 清除流量记录
+bifrost traffic clear --ids 1,2,3 -y           # 按 ID 清除，并跳过确认
 ```
 
 ### 19. 实时指标
@@ -697,4 +703,3 @@ bifrost <command> <action> -h # 子动作帮助（如 bifrost rule add -h、bifr
 - 规则语法：[docs/rule.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rule.md)
 - Pattern 说明：[docs/pattern.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/pattern.md)
 - Operation 说明：[docs/operation.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/operation.md)
-
