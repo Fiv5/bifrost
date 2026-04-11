@@ -1,5 +1,6 @@
 use bifrost_core::{
-    validate_rules_with_context, ParseError, ParseErrorSeverity, ScriptReference, VariableInfo,
+    extract_inline_variables, validate_rules_with_context, ParseError, ParseErrorSeverity,
+    ScriptReference, VariableInfo,
 };
 use bifrost_storage::{ConfigChangeEvent, RuleFile, RuleSummary, RulesStorage};
 use http_body_util::BodyExt;
@@ -83,6 +84,21 @@ struct ActiveRuleItem {
 struct ActiveSummaryResponse {
     total: usize,
     rules: Vec<ActiveRuleItem>,
+    variable_conflicts: Vec<VariableConflict>,
+    merged_content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VariableConflict {
+    variable_name: String,
+    definitions: Vec<VariableDefinition>,
+}
+
+#[derive(Debug, Serialize)]
+struct VariableDefinition {
+    rule_name: String,
+    group_id: Option<String>,
+    value_preview: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,19 +202,63 @@ async fn list_rules(state: SharedAdminState) -> Response<BoxBody> {
     }
 }
 
+struct InlineVarEntry {
+    rule_name: String,
+    group_id: Option<String>,
+    value: String,
+}
+
 fn collect_enabled_from_storage(
     storage: &RulesStorage,
     group_id: Option<&str>,
     group_name: Option<&str>,
+    var_map: &mut HashMap<String, Vec<InlineVarEntry>>,
+    content_parts: &mut Vec<String>,
 ) -> Vec<ActiveRuleItem> {
-    let names = match storage.list() {
-        Ok(n) => n,
+    let rules = match storage.load_enabled() {
+        Ok(r) => r,
         Err(_) => return Vec::new(),
     };
     let mut items = Vec::new();
-    for name in &names {
-        if let Ok(rule) = storage.load(name) {
-            if rule.enabled {
+    for rule in rules {
+        let rule_count = rule
+            .content
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with('#')
+            })
+            .count();
+
+        let inline_vars = extract_inline_variables(&rule.content);
+        for (var_name, var_value) in inline_vars {
+            var_map.entry(var_name).or_default().push(InlineVarEntry {
+                rule_name: rule.name.clone(),
+                group_id: group_id.map(|s| s.to_string()),
+                value: var_value,
+            });
+        }
+
+        content_parts.push(rule.content.clone());
+
+        items.push(ActiveRuleItem {
+            name: rule.name,
+            rule_count,
+            group_id: group_id.map(|s| s.to_string()),
+            group_name: group_name.map(|s| s.to_string()),
+        });
+    }
+    items
+}
+
+async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
+    let mut all_rules = Vec::new();
+    let mut var_map: HashMap<String, Vec<InlineVarEntry>> = HashMap::new();
+    let mut content_parts: Vec<String> = Vec::new();
+
+    match state.rules_storage.load_enabled() {
+        Ok(rules) => {
+            for rule in rules {
                 let rule_count = rule
                     .content
                     .lines()
@@ -207,32 +267,24 @@ fn collect_enabled_from_storage(
                         !t.is_empty() && !t.starts_with('#')
                     })
                     .count();
-                items.push(ActiveRuleItem {
-                    name: rule.name,
-                    rule_count,
-                    group_id: group_id.map(|s| s.to_string()),
-                    group_name: group_name.map(|s| s.to_string()),
-                });
-            }
-        }
-    }
-    items
-}
 
-async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
-    let mut all_rules = Vec::new();
-
-    match state.rules_storage.list_summaries() {
-        Ok(summaries) => {
-            for s in summaries {
-                if s.enabled {
-                    all_rules.push(ActiveRuleItem {
-                        name: s.name,
-                        rule_count: s.rule_count,
+                let inline_vars = extract_inline_variables(&rule.content);
+                for (var_name, var_value) in inline_vars {
+                    var_map.entry(var_name).or_default().push(InlineVarEntry {
+                        rule_name: rule.name.clone(),
                         group_id: None,
-                        group_name: None,
+                        value: var_value,
                     });
                 }
+
+                content_parts.push(rule.content.clone());
+
+                all_rules.push(ActiveRuleItem {
+                    name: rule.name,
+                    rule_count,
+                    group_id: None,
+                    group_name: None,
+                });
             }
         }
         Err(e) => {
@@ -291,7 +343,60 @@ async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
         reverse_cache
     };
 
+    let still_orphaned: Vec<(String, std::path::PathBuf)> = group_dirs
+        .iter()
+        .filter(|(d, _)| !reverse_cache.contains_key(d))
+        .cloned()
+        .collect();
+
+    if !still_orphaned.is_empty() && state.is_group_cache_resolved() {
+        let mut any_had_enabled = false;
+
+        for (dir_name, dir_path) in &still_orphaned {
+            if let Ok(storage) = RulesStorage::with_dir(dir_path.clone()) {
+                if let Ok(rules) = storage.load_all() {
+                    let had_enabled = rules.iter().any(|r| r.enabled);
+                    if had_enabled {
+                        tracing::warn!(
+                            target: "bifrost_admin::rules",
+                            dir = %dir_name,
+                            "orphaned group directory has enabled rules, disabling and cleaning up"
+                        );
+                        for rule in &rules {
+                            if rule.enabled {
+                                let _ = storage.set_enabled(&rule.name, false);
+                            }
+                        }
+                        any_had_enabled = true;
+                    }
+                }
+            }
+
+            tracing::info!(
+                target: "bifrost_admin::rules",
+                dir = %dir_name,
+                "removing orphaned group directory with no valid group mapping"
+            );
+            if let Err(e) = std::fs::remove_dir_all(dir_path) {
+                tracing::warn!(
+                    target: "bifrost_admin::rules",
+                    error = %e,
+                    dir = %dir_name,
+                    "failed to remove orphaned group directory"
+                );
+            }
+        }
+
+        if any_had_enabled {
+            notify_rules_changed(&state);
+        }
+    }
+
     for (dir_name, dir_path) in &group_dirs {
+        if !reverse_cache.contains_key(dir_name) {
+            continue;
+        }
+
         let group_storage = match RulesStorage::with_dir(dir_path.clone()) {
             Ok(s) => s,
             Err(e) => {
@@ -306,16 +411,68 @@ async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
         };
 
         let group_id = reverse_cache.get(dir_name).cloned();
-        let group_rules =
-            collect_enabled_from_storage(&group_storage, group_id.as_deref(), Some(dir_name));
+        let group_rules = collect_enabled_from_storage(
+            &group_storage,
+            group_id.as_deref(),
+            Some(dir_name),
+            &mut var_map,
+            &mut content_parts,
+        );
         all_rules.extend(group_rules);
     }
+
+    let variable_conflicts = build_variable_conflicts(var_map);
+
+    let merged_content = content_parts.join("\n");
 
     let resp = ActiveSummaryResponse {
         total: all_rules.len(),
         rules: all_rules,
+        variable_conflicts,
+        merged_content,
     };
     json_response(&resp)
+}
+
+fn truncate_preview(value: &str, max_len: usize) -> String {
+    let single_line = value.replace('\n', "\\n");
+    if single_line.len() <= max_len {
+        single_line
+    } else {
+        let mut truncated: String = single_line.chars().take(max_len).collect();
+        truncated.push_str("...");
+        truncated
+    }
+}
+
+fn build_variable_conflicts(
+    var_map: HashMap<String, Vec<InlineVarEntry>>,
+) -> Vec<VariableConflict> {
+    let mut conflicts = Vec::new();
+    for (var_name, entries) in &var_map {
+        if entries.len() < 2 {
+            continue;
+        }
+        let first_value = &entries[0].value;
+        let has_conflict = entries.iter().skip(1).any(|e| &e.value != first_value);
+        if !has_conflict {
+            continue;
+        }
+        let definitions = entries
+            .iter()
+            .map(|e| VariableDefinition {
+                rule_name: e.rule_name.clone(),
+                group_id: e.group_id.clone(),
+                value_preview: truncate_preview(&e.value, 80),
+            })
+            .collect();
+        conflicts.push(VariableConflict {
+            variable_name: var_name.clone(),
+            definitions,
+        });
+    }
+    conflicts.sort_by(|a, b| a.variable_name.cmp(&b.variable_name));
+    conflicts
 }
 
 async fn validate_rule(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
@@ -622,19 +779,20 @@ async fn delete_rule(
     };
 
     if rule.sync.remote_id.is_some() {
-        let Some(sync_manager) = state.sync_manager.clone() else {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Sync manager not available; cannot record synced rule deletion safely",
-            );
-        };
-        if let Err(error) = sync_manager.record_deleted_rule(&rule).await {
-            return error_response(
-                StatusCode::CONFLICT,
-                &format!(
-                    "Failed to record synced rule deletion before local delete: {}",
-                    error
-                ),
+        if let Some(sync_manager) = state.sync_manager.clone() {
+            if let Err(error) = sync_manager.record_deleted_rule(&rule).await {
+                tracing::warn!(
+                    target: "bifrost_admin::rules",
+                    rule = %name,
+                    error = %error,
+                    "failed to record synced rule deletion tombstone, proceeding with local delete"
+                );
+            }
+        } else {
+            tracing::warn!(
+                target: "bifrost_admin::rules",
+                rule = %name,
+                "sync manager not available, skipping remote deletion record for synced rule"
             );
         }
     }
@@ -739,6 +897,10 @@ fn invalidate_overview_cache(push_manager: &Option<SharedPushManager>) {
     }
 }
 
+pub(crate) fn notify_rules_changed_pub(state: &SharedAdminState) {
+    notify_rules_changed(state);
+}
+
 fn notify_rules_changed(state: &SharedAdminState) {
     if let Some(ref config_manager) = state.config_manager {
         match config_manager.notify(ConfigChangeEvent::RulesChanged) {
@@ -761,6 +923,127 @@ fn notify_rules_changed(state: &SharedAdminState) {
         tracing::warn!(
             target: "bifrost_admin::rules",
             "config_manager is not available, cannot notify rules changed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_variable_conflicts_same_name_different_values() {
+        let mut var_map: HashMap<String, Vec<InlineVarEntry>> = HashMap::new();
+        var_map
+            .entry("data".to_string())
+            .or_default()
+            .push(InlineVarEntry {
+                rule_name: "rule-a".to_string(),
+                group_id: None,
+                value: "x-tt-env: boe_xxx".to_string(),
+            });
+        var_map
+            .entry("data".to_string())
+            .or_default()
+            .push(InlineVarEntry {
+                rule_name: "rule-b".to_string(),
+                group_id: None,
+                value: "x-debug: true".to_string(),
+            });
+
+        let conflicts = build_variable_conflicts(var_map);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].variable_name, "data");
+        assert_eq!(conflicts[0].definitions.len(), 2);
+        assert_eq!(conflicts[0].definitions[0].rule_name, "rule-a");
+        assert_eq!(conflicts[0].definitions[1].rule_name, "rule-b");
+    }
+
+    #[test]
+    fn test_no_conflicts_when_values_match() {
+        let mut var_map: HashMap<String, Vec<InlineVarEntry>> = HashMap::new();
+        var_map
+            .entry("data".to_string())
+            .or_default()
+            .push(InlineVarEntry {
+                rule_name: "rule-a".to_string(),
+                group_id: None,
+                value: "same content".to_string(),
+            });
+        var_map
+            .entry("data".to_string())
+            .or_default()
+            .push(InlineVarEntry {
+                rule_name: "rule-b".to_string(),
+                group_id: None,
+                value: "same content".to_string(),
+            });
+
+        let conflicts = build_variable_conflicts(var_map);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_no_conflicts_single_rule_file() {
+        let mut var_map: HashMap<String, Vec<InlineVarEntry>> = HashMap::new();
+        var_map
+            .entry("data".to_string())
+            .or_default()
+            .push(InlineVarEntry {
+                rule_name: "rule-a".to_string(),
+                group_id: None,
+                value: "some value".to_string(),
+            });
+
+        let conflicts = build_variable_conflicts(var_map);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_preview_short() {
+        assert_eq!(truncate_preview("short", 80), "short");
+    }
+
+    #[test]
+    fn test_truncate_preview_long() {
+        let long = "a".repeat(100);
+        let result = truncate_preview(&long, 80);
+        assert!(result.len() <= 83 + 3);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_preview_newlines() {
+        let result = truncate_preview("line1\nline2\nline3", 80);
+        assert_eq!(result, r"line1\nline2\nline3");
+    }
+
+    #[test]
+    fn test_conflicts_with_group_rules() {
+        let mut var_map: HashMap<String, Vec<InlineVarEntry>> = HashMap::new();
+        var_map
+            .entry("headers".to_string())
+            .or_default()
+            .push(InlineVarEntry {
+                rule_name: "my-rule".to_string(),
+                group_id: None,
+                value: "x-env: prod".to_string(),
+            });
+        var_map
+            .entry("headers".to_string())
+            .or_default()
+            .push(InlineVarEntry {
+                rule_name: "team-rule".to_string(),
+                group_id: Some("group-123".to_string()),
+                value: "x-env: staging".to_string(),
+            });
+
+        let conflicts = build_variable_conflicts(var_map);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].definitions[0].group_id, None);
+        assert_eq!(
+            conflicts[0].definitions[1].group_id,
+            Some("group-123".to_string())
         );
     }
 }

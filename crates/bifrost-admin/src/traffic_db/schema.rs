@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug)]
 pub enum InitError {
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS traffic_record_details (
     id TEXT PRIMARY KEY NOT NULL REFERENCES traffic_records(id) ON DELETE CASCADE,
     timing_blob BLOB,
     request_headers_blob BLOB,
-    response_headers_blob BLOB,
+    original_response_headers_blob BLOB,
     matched_rules_blob BLOB,
     request_body_ref_blob BLOB,
     response_body_ref_blob BLOB,
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS traffic_record_details (
     actual_url TEXT,
     actual_host TEXT,
     original_request_headers_blob BLOB,
-    actual_response_headers_blob BLOB,
+    response_headers_blob BLOB,
     socket_status_blob BLOB,
     req_script_results_blob BLOB,
     res_script_results_blob BLOB,
@@ -175,11 +175,11 @@ pub fn get_insert_sql() -> &'static str {
 pub fn get_insert_detail_sql() -> &'static str {
     r#"
     INSERT INTO traffic_record_details (
-        id, timing_blob, request_headers_blob, response_headers_blob,
+        id, timing_blob, request_headers_blob, original_response_headers_blob,
         matched_rules_blob, request_body_ref_blob, response_body_ref_blob,
         derived_response_body_ref_blob, raw_request_body_ref_blob, raw_response_body_ref_blob,
         actual_url, actual_host, original_request_headers_blob,
-        actual_response_headers_blob, socket_status_blob, req_script_results_blob,
+        response_headers_blob, socket_status_blob, req_script_results_blob,
         res_script_results_blob, decode_req_script_results_blob,
         decode_res_script_results_blob, error_message
     ) VALUES (
@@ -224,11 +224,11 @@ pub fn get_update_sql() -> &'static str {
 pub fn get_update_detail_sql() -> &'static str {
     r#"
     INSERT INTO traffic_record_details (
-        id, timing_blob, request_headers_blob, response_headers_blob,
+        id, timing_blob, request_headers_blob, original_response_headers_blob,
         matched_rules_blob, request_body_ref_blob, response_body_ref_blob,
         derived_response_body_ref_blob, raw_request_body_ref_blob, raw_response_body_ref_blob,
         actual_url, actual_host, original_request_headers_blob,
-        actual_response_headers_blob, socket_status_blob, req_script_results_blob,
+        response_headers_blob, socket_status_blob, req_script_results_blob,
         res_script_results_blob, decode_req_script_results_blob,
         decode_res_script_results_blob, error_message
     ) VALUES (
@@ -243,7 +243,7 @@ pub fn get_update_detail_sql() -> &'static str {
     ON CONFLICT(id) DO UPDATE SET
         timing_blob = excluded.timing_blob,
         request_headers_blob = excluded.request_headers_blob,
-        response_headers_blob = excluded.response_headers_blob,
+        original_response_headers_blob = excluded.original_response_headers_blob,
         matched_rules_blob = excluded.matched_rules_blob,
         request_body_ref_blob = excluded.request_body_ref_blob,
         response_body_ref_blob = excluded.response_body_ref_blob,
@@ -253,7 +253,7 @@ pub fn get_update_detail_sql() -> &'static str {
         actual_url = excluded.actual_url,
         actual_host = excluded.actual_host,
         original_request_headers_blob = excluded.original_request_headers_blob,
-        actual_response_headers_blob = excluded.actual_response_headers_blob,
+        response_headers_blob = excluded.response_headers_blob,
         socket_status_blob = excluded.socket_status_blob,
         req_script_results_blob = excluded.req_script_results_blob,
         res_script_results_blob = excluded.res_script_results_blob,

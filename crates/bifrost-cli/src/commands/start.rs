@@ -996,8 +996,11 @@ pub fn run_foreground(
             let connection_registry_for_resolver = admin_state.connection_registry.clone();
             let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
+            admin_state.load_group_name_cache();
+
             let phase_started_at = Instant::now();
-            let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver);
+            let valid_dirs = resolve_valid_group_dirs(&admin_state);
+            let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver, Some(&valid_dirs));
             let mut merged_values = values.clone();
             for (k, v) in inline_values {
                 merged_values.entry(k).or_insert(v);
@@ -1012,7 +1015,6 @@ pub fn run_foreground(
             log_resolver_rules(&resolver);
 
             let unsafe_ssl = config.unsafe_ssl;
-            admin_state.load_group_name_cache();
             let admin_state_arc = Arc::new(admin_state);
 
             let phase_started_at = Instant::now();
@@ -1044,6 +1046,7 @@ pub fn run_foreground(
                 resolver.clone(),
                 connection_registry_for_resolver,
                 runtime_config_for_resolver,
+                admin_state_arc.clone(),
             );
             log_startup_phase("rules_watcher.start", phase_started_at);
 
@@ -1630,8 +1633,11 @@ pub fn run_daemon(
                     let connection_registry_for_resolver = admin_state.connection_registry.clone();
                     let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
+                    admin_state.load_group_name_cache();
+
+                    let valid_dirs = resolve_valid_group_dirs(&admin_state);
                     let (stored_rules, inline_values) =
-                        load_stored_rules(&rules_storage_for_resolver);
+                        load_stored_rules(&rules_storage_for_resolver, Some(&valid_dirs));
                     let mut merged_values = values.clone();
                     for (k, v) in inline_values {
                         merged_values.entry(k).or_insert(v);
@@ -1645,7 +1651,6 @@ pub fn run_daemon(
                     log_resolver_rules(&resolver);
 
                     let unsafe_ssl = config.unsafe_ssl;
-                    admin_state.load_group_name_cache();
                     let system_proxy_host = if config.host == "0.0.0.0" {
                         "127.0.0.1".to_string()
                     } else {
@@ -1686,6 +1691,7 @@ pub fn run_daemon(
                         resolver.clone(),
                         connection_registry_for_resolver,
                         runtime_config_for_resolver,
+                        admin_state_arc.clone(),
                     );
 
                     spawn_system_proxy_reconcile_task(SystemProxyReconcileConfig {
@@ -1733,8 +1739,27 @@ pub fn run_daemon(
     }
 }
 
+fn resolve_valid_group_dirs(admin_state: &AdminState) -> std::collections::HashSet<String> {
+    let has_session = admin_state
+        .sync_manager
+        .as_ref()
+        .map(|sm| sm.has_session())
+        .unwrap_or(false);
+
+    if !has_session {
+        tracing::info!(
+            target: "bifrost_cli::rules",
+            "no active sync session, skipping group rules"
+        );
+        return std::collections::HashSet::new();
+    }
+
+    admin_state.group_name_cache().all_dir_names()
+}
+
 fn load_stored_rules(
     rules_storage: &bifrost_storage::RulesStorage,
+    valid_subdirs: Option<&std::collections::HashSet<String>>,
 ) -> (Vec<Rule>, HashMap<String, String>) {
     let mut stored_rules = Vec::new();
     let mut inline_values = HashMap::new();
@@ -1743,7 +1768,7 @@ fn load_stored_rules(
         base_dir = %rules_storage.base_dir().display(),
         "loading rules from storage"
     );
-    match rules_storage.load_enabled_with_subdirs() {
+    match rules_storage.load_enabled_with_subdirs_filtered(valid_subdirs) {
         Ok(rule_files) => {
             let stored_count = rule_files.len();
             for rule_file in rule_files {
@@ -1832,6 +1857,7 @@ fn spawn_rules_watcher_task(
     resolver: SharedDynamicRulesResolver,
     connection_registry: bifrost_admin::SharedConnectionRegistry,
     runtime_config: bifrost_admin::SharedRuntimeConfig,
+    admin_state: Arc<AdminState>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let Some(config_manager) = config_manager else {
@@ -1861,7 +1887,10 @@ fn spawn_rules_watcher_task(
                             "config change event received, reloading rules"
                         );
 
-                        let (new_stored_rules, inline_values) = load_stored_rules(&rules_storage);
+                        let (new_stored_rules, inline_values) = {
+                            let valid_dirs = resolve_valid_group_dirs(&admin_state);
+                            load_stored_rules(&rules_storage, Some(&valid_dirs))
+                        };
                         let mut new_values = {
                             use bifrost_core::ValueStore;
                             values_storage.read().as_hashmap()

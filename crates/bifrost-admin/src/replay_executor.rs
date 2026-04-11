@@ -1056,7 +1056,7 @@ impl ReplayExecutor {
             last_frame_id: 0,
             timing: Some(timing.clone()),
             request_headers: Some(applied_request.headers.clone()),
-            response_headers: Some(response_headers.to_vec()),
+            original_response_headers: Some(response_headers.to_vec()),
             matched_rules: if applied_rules.is_empty() {
                 None
             } else {
@@ -1083,7 +1083,7 @@ impl ReplayExecutor {
             } else {
                 None
             },
-            actual_response_headers: None,
+            response_headers: None,
             error_message: None,
             req_script_results: None,
             res_script_results: None,

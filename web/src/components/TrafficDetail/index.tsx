@@ -498,7 +498,7 @@ export default function TrafficDetail({
         children: (
           <HeaderView
             headers={record.response_headers}
-            actualHeaders={record.actual_response_headers}
+            originalHeaders={record.original_response_headers}
             testIdPrefix="response-header-view"
             searchValue={responseSearch}
             onSearch={setResponseSearch}

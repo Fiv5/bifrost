@@ -41,9 +41,9 @@ use self::host_rule::parse_host_rule;
 use self::io::{BufferedIo, CombinedAsyncRw};
 
 use super::handler::{
-    build_connection_error_response, build_overridden_error_response, needs_body_processing,
-    needs_request_body_processing, needs_response_override, parse_and_record_sse_events,
-    ConnectionErrorInfo,
+    build_connection_error_response, build_error_body, build_overridden_error_response,
+    needs_body_processing, needs_request_body_processing, needs_response_override,
+    parse_and_record_sse_events, ConnectionErrorInfo,
 };
 use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
@@ -68,7 +68,7 @@ use crate::utils::logging::{format_rules_summary, RequestContext};
 use crate::utils::process_info::spawn_async_process_resolver;
 use crate::utils::tee::{
     create_metrics_body, create_request_tee_body, create_sse_tee_body, create_tee_body_with_store,
-    store_request_body, BodyCaptureHandle,
+    store_request_body, store_response_body, BodyCaptureHandle,
 };
 use crate::utils::throttle::wrap_throttled_body;
 
@@ -2139,6 +2139,56 @@ async fn handle_intercepted_request_with_protocol(
                         req_content_encoding.as_deref(),
                     )
                 };
+
+                let response_body = if needs_response_override(&resolved_rules) {
+                    if let Some(ref res_body) = resolved_rules.res_body {
+                        res_body.clone()
+                    } else {
+                        build_error_body(record.status, &error_info)
+                    }
+                } else {
+                    build_error_body(502, &error_info)
+                };
+                record.response_body_ref = if let Some(ref body_store) = state.body_store {
+                    let store = body_store.read();
+                    store.store(req_id, "res", response_body.as_ref())
+                } else {
+                    store_response_body(&admin_state, req_id, &response_body)
+                };
+
+                {
+                    let mut res_header_pairs: Vec<(String, String)> = Vec::new();
+                    if needs_response_override(&resolved_rules) {
+                        for (name, value) in &resolved_rules.res_headers {
+                            res_header_pairs.push((name.clone(), value.clone()));
+                        }
+                        if resolved_rules.res_body.is_none() {
+                            res_header_pairs.push((
+                                "content-type".to_string(),
+                                "text/plain; charset=utf-8".to_string(),
+                            ));
+                            res_header_pairs
+                                .push(("x-bifrost-error".to_string(), error_type.to_string()));
+                        }
+                    } else {
+                        res_header_pairs.push((
+                            "content-type".to_string(),
+                            "text/plain; charset=utf-8".to_string(),
+                        ));
+                        res_header_pairs
+                            .push(("x-bifrost-error".to_string(), error_type.to_string()));
+                    }
+                    if !res_header_pairs.is_empty() {
+                        record.original_response_headers = Some(res_header_pairs);
+                    }
+                }
+
+                record.response_size = calculate_response_size(
+                    record.status,
+                    record.original_response_headers.as_deref().unwrap_or(&[]),
+                    response_body.len(),
+                );
+
                 state.record_traffic(record);
             }
             if needs_response_override(&resolved_rules) {
@@ -2564,9 +2614,9 @@ async fn handle_intercepted_request_with_protocol(
                     total_ms,
                 });
                 record.request_headers = Some(final_req_headers.clone());
-                record.response_headers = Some(original_res_headers.clone());
+                record.original_response_headers = Some(original_res_headers.clone());
                 if res_headers != original_res_headers {
-                    record.actual_response_headers = Some(res_headers.clone());
+                    record.response_headers = Some(res_headers.clone());
                 }
                 if !super::headers_pairs_equal_ignore_order(
                     &original_req_headers,
@@ -2761,9 +2811,9 @@ async fn handle_intercepted_request_with_protocol(
             total_ms,
         });
         record.request_headers = Some(final_req_headers.clone());
-        record.response_headers = Some(original_res_headers.clone());
+        record.original_response_headers = Some(original_res_headers.clone());
         if res_headers != original_res_headers {
-            record.actual_response_headers = Some(res_headers.clone());
+            record.response_headers = Some(res_headers.clone());
         }
         if !super::headers_pairs_equal_ignore_order(&original_req_headers, &final_req_headers) {
             record.original_request_headers = Some(original_req_headers.clone());

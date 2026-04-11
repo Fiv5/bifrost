@@ -792,6 +792,8 @@ pub enum TrafficCommands {
 pub enum RuleCommands {
     #[command(about = "List all rules")]
     List,
+    #[command(about = "Show active (enabled) rules summary from running server")]
+    Active,
     #[command(about = "Add a new rule")]
     Add {
         #[arg(help = "Rule name")]

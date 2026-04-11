@@ -635,7 +635,7 @@ fn record_traffic_for_unified(
         last_frame_id: 0,
         timing: None,
         request_headers: Some(applied_request.headers.clone()),
-        response_headers: Some(response_headers.to_vec()),
+        original_response_headers: Some(response_headers.to_vec()),
         matched_rules: if matched_rules.is_empty() {
             None
         } else {
@@ -650,7 +650,7 @@ fn record_traffic_for_unified(
         actual_url: None,
         actual_host: None,
         original_request_headers: None,
-        actual_response_headers: None,
+        response_headers: None,
         error_message: None,
         req_script_results: None,
         res_script_results: None,
@@ -2447,7 +2447,7 @@ fn record_traffic_for_stream(
         last_frame_id: 0,
         timing: None,
         request_headers: Some(applied_request.headers.clone()),
-        response_headers: None,
+        original_response_headers: None,
         matched_rules: if matched_rules.is_empty() {
             None
         } else {
@@ -2462,7 +2462,7 @@ fn record_traffic_for_stream(
         actual_url: None,
         actual_host: None,
         original_request_headers: None,
-        actual_response_headers: None,
+        response_headers: None,
         error_message: None,
         req_script_results: None,
         res_script_results: None,

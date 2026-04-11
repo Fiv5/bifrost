@@ -244,6 +244,11 @@ impl SyncManager {
         state.user.as_ref().map(|u| u.user_id.clone())
     }
 
+    pub fn has_session(&self) -> bool {
+        let state = self.state.lock();
+        state.token.as_deref().is_some_and(|t| !t.trim().is_empty())
+    }
+
     pub async fn login_url(&self, callback_url: &str) -> Result<String> {
         let config = self.config_manager.config().await;
         let client = SyncHttpClient::new(&config.sync)?;
@@ -549,6 +554,10 @@ impl SyncManager {
         let token = token.unwrap_or_default();
         let user = client.get_user_info(&config.sync, &token).await?;
         let Some(user) = user else {
+            let was_authorized = {
+                let runtime = self.runtime.read().await;
+                runtime.authorized
+            };
             {
                 let mut state = self.state.lock();
                 state.user = None;
@@ -561,6 +570,14 @@ impl SyncManager {
             runtime.syncing = false;
             runtime.reason = SyncReason::Unauthorized;
             runtime.last_error = None;
+            drop(runtime);
+            if was_authorized {
+                tracing::info!(
+                    target: "bifrost_sync::manager",
+                    "session expired, triggering rules reload to disable group rules"
+                );
+                let _ = self.config_manager.notify(ConfigChangeEvent::RulesChanged);
+            }
             return Ok(());
         };
 

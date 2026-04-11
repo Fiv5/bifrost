@@ -488,19 +488,38 @@ impl RulesStorage {
     }
 
     pub fn load_enabled_with_subdirs(&self) -> Result<Vec<RuleFile>> {
+        self.load_enabled_with_subdirs_filtered(None)
+    }
+
+    pub fn load_enabled_with_subdirs_filtered(
+        &self,
+        valid_subdirs: Option<&std::collections::HashSet<String>>,
+    ) -> Result<Vec<RuleFile>> {
         let mut all_enabled = self.load_enabled()?;
 
         if let Ok(entries) = fs::read_dir(&self.base_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
+                    let dir_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
+
+                    if let Some(valid) = valid_subdirs {
+                        if !valid.contains(dir_name) {
+                            tracing::warn!(
+                                target: "bifrost_storage::rules",
+                                subdir = %dir_name,
+                                "skipping subdirectory not in valid group list"
+                            );
+                            continue;
+                        }
+                    }
+
                     if let Ok(sub_storage) = RulesStorage::with_dir(path.clone()) {
                         match sub_storage.load_enabled() {
                             Ok(sub_enabled) => {
-                                let dir_name = path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("unknown");
                                 if !sub_enabled.is_empty() {
                                     tracing::info!(
                                         target: "bifrost_storage::rules",
@@ -877,5 +896,50 @@ mod tests {
 
         let updated = storage.load("demo").unwrap();
         assert_eq!(updated.sync.status, RuleSyncStatus::Modified);
+    }
+
+    #[test]
+    fn test_delete_synced_rule_removes_from_disk() {
+        let (_temp_dir, storage) = setup();
+        let mut rule = RuleFile::new("synced-rule", "example.com host://127.0.0.1:3000");
+        rule.mark_synced(
+            "remote-1",
+            "user-1",
+            "2026-03-20T09:00:00Z",
+            "2026-03-20T10:00:00Z",
+        );
+        storage.save(&rule).unwrap();
+
+        assert!(storage.exists("synced-rule"));
+        let loaded = storage.load("synced-rule").unwrap();
+        assert!(loaded.sync.remote_id.is_some());
+
+        storage.delete("synced-rule").unwrap();
+        assert!(!storage.exists("synced-rule"));
+    }
+
+    #[test]
+    fn test_delete_synced_rule_excluded_from_enabled_list() {
+        let (_temp_dir, storage) = setup();
+        let mut rule = RuleFile::new("enabled-synced", "example.com host://127.0.0.1:3000");
+        rule.mark_synced(
+            "remote-1",
+            "user-1",
+            "2026-03-20T09:00:00Z",
+            "2026-03-20T10:00:00Z",
+        );
+        storage.save(&rule).unwrap();
+        storage
+            .save(&RuleFile::new("other-rule", "other.com host://127.0.0.1"))
+            .unwrap();
+
+        let enabled_before = storage.load_enabled().unwrap();
+        assert_eq!(enabled_before.len(), 2);
+
+        storage.delete("enabled-synced").unwrap();
+
+        let enabled_after = storage.load_enabled().unwrap();
+        assert_eq!(enabled_after.len(), 1);
+        assert_eq!(enabled_after[0].name, "other-rule");
     }
 }

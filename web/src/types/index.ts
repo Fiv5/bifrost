@@ -123,7 +123,7 @@ export interface TrafficRecord extends TrafficSummary {
   actual_url?: string | null;
   actual_host?: string | null;
   original_request_headers?: [string, string][] | null;
-  actual_response_headers?: [string, string][] | null;
+  original_response_headers?: [string, string][] | null;
   req_script_results?: ScriptExecutionResult[] | null;
   res_script_results?: ScriptExecutionResult[] | null;
 }
