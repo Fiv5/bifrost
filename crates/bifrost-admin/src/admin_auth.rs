@@ -5,6 +5,7 @@ use bifrost_core::{BifrostError, Result};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::state::AdminState;
 
@@ -35,7 +36,10 @@ pub fn is_remote_access_enabled(state: &AdminState) -> bool {
     let Some(storage) = state.values_storage.as_ref() else {
         return false;
     };
-    let guard = storage.read();
+    let mut guard = storage.write();
+    if let Err(e) = guard.refresh() {
+        warn!(error = %e, "Failed to refresh values storage");
+    }
     match guard.get_value(ADMIN_REMOTE_ACCESS_ENABLED_KEY) {
         Some(v) => matches!(
             v.trim().to_ascii_lowercase().as_str(),
@@ -47,6 +51,12 @@ pub fn is_remote_access_enabled(state: &AdminState) -> bool {
 
 pub fn get_admin_username(state: &AdminState) -> Option<String> {
     let storage = state.values_storage.as_ref()?;
+    {
+        let mut guard = storage.write();
+        if let Err(e) = guard.refresh() {
+            warn!(error = %e, "Failed to refresh values storage");
+        }
+    }
     let guard = storage.read();
     guard
         .get_value(ADMIN_AUTH_USERNAME_KEY)
@@ -62,6 +72,7 @@ pub fn ensure_admin_auth_material(state: &AdminState) -> Result<()> {
         ));
     };
     let mut guard = storage.write();
+    guard.refresh()?;
 
     if guard
         .get_value(ADMIN_AUTH_USERNAME_KEY)
@@ -101,9 +112,9 @@ pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()>
 
     let hashed = hash(password, DEFAULT_COST)
         .map_err(|e| BifrostError::Storage(format!("Failed to hash password: {e}")))?;
-    storage
-        .write()
-        .set_value(ADMIN_AUTH_PASSWORD_HASH_KEY, &hashed)?;
+    let mut guard = storage.write();
+    guard.refresh()?;
+    guard.set_value(ADMIN_AUTH_PASSWORD_HASH_KEY, &hashed)?;
     Ok(())
 }
 
@@ -117,6 +128,10 @@ pub fn verify_admin_credentials(
             "Values storage not configured".to_string(),
         ));
     };
+    {
+        let mut guard = storage.write();
+        guard.refresh()?;
+    }
     let guard = storage.read();
     let expected_username = guard
         .get_value(ADMIN_AUTH_USERNAME_KEY)
@@ -138,6 +153,10 @@ fn jwt_secret(state: &AdminState) -> Result<String> {
             "Values storage not configured".to_string(),
         ));
     };
+    {
+        let mut guard = storage.write();
+        guard.refresh()?;
+    }
     let guard = storage.read();
     let secret = guard
         .get_value(ADMIN_AUTH_JWT_SECRET_KEY)
@@ -179,9 +198,9 @@ pub fn revoke_all_admin_sessions(state: &AdminState) -> Result<()> {
         ));
     };
     let ts = now_unix();
-    storage
-        .write()
-        .set_value(ADMIN_AUTH_REVOKE_BEFORE_KEY, &ts.to_string())?;
+    let mut guard = storage.write();
+    guard.refresh()?;
+    guard.set_value(ADMIN_AUTH_REVOKE_BEFORE_KEY, &ts.to_string())?;
     Ok(())
 }
 
@@ -213,14 +232,15 @@ pub fn validate_admin_jwt(state: &AdminState, token: &str) -> Result<AdminJwtCla
         ));
     }
 
-    // revoke-all：iat 必须 >= revoke_before
+    // revoke-all：iat 必须 > revoke_before（秒级时间戳，使用 <= 兼容同秒 revoke）
     if let Some(storage) = state.values_storage.as_ref() {
-        if let Some(revoke_before) = storage
-            .read()
+        let mut guard = storage.write();
+        guard.refresh()?;
+        if let Some(revoke_before) = guard
             .get_value(ADMIN_AUTH_REVOKE_BEFORE_KEY)
             .and_then(|s| s.trim().parse::<i64>().ok())
         {
-            if claims.iat < revoke_before {
+            if claims.iat <= revoke_before {
                 return Err(BifrostError::Proxy("Token revoked".to_string()));
             }
         }
@@ -317,7 +337,7 @@ mod tests {
             .expect("jwt secret");
 
         let now = now_unix();
-        let revoke_before = now + 10;
+        let revoke_before = now;
         state
             .values_storage
             .as_ref()

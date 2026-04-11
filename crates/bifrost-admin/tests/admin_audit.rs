@@ -21,4 +21,3 @@ fn test_admin_audit_record_and_list_and_count_round_trip() {
     let db_path = admin_audit::audit_db_path().expect("db path");
     assert!(db_path.exists(), "audit db file should exist");
 }
-

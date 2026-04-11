@@ -207,9 +207,9 @@ impl AdminRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bifrost_storage::ValuesStorage;
     use crate::admin_auth::ADMIN_REMOTE_ACCESS_ENABLED_KEY;
     use crate::state::AdminState;
+    use bifrost_storage::ValuesStorage;
 
     fn new_state_remote_enabled() -> (SharedAdminState, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -231,7 +231,10 @@ mod tests {
     #[test]
     fn test_check_api_auth_requires_token_when_remote_enabled() {
         let (state, _tmp) = new_state_remote_enabled();
-        let req = Request::builder().uri("/_bifrost/api/system/status").body(()).unwrap();
+        let req = Request::builder()
+            .uri("/_bifrost/api/system/status")
+            .body(())
+            .unwrap();
         let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status")
             .expect("should reject without token");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -240,7 +243,10 @@ mod tests {
     #[test]
     fn test_check_api_auth_skips_auth_endpoints() {
         let (state, _tmp) = new_state_remote_enabled();
-        let req = Request::builder().uri("/_bifrost/api/auth/status").body(()).unwrap();
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/status")
+            .body(())
+            .unwrap();
         let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/status");
         assert!(resp.is_none());
     }

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+set -uo pipefail
 
 # 避免环境中的代理变量干扰本地 curl（特别是 http_proxy/https_proxy）。
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
@@ -97,6 +97,30 @@ trap cleanup EXIT
 
 log() { echo "[remote-auth-e2e] $*"; }
 
+assert_equals() {
+    local expected="$1"
+    local actual="$2"
+    local msg="${3:-Values should be equal}"
+
+    if [[ "$expected" == "$actual" ]]; then
+        _log_pass "$msg"
+        return 0
+    fi
+    _log_fail "$msg" "$expected" "$actual"
+    return 1
+}
+
+assert_json_field() {
+    local json="$1"
+    local field="$2"
+    local expected="$3"
+    local msg="${4:-JSON field should match}"
+
+    local actual
+    actual=$(echo "$json" | jq -r "$field")
+    assert_equals "$expected" "$actual" "$msg"
+}
+
 require_cmd() {
     local cmd="$1"
     command -v "$cmd" >/dev/null 2>&1 || {
@@ -143,13 +167,17 @@ NON_LOOPBACK_IP="$(get_non_loopback_ip)"
 log "Case: remote access disabled -> local admin should work"
 http_get "${ADMIN_URL_127}/api/auth/status"
 assert_status "200" "$HTTP_STATUS" "本地访问 /api/auth/status 应返回 200"
-assert_json_field ".remote_access_enabled" "false" "$HTTP_BODY"
-assert_json_field ".auth_required" "false" "$HTTP_BODY"
+assert_json_field "$HTTP_BODY" ".remote_access_enabled" "false" "remote_access_enabled 应为 false"
+assert_json_field "$HTTP_BODY" ".auth_required" "false" "auth_required 应为 false"
 
 if [[ -n "${NON_LOOPBACK_IP:-}" ]]; then
     log "Case: remote access disabled -> non-loopback admin should be rejected"
     http_get "http://${NON_LOOPBACK_IP}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/auth/status"
-    assert_status "403" "$HTTP_STATUS" "非 loopback 访问管理端应返回 403"
+    if [[ "$HTTP_STATUS" == "000" ]]; then
+        _log_warning "非 loopback 地址不可达（curl 连接失败），跳过 403 断言"
+    else
+        assert_status "403" "$HTTP_STATUS" "非 loopback 访问管理端应返回 403"
+    fi
 else
     _log_warning "无法获取非 loopback IP，跳过非本地访问门禁断言"
 fi
@@ -160,15 +188,15 @@ create_rule "$RULE_NAME" "example.com http://127.0.0.1:3000" "true" >/dev/null
 
 proxy_get "http://127.0.0.1:${ADMIN_PORT}" "http://example.com/remote-auth-pre"
 assert_status "200" "$HTTP_STATUS" "代理转发在鉴权开启前应正常工作"
-assert_json_field ".server.port" "3000" "$HTTP_BODY"
+assert_json_field "$HTTP_BODY" ".server.port" "3000" "代理应转发到 mock http_echo_server(3000)"
 
 log "Enable remote access and set admin password via CLI"
 ADMIN_PASSWORD="test-pass-${RANDOM}-${RANDOM}"
-printf '%s\n' "$ADMIN_PASSWORD" | "$BIFROST_BIN" admin passwd --username admin --password-stdin >/dev/null
-"$BIFROST_BIN" admin remote enable >/dev/null
+printf '%s\n' "$ADMIN_PASSWORD" | BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" admin passwd --username admin --password-stdin >/dev/null
+BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" admin remote enable >/dev/null
 
 log "Case: protected API without token -> 401"
-http_get "${ADMIN_URL_127}/api/system/status"
+http_get "${ADMIN_URL_127}/api/rules"
 assert_status "401" "$HTTP_STATUS" "未携带 Token 访问受保护 API 应返回 401"
 
 log "Login -> get token"
@@ -182,20 +210,20 @@ if [[ -z "${TOKEN:-}" || "$TOKEN" == "null" ]]; then
 fi
 
 log "Case: protected API with token -> 200"
-http_get "${ADMIN_URL_127}/api/system/status" "Authorization: Bearer ${TOKEN}"
+http_get "${ADMIN_URL_127}/api/rules" "Authorization: Bearer ${TOKEN}"
 assert_status "200" "$HTTP_STATUS" "携带有效 Token 访问受保护 API 应返回 200"
 
 log "Revoke all sessions via CLI"
-"$BIFROST_BIN" admin revoke-all >/dev/null
+BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" admin revoke-all >/dev/null
 
 log "Case: old token after revoke-all -> 401"
-http_get "${ADMIN_URL_127}/api/system/status" "Authorization: Bearer ${TOKEN}"
+http_get "${ADMIN_URL_127}/api/rules" "Authorization: Bearer ${TOKEN}"
 assert_status "401" "$HTTP_STATUS" "revoke-all 后旧 Token 应失效返回 401"
 
 log "Ensure data plane forwarding still works after enabling/revoking admin auth"
 proxy_get "http://127.0.0.1:${ADMIN_PORT}" "http://example.com/remote-auth-post"
 assert_status "200" "$HTTP_STATUS" "代理转发不应受管理端鉴权影响"
-assert_json_field ".server.port" "3000" "$HTTP_BODY"
+assert_json_field "$HTTP_BODY" ".server.port" "3000" "代理应持续转发到 mock http_echo_server(3000)"
 
 delete_rule "$RULE_NAME" >/dev/null 2>&1 || true
 
