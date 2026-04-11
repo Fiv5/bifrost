@@ -2,9 +2,9 @@ use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use tracing::debug;
 
 use crate::handlers::{
-    auth::{extract_bearer_token, handle_auth},
     app_icon::handle_app_icon,
     audit::handle_audit,
+    auth::{extract_bearer_token, handle_auth},
     bifrost_file::handle_bifrost_file,
     cert::{handle_cert, handle_cert_public, handle_proxy_public},
     config::handle_config,

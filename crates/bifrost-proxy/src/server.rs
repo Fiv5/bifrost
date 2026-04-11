@@ -1371,8 +1371,12 @@ async fn handle_request(
                 return Ok(convert_admin_response(
                     AdminRouter::handle(req, state, push_manager).await,
                 ));
-            } else if is_valid_admin_request(&req, peer_addr, &admin_security_config, allow_remote_admin)
-            {
+            } else if is_valid_admin_request(
+                &req,
+                peer_addr,
+                &admin_security_config,
+                allow_remote_admin,
+            ) {
                 debug!(
                     "Valid admin request from {}: {} {}",
                     peer_addr, method, path

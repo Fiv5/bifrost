@@ -37,7 +37,10 @@ pub fn is_remote_access_enabled(state: &AdminState) -> bool {
     };
     let guard = storage.read();
     match guard.get_value(ADMIN_REMOTE_ACCESS_ENABLED_KEY) {
-        Some(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Some(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         None => false,
     }
 }
@@ -54,7 +57,9 @@ pub fn get_admin_username(state: &AdminState) -> Option<String> {
 
 pub fn ensure_admin_auth_material(state: &AdminState) -> Result<()> {
     let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config("Values storage not configured".to_string()));
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
     };
     let mut guard = storage.write();
 
@@ -85,7 +90,9 @@ pub fn ensure_admin_auth_material(state: &AdminState) -> Result<()> {
 #[allow(dead_code)]
 pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()> {
     let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config("Values storage not configured".to_string()));
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
     };
 
     if password.is_empty() {
@@ -100,9 +107,15 @@ pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()>
     Ok(())
 }
 
-pub fn verify_admin_credentials(state: &AdminState, username: &str, password: &str) -> Result<bool> {
+pub fn verify_admin_credentials(
+    state: &AdminState,
+    username: &str,
+    password: &str,
+) -> Result<bool> {
     let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config("Values storage not configured".to_string()));
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
     };
     let guard = storage.read();
     let expected_username = guard
@@ -121,7 +134,9 @@ pub fn verify_admin_credentials(state: &AdminState, username: &str, password: &s
 
 fn jwt_secret(state: &AdminState) -> Result<String> {
     let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config("Values storage not configured".to_string()));
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
     };
     let guard = storage.read();
     let secret = guard
@@ -159,7 +174,9 @@ pub fn issue_admin_jwt(state: &AdminState, username: &str) -> Result<(String, Ad
 
 pub fn revoke_all_admin_sessions(state: &AdminState) -> Result<()> {
     let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config("Values storage not configured".to_string()));
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
     };
     let ts = now_unix();
     storage

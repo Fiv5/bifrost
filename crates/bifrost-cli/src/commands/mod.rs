@@ -1,5 +1,5 @@
-mod bifrost_file;
 mod admin;
+mod bifrost_file;
 mod ca;
 mod completions;
 pub(crate) mod config;
@@ -21,8 +21,8 @@ mod upgrade;
 mod value;
 mod whitelist;
 
-pub use ca::*;
 pub use admin::*;
+pub use ca::*;
 pub use config::handle_config_command;
 pub use group::handle_group_command;
 pub use install_skill::handle_install_skill;

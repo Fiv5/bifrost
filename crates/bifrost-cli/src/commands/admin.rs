@@ -44,7 +44,12 @@ fn set_remote_enabled(storage: &mut ValuesStorage, enabled: bool) -> Result<()> 
 fn get_remote_enabled(storage: &ValuesStorage) -> bool {
     storage
         .get_value(bifrost_admin::ADMIN_REMOTE_ACCESS_ENABLED_KEY)
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -83,9 +88,19 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                     let username = storage
                         .get_value(bifrost_admin::ADMIN_AUTH_USERNAME_KEY)
                         .unwrap_or_else(|| "admin".to_string());
-                    println!("Remote admin access: {}", if enabled { "enabled" } else { "disabled" });
+                    println!(
+                        "Remote admin access: {}",
+                        if enabled { "enabled" } else { "disabled" }
+                    );
                     println!("Admin username: {}", username.trim());
-                    println!("Admin password: {}", if has_password(&storage) { "set" } else { "not set" });
+                    println!(
+                        "Admin password: {}",
+                        if has_password(&storage) {
+                            "set"
+                        } else {
+                            "not set"
+                        }
+                    );
                     println!(
                         "Audit DB: {}",
                         bifrost_admin::admin_audit::audit_db_path()?.display()
@@ -96,22 +111,22 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
         AdminCommands::Passwd { username } => {
             let mut storage = open_values_storage()?;
             ensure_username(&mut storage, &username)?;
-            let pwd = prompt_new_password().map_err(|e| {
-                BifrostError::Config(format!("Failed to read password: {e}"))
-            })?;
+            let pwd = prompt_new_password()
+                .map_err(|e| BifrostError::Config(format!("Failed to read password: {e}")))?;
             set_password(&mut storage, &pwd)?;
             println!("Admin password updated.");
         }
         AdminCommands::RevokeAll => {
             let mut storage = open_values_storage()?;
             let ts = chrono::Utc::now().timestamp();
-            storage.set_value(
-                bifrost_admin::ADMIN_AUTH_REVOKE_BEFORE_KEY,
-                &ts.to_string(),
-            )?;
+            storage.set_value(bifrost_admin::ADMIN_AUTH_REVOKE_BEFORE_KEY, &ts.to_string())?;
             println!("All admin sessions revoked (revoke_before={}).", ts);
         }
-        AdminCommands::Audit { limit, offset, json } => {
+        AdminCommands::Audit {
+            limit,
+            offset,
+            json,
+        } => {
             let limit = limit.clamp(1, 500);
             let total = bifrost_admin::admin_audit::count_logins()?;
             let items = bifrost_admin::admin_audit::list_logins(limit, offset)?;
@@ -122,17 +137,27 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                     "offset": offset,
                     "items": items,
                 });
-                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| out.to_string()));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&out).unwrap_or_else(|_| out.to_string())
+                );
                 return Ok(());
             }
 
             if items.is_empty() {
                 println!("No audit records.");
-                println!("Audit DB: {}", bifrost_admin::admin_audit::audit_db_path()?.display());
+                println!(
+                    "Audit DB: {}",
+                    bifrost_admin::admin_audit::audit_db_path()?.display()
+                );
                 return Ok(());
             }
 
-            println!("Admin login audit (total: {}, showing: {}):", total, items.len());
+            println!(
+                "Admin login audit (total: {}, showing: {}):",
+                total,
+                items.len()
+            );
             println!("====================================================");
             for item in items {
                 let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(item.ts, 0)
@@ -148,7 +173,10 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                     item.id, ts, item.username, item.ip, ua_preview
                 );
             }
-            println!("Audit DB: {}", bifrost_admin::admin_audit::audit_db_path()?.display());
+            println!(
+                "Audit DB: {}",
+                bifrost_admin::admin_audit::audit_db_path()?.display()
+            );
         }
     }
 

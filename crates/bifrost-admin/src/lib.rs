@@ -1,6 +1,6 @@
-mod app_icon;
-mod admin_auth;
 pub mod admin_audit;
+mod admin_auth;
+mod app_icon;
 mod async_traffic;
 mod body_store;
 pub mod connection_monitor;
@@ -31,12 +31,12 @@ mod ws_payload_store;
 #[cfg(test)]
 mod tests;
 
-pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
 pub use admin_auth::{
     get_admin_username, is_remote_access_enabled, revoke_all_admin_sessions, validate_admin_jwt,
     AdminJwtClaims, ADMIN_AUTH_PASSWORD_HASH_KEY, ADMIN_AUTH_REVOKE_BEFORE_KEY,
     ADMIN_AUTH_USERNAME_KEY, ADMIN_REMOTE_ACCESS_ENABLED_KEY,
 };
+pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
 pub use async_traffic::{
     start_async_traffic_processor, AsyncTrafficWriter, SharedAsyncTrafficWriter, TrafficCommand,
 };

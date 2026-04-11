@@ -2,10 +2,10 @@ use hyper::{body::Incoming, header, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::{cors_preflight, error_response, json_response, method_not_allowed, BoxBody};
-use crate::admin_auth::{
-    get_admin_username, issue_admin_jwt, is_remote_access_enabled, verify_admin_credentials,
-};
 use crate::admin_audit;
+use crate::admin_auth::{
+    get_admin_username, is_remote_access_enabled, issue_admin_jwt, verify_admin_credentials,
+};
 use crate::state::SharedAdminState;
 
 #[derive(Debug, Deserialize)]
@@ -75,12 +75,16 @@ pub async fn handle_auth(
 
         let body = match http_body_util::BodyExt::collect(req.into_body()).await {
             Ok(collected) => collected.to_bytes(),
-            Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "Failed to read request body")
+            }
         };
 
         let login: LoginRequest = match serde_json::from_slice(&body) {
             Ok(v) => v,
-            Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}")),
+            Err(e) => {
+                return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}"))
+            }
         };
 
         let ok = match verify_admin_credentials(&state, &login.username, &login.password) {
@@ -123,8 +127,10 @@ pub async fn handle_auth(
             expires_at,
             username: login.username,
         });
-        resp.headers_mut()
-            .insert(header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+        resp.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
         return resp;
     }
 
@@ -147,7 +153,9 @@ pub async fn handle_auth(
 pub fn extract_bearer_token(req: &Request<Incoming>) -> Option<String> {
     let header_val = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     let v = header_val.trim();
-    let token = v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer "))?;
+    let token = v
+        .strip_prefix("Bearer ")
+        .or_else(|| v.strip_prefix("bearer "))?;
     let token = token.trim();
     if token.is_empty() {
         return None;

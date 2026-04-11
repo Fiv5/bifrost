@@ -41,8 +41,7 @@ pub fn record_login(username: &str, ip: &str, ua: &str) -> Result<()> {
     let db_path = audit_db_path()?;
     let conn = Connection::open(db_path)
         .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
-    init_db(&conn)
-        .map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
+    init_db(&conn).map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
 
     let ts = chrono::Utc::now().timestamp();
     conn.execute(
@@ -60,8 +59,7 @@ pub fn list_logins(limit: usize, offset: usize) -> Result<Vec<AdminLoginAuditEnt
     }
     let conn = Connection::open(db_path)
         .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
-    init_db(&conn)
-        .map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
+    init_db(&conn).map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
 
     let mut stmt = conn
         .prepare(
@@ -98,11 +96,12 @@ pub fn count_logins() -> Result<i64> {
     }
     let conn = Connection::open(db_path)
         .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
-    init_db(&conn)
-        .map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
+    init_db(&conn).map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
 
     let count: i64 = conn
-        .query_row("SELECT COUNT(1) FROM admin_login_audit", [], |row| row.get(0))
+        .query_row("SELECT COUNT(1) FROM admin_login_audit", [], |row| {
+            row.get(0)
+        })
         .map_err(|e| BifrostError::Storage(format!("Failed to count audit rows: {e}")))?;
     Ok(count)
 }
