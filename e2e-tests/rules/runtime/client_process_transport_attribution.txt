@@ -2,4 +2,5 @@
 http-attr.local http://127.0.0.1:__ECHO_HTTP_PORT__
 ws-attr.local ws://127.0.0.1:__ECHO_WS_PORT__
 tunnel-attr.local tlsPassthrough:// https://127.0.0.1:__ECHO_HTTPS_PORT__
-httpbin.org/headers resHeaders://X-Socks5-Rule=applied
+socks5-attr.local http://127.0.0.1:__ECHO_HTTP_PORT__
+socks5-attr.local resHeaders://X-Socks5-Rule=applied
