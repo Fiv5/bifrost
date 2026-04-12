@@ -20,4 +20,35 @@ fn test_admin_audit_record_and_list_and_count_round_trip() {
 
     let db_path = admin_audit::audit_db_path().expect("db path");
     assert!(db_path.exists(), "audit db file should exist");
+
+    let before = chrono::Utc::now().timestamp();
+    admin_audit::record_login("operator", "192.168.8.31", "Mozilla/5.0 Chrome")
+        .expect("record login with remote ip");
+    let after = chrono::Utc::now().timestamp();
+
+    let recent = admin_audit::list_logins(1, 0).expect("list recent");
+    assert_eq!(recent.len(), 1);
+    let entry = &recent[0];
+    assert_eq!(entry.username, "operator");
+    assert_eq!(entry.ip, "192.168.8.31");
+    assert_eq!(entry.ua, "Mozilla/5.0 Chrome");
+    assert!(entry.ts >= before, "ts should be >= before");
+    assert!(entry.ts <= after, "ts should be <= after");
+
+    for i in 0..5 {
+        admin_audit::record_login("admin", &format!("10.0.0.{i}"), &format!("agent-{i}"))
+            .expect("record login for pagination");
+    }
+
+    let total = admin_audit::count_logins().expect("count after batch");
+    assert_eq!(total, 8);
+
+    let page1 = admin_audit::list_logins(3, 0).expect("page1");
+    assert_eq!(page1.len(), 3);
+
+    let page2 = admin_audit::list_logins(3, 3).expect("page2");
+    assert_eq!(page2.len(), 3);
+
+    assert!(page1[0].id > page1[2].id, "page1 should be desc");
+    assert!(page1[2].id > page2[0].id, "page2 should follow page1");
 }

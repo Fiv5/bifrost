@@ -86,3 +86,32 @@ export async function revokeAllSessions(): Promise<void> {
   }
 }
 
+export type LoginAuditEntry = {
+  id: number;
+  ts: number;
+  username: string;
+  ip: string;
+  ua: string;
+};
+
+export type LoginAuditResponse = {
+  total: number;
+  items: LoginAuditEntry[];
+  limit: number;
+  offset: number;
+};
+
+export async function fetchLoginAudit(
+  limit = 20,
+  offset = 0,
+): Promise<LoginAuditResponse> {
+  const resp = await apiFetch(
+    `/api/admin/audit?limit=${limit}&offset=${offset}`,
+    { method: 'GET' },
+  );
+  if (!resp.ok) {
+    throw new Error(`Failed to load audit logs: ${resp.status}`);
+  }
+  return (await resp.json()) as LoginAuditResponse;
+}
+

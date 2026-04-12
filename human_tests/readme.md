@@ -8,7 +8,7 @@
 
 | 文件 | 功能模块 | 测试用例数 | 说明 |
 |------|---------|-----------|------|
-| [remote-access-web-ui.md](./remote-access-web-ui.md) | 远程访问管理 Web UI | 13 | 管理端远程访问的配置、登录、会话管理等功能 |
+| [remote-access-web-ui.md](./remote-access-web-ui.md) | 远程访问管理 Web UI | 17 | 管理端远程访问的配置、登录、会话管理、登录记录展示等功能 |
 
 ## 工作流程
 

@@ -189,6 +189,70 @@
 
 ---
 
+### TC-RA-14：Session Management 卡片展示登录记录表格
+
+**前置条件**：已通过 TC-RA-08 远程登录至少一次
+
+**操作步骤**：
+1. 通过 localhost 打开 `http://127.0.0.1:8800/_bifrost/settings?tab=remote`
+2. 滚动到 "Session Management" 卡片
+
+**预期结果**：
+- Session Management 卡片中有一个表格，包含以下列：Time、IP、Username、User Agent
+- 表格中至少有 1 条登录记录
+- 登录记录中的 IP 为远程登录时的客户端 IP（如 `192.168.8.31`）
+- 登录记录中的 Username 为 `admin`
+- Time 列显示可读的日期时间格式，鼠标悬停显示 ISO 格式
+- User Agent 列显示浏览器 User Agent 信息
+- 表格底部显示总记录数（如 "1 records"）
+
+---
+
+### TC-RA-15：Session Management 登录记录分页
+
+**前置条件**：通过远程 IP 多次登录（超过 10 次）
+
+**操作步骤**：
+1. 通过 localhost 打开 `http://127.0.0.1:8800/_bifrost/settings?tab=remote`
+2. 在 Session Management 表格底部查看分页控件
+
+**预期结果**：
+- 每页显示 10 条记录
+- 可以通过分页控件翻页
+- 总记录数正确反映所有登录次数
+- 记录按时间倒序排列（最新的在最前面）
+
+---
+
+### TC-RA-16：Session Management 刷新按钮
+
+**操作步骤**：
+1. 通过 localhost 打开 `http://127.0.0.1:8800/_bifrost/settings?tab=remote`
+2. 在 Session Management 卡片右上角点击 "Refresh" 按钮
+
+**预期结果**：
+- 表格显示加载状态
+- 数据重新加载后展示最新的登录记录
+- 如果有新的登录事件发生，刷新后可见
+
+---
+
+### TC-RA-17：吊销所有会话后登录记录仍保留
+
+**前置条件**：已有至少 1 条登录记录
+
+**操作步骤**：
+1. 通过 localhost 打开 Settings → Remote Access Tab
+2. 点击 "Revoke All Sessions" 并确认
+3. 查看 Session Management 表格
+
+**预期结果**：
+- 显示 "All sessions revoked" 消息
+- 登录记录表格仍然保留之前的记录（审计日志不会被清除）
+- 记录数不变
+
+---
+
 ## 清理
 
 测试完成后清理临时数据：

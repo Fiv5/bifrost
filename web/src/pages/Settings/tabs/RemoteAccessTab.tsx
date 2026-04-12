@@ -11,13 +11,17 @@ import {
   Row,
   Space,
   Switch,
+  Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
+import type { ColumnsType } from "antd/es/table";
 import {
   KeyOutlined,
   LockOutlined,
+  ReloadOutlined,
   SafetyOutlined,
   StopOutlined,
   UserOutlined,
@@ -25,12 +29,56 @@ import {
 import {
   changeAdminPassword,
   fetchAdminAuthStatus,
+  fetchLoginAudit,
   revokeAllSessions,
   setRemoteAccess,
   type AdminAuthStatus,
+  type LoginAuditEntry,
 } from "../../../services/adminAuth";
 
 const { Text } = Typography;
+
+const auditColumns: ColumnsType<LoginAuditEntry> = [
+  {
+    title: "Time",
+    dataIndex: "ts",
+    key: "ts",
+    width: 180,
+    render: (ts: number) => {
+      const d = new Date(ts * 1000);
+      return (
+        <Tooltip title={d.toISOString()}>
+          {d.toLocaleString()}
+        </Tooltip>
+      );
+    },
+  },
+  {
+    title: "IP",
+    dataIndex: "ip",
+    key: "ip",
+    width: 160,
+  },
+  {
+    title: "Username",
+    dataIndex: "username",
+    key: "username",
+    width: 120,
+  },
+  {
+    title: "User Agent",
+    dataIndex: "ua",
+    key: "ua",
+    ellipsis: { showTitle: false },
+    render: (ua: string) => (
+      <Tooltip title={ua}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {ua || "-"}
+        </Text>
+      </Tooltip>
+    ),
+  },
+];
 
 export default function RemoteAccessTab() {
   const [status, setStatus] = useState<AdminAuthStatus | null>(null);
@@ -38,6 +86,11 @@ export default function RemoteAccessTab() {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [auditItems, setAuditItems] = useState<LoginAuditEntry[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const auditPageSize = 10;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -52,9 +105,24 @@ export default function RemoteAccessTab() {
     }
   }, []);
 
+  const refreshAudit = useCallback(async (page = 1) => {
+    setAuditLoading(true);
+    try {
+      const res = await fetchLoginAudit(auditPageSize, (page - 1) * auditPageSize);
+      setAuditItems(res.items);
+      setAuditTotal(res.total);
+      setAuditPage(page);
+    } catch {
+      // ignore
+    } finally {
+      setAuditLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    void refreshAudit(1);
+  }, [refresh, refreshAudit]);
 
   const handleToggleRemoteAccess = async (enabled: boolean) => {
     setLoading(true);
@@ -241,13 +309,40 @@ export default function RemoteAccessTab() {
                 <span>Session Management</span>
               </Space>
             }
+            extra={
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                onClick={() => void refreshAudit(auditPage)}
+                loading={auditLoading}
+              >
+                Refresh
+              </Button>
+            }
             size="small"
           >
             <Space direction="vertical" style={{ width: "100%" }}>
               <Text type="secondary">
-                Revoke all existing admin login sessions. This will force all
-                currently logged-in users to re-authenticate.
+                Recent admin login sessions. You can revoke all sessions to
+                force re-authentication.
               </Text>
+              <Table<LoginAuditEntry>
+                columns={auditColumns}
+                dataSource={auditItems}
+                rowKey="id"
+                size="small"
+                loading={auditLoading}
+                pagination={{
+                  current: auditPage,
+                  pageSize: auditPageSize,
+                  total: auditTotal,
+                  showTotal: (total) => `${total} records`,
+                  showSizeChanger: false,
+                  onChange: (page) => void refreshAudit(page),
+                }}
+                data-testid="settings-remote-audit-table"
+              />
+              <Divider style={{ margin: "4px 0" }} />
               <Popconfirm
                 title="Revoke all sessions?"
                 description="All logged-in admin sessions will be invalidated."
