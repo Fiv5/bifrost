@@ -11,6 +11,7 @@
 | 文件 | 功能模块 | 测试用例数 | 说明 |
 |------|---------|-----------|------|
 | [cli-start-stop-status.md](./cli-start-stop-status.md) | CLI 服务管理 | 24 | start/stop/status 命令，含守护进程、自定义端口、TLS 选项、规则加载、SOCKS5、LAN 访问、代理认证等 |
+| [cli-start-advanced.md](./cli-start-advanced.md) | CLI Start 高级参数 | 30 | TLS 拦截域名/应用排除与白名单、系统代理、CLI 代理环境变量、访问控制模式、Badge 注入、证书检查跳过、日志配置 |
 | [cli-rule-management.md](./cli-rule-management.md) | CLI 规则管理 | 45 | rule 子命令全覆盖：list/add/show/get/update/enable/disable/delete/rename/reorder/active/sync，含过滤器和 lineProps |
 | [cli-traffic-search.md](./cli-traffic-search.md) | CLI 流量与搜索 | 36 | traffic list/get/search/clear 命令，含多维度过滤器、搜索范围控制、交互式搜索 |
 | [cli-ca-cert.md](./cli-ca-cert.md) | CLI CA 证书管理 | 12 | ca generate/export/info/install 命令，含强制重新生成、指定路径导出、证书格式验证 |
@@ -48,6 +49,7 @@
 | [api-cert.md](./api-cert.md) | Cert API | 8 | 证书信息、CA 下载、QR 码生成 |
 | [api-proxy.md](./api-proxy.md) | Proxy API | 13 | 系统代理控制、CLI 代理状态、代理地址、QR 码 |
 | [api-config.md](./api-config.md) | Config API | 21 | 全量配置、TLS 配置、性能配置、缓存清理、连接断开 |
+| [api-config-advanced.md](./api-config-advanced.md) | Config API（高级） | 30 | Sandbox 沙箱配置、Server 服务器配置、UI 配置、IP-TLS Pending 管理、活跃连接管理 |
 | [api-metrics.md](./api-metrics.md) | Metrics API | 15 | 当前指标、历史指标、应用统计、主机统计 |
 | [api-system.md](./api-system.md) | System API | 16 | 系统信息、概览、内存诊断 |
 | [api-scripts.md](./api-scripts.md) | Scripts API | 30 | 脚本 CRUD、重命名、运行测试、名称校验、内置脚本保护 |
@@ -55,6 +57,9 @@
 | [api-replay.md](./api-replay.md) | Replay API | 17 | 重放集合管理、请求 CRUD、执行重放、历史查看 |
 | [api-group.md](./api-group.md) | Group API | 13 | 团队组列表/详情、团队规则 CRUD、权限校验 |
 | [api-search.md](./api-search.md) | Search API | 16 | 全文搜索、搜索范围、过滤条件、分页、流式搜索 |
+| [api-auth.md](./api-auth.md) | Auth API | 12 | 鉴权状态查询、登录、密码管理、远程访问开关、JWT 会话吊销 |
+| [api-sync.md](./api-sync.md) | Sync API | 30 | 同步状态/配置/登录/登出/运行/Session，Env/Room/User 代理转发端点 |
+| [api-misc.md](./api-misc.md) | Misc API | 32 | Syntax 语法信息、App Icon、WebSocket 连接、Audit 审计日志、Bifrost File 导入导出 |
 
 ### 代理核心功能测试
 
@@ -63,10 +68,11 @@
 | [proxy-http-https.md](./proxy-http-https.md) | HTTP/HTTPS 代理 | 24 | HTTP 转发、HTTPS CONNECT、TLS 拦截、各类规则协议、模式匹配 |
 | [proxy-socks5.md](./proxy-socks5.md) | SOCKS5 代理 | 3 | SOCKS5 基本代理、DNS 解析、HTTPS 透传 |
 | [proxy-websocket-sse.md](./proxy-websocket-sse.md) | WebSocket/SSE 代理 | 6 | WebSocket/SSE 代理转发、帧/事件捕获、UI 消息面板 |
+| [proxy-rules-advanced.md](./proxy-rules-advanced.md) | 规则协议全量测试 | 58 | 40+ 规则操作协议：请求/响应修改、内容注入、控制、路由、脚本、高级特性（Values 引用、模板字符串、正则捕获） |
 
 ---
 
-**总计：37 个测试文件，700+ 个测试用例**
+**总计：43 个测试文件，956 个测试用例**
 
 ## 工作流程
 
