@@ -6,9 +6,67 @@
 
 ## 目录结构
 
+### CLI 命令测试
+
 | 文件 | 功能模块 | 测试用例数 | 说明 |
 |------|---------|-----------|------|
-| [remote-access-web-ui.md](./remote-access-web-ui.md) | 远程访问管理 Web UI | 17 | 管理端远程访问的配置、登录、会话管理、登录记录展示等功能 |
+| [cli-start-stop-status.md](./cli-start-stop-status.md) | CLI 服务管理 | 24 | start/stop/status 命令，含守护进程、自定义端口、TLS 选项、规则加载、SOCKS5、LAN 访问、代理认证等 |
+| [cli-rule-management.md](./cli-rule-management.md) | CLI 规则管理 | 45 | rule 子命令全覆盖：list/add/show/get/update/enable/disable/delete/rename/reorder/active/sync，含过滤器和 lineProps |
+| [cli-traffic-search.md](./cli-traffic-search.md) | CLI 流量与搜索 | 36 | traffic list/get/search/clear 命令，含多维度过滤器、搜索范围控制、交互式搜索 |
+| [cli-ca-cert.md](./cli-ca-cert.md) | CLI CA 证书管理 | 12 | ca generate/export/info/install 命令，含强制重新生成、指定路径导出、证书格式验证 |
+| [cli-values-scripts.md](./cli-values-scripts.md) | CLI Values 与 Scripts | 30 | value list/add/show/set/update/delete/import 和 script list/add/show/get/update/run/rename/delete |
+| [cli-whitelist.md](./cli-whitelist.md) | CLI 白名单管理 | 31 | whitelist 全子命令：list/add/remove/allow-lan/status/mode/pending/approve/reject/clear-pending/add-temporary/remove-temporary |
+| [cli-admin.md](./cli-admin.md) | CLI Admin 管理 | 14 | admin remote status/enable/disable、admin passwd、admin revoke-all、admin audit |
+| [cli-config.md](./cli-config.md) | CLI 配置管理 | 22 | config show/get/set/add/remove/reset/clear-cache/disconnect/export/connections/memory |
+| [cli-system-proxy.md](./cli-system-proxy.md) | CLI 系统代理 | 10 | system-proxy status/enable/disable，含自定义 host/port/bypass |
+| [cli-group.md](./cli-group.md) | CLI Group 管理 | 14 | group list/show、group rule list/show/add/update/enable/disable/delete |
+| [cli-import-export.md](./cli-import-export.md) | CLI 导入导出与杂项 | 22 | export/import、metrics、sync、version-check、upgrade、completions、install-skill |
+
+### Web UI 测试
+
+| 文件 | 功能模块 | 测试用例数 | 说明 |
+|------|---------|-----------|------|
+| [remote-access-web-ui.md](./remote-access-web-ui.md) | 远程访问管理 Web UI | 17 | 远程访问配置、登录、会话管理、登录记录展示 |
+| [webui-traffic.md](./webui-traffic.md) | Web UI Traffic 页面 | 45 | 流量表格、详情面板、Tab 切换、Body 视图、筛选过滤、右键菜单、WebSocket/SSE、搜索 |
+| [webui-rules.md](./webui-rules.md) | Web UI Rules 页面 | 36 | 规则列表、创建/编辑/删除、语法高亮、自动补全、树形视图、Dynamic Island、导入导出 |
+| [webui-scripts.md](./webui-scripts.md) | Web UI Scripts 页面 | 19 | 脚本创建（Req/Res/Dec）、编辑、保存、测试运行、日志查看、名称校验、树形目录 |
+| [webui-values.md](./webui-values.md) | Web UI Values 页面 | 18 | Value 列表、创建/编辑/删除、编辑器、规则引用、导入导出 |
+| [webui-replay.md](./webui-replay.md) | Web UI Replay 页面 | 22 | HTTP 请求重放、集合管理、SSE/WebSocket 重放、curl 导入、多种 Body 类型 |
+| [webui-settings.md](./webui-settings.md) | Web UI Settings 页面 | 38 | Proxy/Certificate/TLS/Performance/Access Control/Appearance/Metrics/Sync 各 Tab |
+| [webui-groups.md](./webui-groups.md) | Web UI Groups 页面 | 13 | Group 列表、详情、规则管理、搜索 |
+| [webui-search.md](./webui-search.md) | Web UI 搜索模式 | 12 | 搜索模式进入/退出、关键词搜索、过滤器、结果高亮、状态持久化 |
+| [webui-layout-navigation.md](./webui-layout-navigation.md) | Web UI 布局与导航 | 14 | 侧边栏导航、分割面板、状态栏、Toolbar、主题切换、版本检查、拖拽导入 |
+
+### Admin API 测试
+
+| 文件 | 功能模块 | 测试用例数 | 说明 |
+|------|---------|-----------|------|
+| [api-rules.md](./api-rules.md) | Rules API | 13 | 规则 CRUD、启用/禁用、特殊字符名称、重复创建、rule_count 验证 |
+| [api-traffic.md](./api-traffic.md) | Traffic API | 23 | 流量列表/详情/Body、增量更新、多维度过滤、WebSocket 帧、SSE 流 |
+| [api-values.md](./api-values.md) | Values API | 15 | Values CRUD、列表查询、边界条件、错误处理 |
+| [api-whitelist.md](./api-whitelist.md) | Whitelist API | 27 | 白名单增删、模式切换、allow-lan、临时白名单、待授权管理、SSE 事件流 |
+| [api-cert.md](./api-cert.md) | Cert API | 8 | 证书信息、CA 下载、QR 码生成 |
+| [api-proxy.md](./api-proxy.md) | Proxy API | 13 | 系统代理控制、CLI 代理状态、代理地址、QR 码 |
+| [api-config.md](./api-config.md) | Config API | 21 | 全量配置、TLS 配置、性能配置、缓存清理、连接断开 |
+| [api-metrics.md](./api-metrics.md) | Metrics API | 15 | 当前指标、历史指标、应用统计、主机统计 |
+| [api-system.md](./api-system.md) | System API | 16 | 系统信息、概览、内存诊断 |
+| [api-scripts.md](./api-scripts.md) | Scripts API | 30 | 脚本 CRUD、重命名、运行测试、名称校验、内置脚本保护 |
+| [api-push.md](./api-push.md) | Push WebSocket API | 10 | WebSocket 推送连接、订阅参数、流量/指标/概览实时推送 |
+| [api-replay.md](./api-replay.md) | Replay API | 17 | 重放集合管理、请求 CRUD、执行重放、历史查看 |
+| [api-group.md](./api-group.md) | Group API | 13 | 团队组列表/详情、团队规则 CRUD、权限校验 |
+| [api-search.md](./api-search.md) | Search API | 16 | 全文搜索、搜索范围、过滤条件、分页、流式搜索 |
+
+### 代理核心功能测试
+
+| 文件 | 功能模块 | 测试用例数 | 说明 |
+|------|---------|-----------|------|
+| [proxy-http-https.md](./proxy-http-https.md) | HTTP/HTTPS 代理 | 24 | HTTP 转发、HTTPS CONNECT、TLS 拦截、各类规则协议、模式匹配 |
+| [proxy-socks5.md](./proxy-socks5.md) | SOCKS5 代理 | 3 | SOCKS5 基本代理、DNS 解析、HTTPS 透传 |
+| [proxy-websocket-sse.md](./proxy-websocket-sse.md) | WebSocket/SSE 代理 | 6 | WebSocket/SSE 代理转发、帧/事件捕获、UI 消息面板 |
+
+---
+
+**总计：37 个测试文件，700+ 个测试用例**
 
 ## 工作流程
 
