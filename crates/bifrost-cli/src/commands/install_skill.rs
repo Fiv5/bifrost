@@ -6,8 +6,14 @@ use std::path::{Path, PathBuf};
 use colored::Colorize;
 
 use bifrost_core::BifrostError;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 const SKILL_RAW_URL: &str = "https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/SKILL.md";
+
+const EMBEDDED_SKILL_MD: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../SKILL.md"));
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiTool {
@@ -202,22 +208,83 @@ fn format_io_error(err: &io::Error, path: &Path, operation: &str) -> BifrostErro
 }
 
 fn download_skill() -> Result<String, BifrostError> {
+    if std::env::var("BIFROST_INSTALL_SKILL_SOURCE")
+        .ok()
+        .map(|v| v.to_lowercase())
+        .as_deref()
+        == Some("embedded")
+    {
+        println!(
+            "{} {}",
+            "📦 Using embedded SKILL.md:".bright_cyan(),
+            "(compiled in)".dimmed()
+        );
+        return Ok(EMBEDDED_SKILL_MD.to_string());
+    }
+
     println!(
         "{} {}",
         "⬇ Downloading latest SKILL.md from:".bright_cyan(),
         SKILL_RAW_URL.dimmed()
     );
 
-    let response = ureq::get(SKILL_RAW_URL)
-        .call()
-        .map_err(|e| BifrostError::Network(format_network_error(&e)))?;
+    // NOTE: Even with per-socket timeouts, some environments can still hang during TLS/DNS.
+    // Guard the whole network attempt with a hard deadline, and fall back to embedded copy.
+    let hard_timeout = Duration::from_secs(45);
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let attempt = (|| -> Result<String, String> {
+            let agent = ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(10))
+                .timeout_read(Duration::from_secs(30))
+                .timeout_write(Duration::from_secs(30))
+                .build();
 
-    let body = response.into_string().map_err(|e| {
-        BifrostError::Network(format!(
-            "Failed to read response body: {e}. \
-             The download may have been interrupted — please retry."
-        ))
-    })?;
+            let response = agent
+                .get(SKILL_RAW_URL)
+                .call()
+                .map_err(|e| format_network_error(&e))?;
+
+            response
+                .into_string()
+                .map_err(|e| format!("Failed to read response body: {e}"))
+        })();
+        let _ = tx.send(attempt);
+    });
+
+    let body = match rx.recv_timeout(hard_timeout) {
+        Ok(Ok(body)) => body,
+        Ok(Err(err_msg)) => {
+            println!(
+                "  {} {}",
+                "⚠".bright_yellow(),
+                "Failed to download SKILL.md from network; falling back to embedded copy."
+                    .bright_yellow()
+            );
+            println!("    {}", err_msg.dimmed());
+            return Ok(EMBEDDED_SKILL_MD.to_string());
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            println!(
+                "  {} {}",
+                "⚠".bright_yellow(),
+                format!(
+                    "Download timed out after {}s; falling back to embedded copy.",
+                    hard_timeout.as_secs()
+                )
+                .bright_yellow()
+            );
+            return Ok(EMBEDDED_SKILL_MD.to_string());
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            println!(
+                "  {} {}",
+                "⚠".bright_yellow(),
+                "Download worker disconnected; falling back to embedded copy.".bright_yellow()
+            );
+            return Ok(EMBEDDED_SKILL_MD.to_string());
+        }
+    };
 
     if body.trim().is_empty() {
         return Err(BifrostError::Parse(

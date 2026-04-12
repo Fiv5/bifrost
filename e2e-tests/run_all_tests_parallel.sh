@@ -307,7 +307,23 @@ run_single_test() {
 
         local watchdog_pid=""
         (
-            sleep "$fixture_timeout"
+            # Avoid leaking orphan `sleep` processes when the watchdog is killed.
+            # If the watchdog is terminated (e.g. because the test finished), ensure
+            # the timer is also terminated so the suite output pipe can close.
+            set +e
+            local timer_pid=""
+            cleanup_timer() {
+                if [[ -n "${timer_pid:-}" ]]; then
+                    kill "$timer_pid" 2>/dev/null || true
+                    wait "$timer_pid" 2>/dev/null || true
+                fi
+            }
+            trap cleanup_timer TERM INT EXIT
+
+            sleep "$fixture_timeout" &
+            timer_pid=$!
+            wait "$timer_pid" 2>/dev/null || exit 0
+
             if kill -0 "$test_pid" 2>/dev/null; then
                 echo "[TIMEOUT] fixture ${rel_path} exceeded ${fixture_timeout}s on port ${proxy_port}" >> "$log_file"
                 kill -TERM "$test_pid" 2>/dev/null || true
@@ -331,9 +347,8 @@ run_single_test() {
         echo "PASSED=${passed:-0}"
         echo "FAILED=${failed:-0}"
 
-        if is_windows; then
-            kill_bifrost_on_port "$proxy_port"
-        fi
+        # Best-effort cleanup: ensure the port is released for retries / next runs.
+        kill_bifrost_on_port "$proxy_port"
     } > "$result_file"
 }
 
@@ -635,9 +650,17 @@ retry_failed_suites_once() {
 
         info "重试 ${rule_rel} (proxy_port=$((BASE_PORT + idx))) [${elapsed}s/${retry_budget}s]"
         rm -rf "$data_dir" "$log_file" "$result_file"
-        if is_windows; then
-            kill_bifrost_on_port "$((BASE_PORT + idx))"
-        fi
+
+        # Ensure the retry port is not held by a leaked proxy from the first run.
+        # This matters on Unix too (not only Windows), otherwise retries can fail
+        # with "Address already in use".
+        local proxy_port="$((BASE_PORT + idx))"
+        kill_bifrost_on_port "$proxy_port"
+        local wait_free=0
+        while ! port_is_available "$proxy_port" 2>/dev/null && [[ $wait_free -lt 50 ]]; do
+            sleep 0.1
+            wait_free=$((wait_free + 1))
+        done
         run_single_test "$rule_file" "$idx"
         retried=$((retried + 1))
 

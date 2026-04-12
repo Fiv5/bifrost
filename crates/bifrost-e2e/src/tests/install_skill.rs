@@ -12,6 +12,8 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "Install skill to a single tool (claude-code) in a temp directory",
             "install_skill",
             || async move {
+                // Avoid flaky external network dependency in CI.
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
                 let tmp = tempdir("install_skill_single")?;
                 handle_install_skill(
                     Some("claude-code".to_string()),
@@ -48,6 +50,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "Install skill overwrites existing file with latest content",
             "install_skill",
             || async move {
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
                 let tmp = tempdir("install_skill_overwrite")?;
 
                 let target = tmp.join("SKILL.md");
@@ -83,6 +86,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "Installed SKILL.md should contain standard YAML frontmatter (name + description)",
             "install_skill",
             || async move {
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
                 let tmp = tempdir("install_skill_fm")?;
 
                 handle_install_skill(Some("trae".to_string()), Some(tmp.clone()), false, true)
@@ -162,6 +166,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "Install skill to all tools writes SKILL.md for each",
             "install_skill",
             || async move {
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
                 let tmp = tempdir("install_skill_all")?;
 
                 handle_install_skill(None, Some(tmp.clone()), false, true)
@@ -192,6 +197,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "Install skill with --cwd installs to project-local skills/bifrost/ directories",
             "install_skill",
             || async move {
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
                 let tmp = tempdir("install_skill_cwd")?;
                 let original_dir =
                     std::env::current_dir().map_err(|e| format!("Failed to get cwd: {e}"))?;
@@ -234,6 +240,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "--dir and --cwd are mutually exclusive",
             "install_skill",
             || async move {
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
                 let tmp = tempdir("install_skill_conflict")?;
 
                 let result = handle_install_skill(

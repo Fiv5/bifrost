@@ -162,14 +162,16 @@ python3_cmd() {
 
     if command -v python3 &>/dev/null; then
         if python3 -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
-            echo "python3"
+            export BIFROST_E2E_PYTHON_BIN="python3"
+            echo "$BIFROST_E2E_PYTHON_BIN"
             return 0
         fi
     fi
 
     if command -v python &>/dev/null; then
         if python -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
-            echo "python"
+            export BIFROST_E2E_PYTHON_BIN="python"
+            echo "$BIFROST_E2E_PYTHON_BIN"
             return 0
         fi
     fi

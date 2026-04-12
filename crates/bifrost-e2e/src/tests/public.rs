@@ -4,12 +4,20 @@ use crate::{assert_body_contains, assert_header_value, ProxyClient, TestCase};
 use std::time::Duration;
 
 fn is_network_error(err: &reqwest::Error) -> bool {
-    let msg = err.to_string();
+    if err.is_timeout() || err.is_connect() {
+        return true;
+    }
+
+    let msg = err.to_string().to_lowercase();
     msg.contains("timeout")
         || msg.contains("timed out")
+        || msg.contains("deadline has elapsed")
         || msg.contains("connect error")
         || msg.contains("connection reset")
         || msg.contains("connection refused")
+        || msg.contains("dns")
+        || msg.contains("name resolution")
+        || msg.contains("failed to lookup")
 }
 
 fn skip_if_unreachable(host: &str, err: &reqwest::Error) -> Result<(), String> {
@@ -247,7 +255,11 @@ async fn test_public_httpbin_host_redirect() -> Result<(), String> {
     let mock = HttpbinMockServer::start().await;
     let port = portpicker::pick_unused_port().unwrap();
     let mut rules = mock.http_rules();
-    rules.push("my-test-domain.local host://httpbin.org".to_string());
+    // Avoid outbound dependency and avoid `.local` (may be bypassed and trigger DNS failures in CI).
+    rules.push(format!(
+        "my-test-domain.invalid host://127.0.0.1:{}",
+        mock.http_port
+    ));
     let rule_refs: Vec<&str> = rules.iter().map(String::as_str).collect();
     let _proxy = ProxyInstance::start(port, rule_refs)
         .await
@@ -258,7 +270,7 @@ async fn test_public_httpbin_host_redirect() -> Result<(), String> {
     let client =
         ProxyClient::new(&format!("http://127.0.0.1:{port}")).map_err(|e| e.to_string())?;
     let json = client
-        .get_json("http://my-test-domain.local/get")
+        .get_json("http://my-test-domain.invalid/get")
         .await
         .map_err(|e| e.to_string())?;
 

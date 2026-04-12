@@ -265,7 +265,13 @@ admin_auth_required() {
         echo "0"
         return 0
     fi
-    python3 - <<'PY' 2>/dev/null <<<"$body" || echo "0"
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        echo "0"
+        return 0
+    fi
+    "$py" - <<'PY' 2>/dev/null <<<"$body" || echo "0"
 import json,sys
 try:
   data=json.load(sys.stdin)
@@ -291,7 +297,13 @@ admin_login_if_needed() {
     fi
 
     local payload
-    payload=$(python3 - <<'PY' "$user" "$pass"
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        admin_log_fail "Admin auth requires python3 (or python>=3)"
+        return 1
+    fi
+    payload=$("$py" - <<'PY' "$user" "$pass"
 import json,sys
 print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))
 PY
@@ -306,7 +318,7 @@ PY
         "$url" 2>/dev/null || true)
 
     local token
-    token=$(python3 - <<'PY' 2>/dev/null <<<"$resp" || true
+    token=$("$py" - <<'PY' 2>/dev/null <<<"$resp" || true
 import json,sys
 try:
   data=json.load(sys.stdin)
