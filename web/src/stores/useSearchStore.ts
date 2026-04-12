@@ -262,7 +262,7 @@ export const useSearchStore = create<SearchState>()(
         max_results: 1000,
       };
 
-      // 优先使用流式搜索，能让 UI 更快看到首批结果/进度。
+      // Prefer streaming search so the UI can see the first batch of results/progress sooner.
       const streamResp = await apiFetch('/_bifrost/api/search/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

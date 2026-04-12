@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Button, Form, Input, Typography, message } from 'antd';
+import { Alert, Button, Form, Input, Typography, message } from 'antd';
 
 import { post } from '../api/client';
 import { getAdminPrefix } from '../runtime';
@@ -17,12 +17,21 @@ type LoginResponse = {
   username: string;
 };
 
+type LoginErrorResponse = {
+  error?: string;
+  remaining_attempts?: number;
+  failed_attempts?: number;
+  max_attempts?: number;
+  locked_out?: boolean;
+};
+
 export default function Login() {
   const [form] = Form.useForm();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [status, setStatus] = useState<AdminAuthStatus | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [loginError, setLoginError] = useState<LoginErrorResponse | null>(null);
 
   const nextPath = useMemo(() => {
     const raw = searchParams.get('next');
@@ -49,7 +58,7 @@ export default function Login() {
         form.setFieldsValue({ username: s.username || 'admin' });
       })
       .catch(() => {
-        setStatus({ remote_access_enabled: false, auth_required: false, username: 'admin', has_password: false });
+        setStatus({ remote_access_enabled: false, auth_required: false, username: 'admin', has_password: false, locked_out: false, failed_attempts: 0, max_attempts: 5, min_password_length: 6 });
         form.setFieldsValue({ username: 'admin' });
       });
   }, [form]);
@@ -65,15 +74,45 @@ export default function Login() {
               Bifrost Admin
             </Typography.Title>
             <Typography.Text type="secondary">
-              远程管理访问 / 鉴权登录
+              Remote Management / Authentication
             </Typography.Text>
           </div>
         </div>
 
         {status && !status.remote_access_enabled ? (
           <Typography.Paragraph type="warning" style={{ marginTop: 12 }}>
-            远程访问未开启。请先在服务器上执行 `bifrost admin remote enable`，并设置登录密码。
+            Remote access is not enabled. Please run `bifrost admin remote enable` on the server first and set a login password.
           </Typography.Paragraph>
+        ) : null}
+
+        {status?.locked_out ? (
+          <Alert
+            type="error"
+            message="Account Locked"
+            description="Remote access has been disabled and the password has been cleared due to multiple failed login attempts. Please reset the password and re-enable remote access on localhost."
+            showIcon
+            style={{ marginTop: 12 }}
+          />
+        ) : null}
+
+        {loginError && !loginError.locked_out && loginError.remaining_attempts != null ? (
+          <Alert
+            type="warning"
+            message={`Login failed. Remaining attempts: ${loginError.remaining_attempts}`}
+            description={loginError.remaining_attempts <= 2 ? 'Warning: Remote access will be locked and the password will be deleted after multiple failures.' : undefined}
+            showIcon
+            style={{ marginTop: 12 }}
+          />
+        ) : null}
+
+        {loginError?.locked_out ? (
+          <Alert
+            type="error"
+            message="Account Locked"
+            description="Too many login attempts. Remote access has been disabled. Please reset the password on localhost."
+            showIcon
+            style={{ marginTop: 12 }}
+          />
         ) : null}
 
         <Form
@@ -83,6 +122,7 @@ export default function Login() {
           style={{ marginTop: 16 }}
           onFinish={async (values: { username: string; password: string }) => {
             setSubmitting(true);
+            setLoginError(null);
             try {
               const res = await post<LoginResponse>('/auth/login', {
                 username: values.username,
@@ -92,12 +132,22 @@ export default function Login() {
                 throw new Error('Missing token');
               }
               setAdminToken(res.token);
-              message.success('登录成功');
+              message.success('Login successful');
               navigate(nextPath || '/traffic', { replace: true });
             } catch (err) {
-              message.error(
-                err instanceof Error ? err.message : '登录失败，请检查用户名或密码',
-              );
+              let errData: LoginErrorResponse = {};
+              if (err && typeof err === 'object' && 'response' in err) {
+                const axiosErr = err as { response?: { data?: LoginErrorResponse } };
+                errData = axiosErr.response?.data ?? {};
+              }
+              setLoginError(errData);
+              if (errData.locked_out) {
+                void fetchAdminAuthStatus().then(setStatus).catch(() => {});
+              } else {
+                const errMsg = errData.error
+                  || (err instanceof Error ? err.message : 'Login failed. Please check your username or password');
+                message.error(errMsg);
+              }
             } finally {
               setSubmitting(false);
             }
@@ -105,8 +155,8 @@ export default function Login() {
         >
           <Form.Item
             name="username"
-            label="用户名"
-            rules={[{ required: true, message: '请输入用户名' }]}
+            label="Username"
+            rules={[{ required: true, message: 'Please enter username' }]}
           >
             <Input
               size="large"
@@ -117,13 +167,13 @@ export default function Login() {
           </Form.Item>
           <Form.Item
             name="password"
-            label="密码"
-            rules={[{ required: true, message: '请输入密码' }]}
+            label="Password"
+            rules={[{ required: true, message: 'Please enter password' }]}
           >
             <Input.Password
               size="large"
               autoComplete="current-password"
-              placeholder="请输入密码"
+              placeholder="Enter password"
             />
           </Form.Item>
           <Button
@@ -132,13 +182,13 @@ export default function Login() {
             size="large"
             block
             loading={submitting}
-            disabled={!!status && !status.remote_access_enabled}
+            disabled={!!status && (!status.remote_access_enabled || status.locked_out)}
           >
-            登录
+            Login
           </Button>
 
           <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-            Token 生命周期固定为 7 天；如需强制下线，请在服务器执行 `bifrost admin revoke-all`。
+            Token lifetime is fixed at 7 days. To force logout all sessions, run `bifrost admin revoke-all` on the server.
           </Typography.Paragraph>
         </Form>
       </div>

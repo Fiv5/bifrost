@@ -234,7 +234,6 @@ pub async fn handle_group(
             Response::builder()
                 .status(status_code)
                 .header("Content-Type", content_type)
-                .header("Access-Control-Allow-Origin", "*")
                 .body(full_body(response_body))
                 .unwrap()
         }

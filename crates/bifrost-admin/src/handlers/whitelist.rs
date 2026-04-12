@@ -199,7 +199,6 @@ async fn handle_add(
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
-                .header("Access-Control-Allow-Origin", "*")
                 .body(full_body(response.to_string()))
                 .unwrap()
         }
@@ -251,7 +250,6 @@ async fn handle_remove(
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
-                    .header("Access-Control-Allow-Origin", "*")
                     .body(full_body(response.to_string()))
                     .unwrap()
             } else {
@@ -321,7 +319,6 @@ async fn handle_set_mode(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(response.to_string()))
         .unwrap()
 }
@@ -382,7 +379,6 @@ async fn handle_set_allow_lan(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(response.to_string()))
         .unwrap()
 }
@@ -558,7 +554,6 @@ async fn handle_add_temporary(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(response.to_string()))
         .unwrap()
 }
@@ -601,7 +596,6 @@ async fn handle_remove_temporary(
         Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
             .body(full_body(response.to_string()))
             .unwrap()
     } else {
@@ -643,7 +637,6 @@ async fn handle_pending_stream(
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .header("Access-Control-Allow-Origin", "*")
         .body(BoxBody::new(body_stream))
         .unwrap()
 }
@@ -685,7 +678,6 @@ async fn handle_approve_pending(
         Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
             .body(full_body(response.to_string()))
             .unwrap()
     } else {
@@ -734,7 +726,6 @@ async fn handle_reject_pending(
         Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
             .body(full_body(response.to_string()))
             .unwrap()
     } else {
@@ -762,7 +753,6 @@ async fn handle_clear_pending(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(response.to_string()))
         .unwrap()
 }

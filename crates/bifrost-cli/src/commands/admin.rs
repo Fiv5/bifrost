@@ -41,9 +41,11 @@ fn read_password_from_stdin() -> Result<String> {
 }
 
 fn set_password(storage: &mut ValuesStorage, password: &str) -> Result<()> {
+    bifrost_admin::validate_password_strength(password)?;
     let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST)
         .map_err(|e| BifrostError::Storage(format!("Failed to hash password: {e}")))?;
     storage.set_value(bifrost_admin::ADMIN_AUTH_PASSWORD_HASH_KEY, &hashed)?;
+    storage.set_value(bifrost_admin::ADMIN_AUTH_FAILED_COUNT_KEY, "0")?;
     Ok(())
 }
 
@@ -102,6 +104,10 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                     let username = storage
                         .get_value(bifrost_admin::ADMIN_AUTH_USERNAME_KEY)
                         .unwrap_or_else(|| "admin".to_string());
+                    let failed_count = storage
+                        .get_value(bifrost_admin::ADMIN_AUTH_FAILED_COUNT_KEY)
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        .unwrap_or(0);
                     println!(
                         "Remote admin access: {}",
                         if enabled { "enabled" } else { "disabled" }
@@ -115,6 +121,14 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                             "not set"
                         }
                     );
+                    println!(
+                        "Failed login attempts: {}/{}",
+                        failed_count,
+                        bifrost_admin::MAX_LOGIN_ATTEMPTS
+                    );
+                    if failed_count >= bifrost_admin::MAX_LOGIN_ATTEMPTS {
+                        println!("⚠️  Account locked out due to brute-force protection. Re-set password to unlock.");
+                    }
                     println!(
                         "Audit DB: {}",
                         bifrost_admin::admin_audit::audit_db_path()?.display()

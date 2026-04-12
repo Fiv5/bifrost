@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use tracing::debug;
 
+use crate::cors::apply_cors_headers;
 use crate::handlers::{
     app_icon::handle_app_icon,
     audit::handle_audit,
@@ -53,27 +54,32 @@ impl AdminRouter {
             None => return error_response(StatusCode::NOT_FOUND, "Not Found"),
         };
 
+        let origin = req
+            .headers()
+            .get("Origin")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
         if req.method() == Method::OPTIONS {
-            return cors_preflight();
+            let mut resp = cors_preflight();
+            apply_cors_headers(&mut resp, origin.as_deref());
+            return resp;
         }
 
-        if admin_path.starts_with("/public/cert") {
-            return handle_cert_public(req, state, &admin_path).await;
-        }
-
-        if admin_path.starts_with("/public/proxy") {
-            return handle_proxy_public(req, state, &admin_path).await;
-        }
-
-        if admin_path.starts_with("/public/sync-login") {
-            return handle_sync_public(req, state, &admin_path).await;
-        }
-
-        if admin_path.starts_with("/api/") {
+        let mut resp = if admin_path.starts_with("/public/cert") {
+            handle_cert_public(req, state, &admin_path).await
+        } else if admin_path.starts_with("/public/proxy") {
+            handle_proxy_public(req, state, &admin_path).await
+        } else if admin_path.starts_with("/public/sync-login") {
+            handle_sync_public(req, state, &admin_path).await
+        } else if admin_path.starts_with("/api/") {
             Self::handle_api(req, state, push_manager, &admin_path, peer_addr).await
         } else {
             serve_static_file(&admin_path)
-        }
+        };
+
+        apply_cors_headers(&mut resp, origin.as_deref());
+        resp
     }
 
     async fn handle_api(

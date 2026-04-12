@@ -53,7 +53,6 @@ pub fn json_response_with_status<T: Serialize>(status: StatusCode, data: &T) -> 
         Ok(json) => Response::builder()
             .status(status)
             .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
             .body(full_body(json))
             .unwrap(),
         Err(e) => error_response(
@@ -71,7 +70,6 @@ pub fn error_response(status: StatusCode, message: &str) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(body.to_string()))
         .unwrap()
 }
@@ -84,7 +82,6 @@ pub fn success_response(message: &str) -> Response<BoxBody> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(body.to_string()))
         .unwrap()
 }
@@ -101,7 +98,6 @@ pub fn method_not_allowed() -> Response<BoxBody> {
 pub fn cors_preflight() -> Response<BoxBody> {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Origin", "*")
         .header(
             "Access-Control-Allow-Methods",
             "GET, POST, PUT, DELETE, OPTIONS",
@@ -115,7 +111,6 @@ pub fn cors_preflight() -> Response<BoxBody> {
 pub fn public_response_builder(status: StatusCode) -> hyper::http::response::Builder {
     Response::builder()
         .status(status)
-        .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", PUBLIC_CORS_ALLOW_METHODS)
         .header("Access-Control-Allow-Headers", ADMIN_CORS_ALLOW_HEADERS)
 }
@@ -152,12 +147,7 @@ mod tests {
             .unwrap();
         let headers = response.headers();
 
-        assert_eq!(
-            headers
-                .get("Access-Control-Allow-Origin")
-                .and_then(|value| value.to_str().ok()),
-            Some("*")
-        );
+        assert!(headers.get("Access-Control-Allow-Origin").is_none());
         assert_eq!(
             headers
                 .get("Access-Control-Allow-Methods")

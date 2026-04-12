@@ -25,6 +25,7 @@ import {
   SafetyOutlined,
   StopOutlined,
   UserOutlined,
+  WarningOutlined,
 } from "@ant-design/icons";
 import {
   changeAdminPassword,
@@ -146,6 +147,17 @@ export default function RemoteAccessTab() {
       message.warning("Please enter a password");
       return;
     }
+    const minLen = status?.min_password_length ?? 6;
+    if (password.length < minLen) {
+      message.warning(`Password must be at least ${minLen} characters`);
+      return;
+    }
+    const hasLetter = /[a-zA-Z]/.test(password);
+    const hasDigit = /\d/.test(password);
+    if (!hasLetter || !hasDigit) {
+      message.warning("Password must contain both letters and digits");
+      return;
+    }
     if (password !== confirmPassword) {
       message.warning("Passwords do not match");
       return;
@@ -211,7 +223,25 @@ export default function RemoteAccessTab() {
                   <Tag color="orange">Not Set</Tag>
                 )}
               </Descriptions.Item>
+              <Descriptions.Item label="Failed Attempts">
+                {(status?.failed_attempts ?? 0) > 0 ? (
+                  <Tag color="red">{status?.failed_attempts}/{status?.max_attempts ?? 5}</Tag>
+                ) : (
+                  <Tag color="green">0/{status?.max_attempts ?? 5}</Tag>
+                )}
+              </Descriptions.Item>
             </Descriptions>
+
+            {status?.locked_out ? (
+              <Alert
+                type="error"
+                icon={<WarningOutlined />}
+                message="Brute-Force Lockout Active"
+                description="Remote access was automatically disabled due to too many failed login attempts. The password has been cleared. Set a new password below to re-enable."
+                showIcon
+                style={{ margin: "12px 0" }}
+              />
+            ) : null}
 
             <Divider style={{ margin: "12px 0" }} />
 
@@ -266,6 +296,9 @@ export default function RemoteAccessTab() {
                   placeholder="Enter new password"
                   data-testid="settings-remote-password"
                 />
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  Min {status?.min_password_length ?? 6} chars, must include letters and digits
+                </Text>
               </div>
               <div>
                 <Text type="secondary" style={{ marginBottom: 4, display: "block" }}>

@@ -14,6 +14,10 @@ pub const ADMIN_AUTH_USERNAME_KEY: &str = "admin.auth.username";
 pub const ADMIN_AUTH_PASSWORD_HASH_KEY: &str = "admin.auth.password_hash";
 pub const ADMIN_AUTH_JWT_SECRET_KEY: &str = "admin.auth.jwt_secret";
 pub const ADMIN_AUTH_REVOKE_BEFORE_KEY: &str = "admin.auth.revoke_before";
+pub const ADMIN_AUTH_FAILED_COUNT_KEY: &str = "admin.auth.login_failed_count";
+
+pub const MAX_LOGIN_ATTEMPTS: u32 = 5;
+pub const MIN_PASSWORD_LENGTH: usize = 6;
 
 const JWT_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -98,6 +102,26 @@ pub fn ensure_admin_auth_material(state: &AdminState) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_password_strength(password: &str) -> Result<()> {
+    if password.is_empty() {
+        return Err(BifrostError::Config("Password cannot be empty".to_string()));
+    }
+    if password.len() < MIN_PASSWORD_LENGTH {
+        return Err(BifrostError::Config(format!(
+            "Password must be at least {} characters",
+            MIN_PASSWORD_LENGTH
+        )));
+    }
+    let has_letter = password.chars().any(|c| c.is_alphabetic());
+    let has_digit = password.chars().any(|c| c.is_ascii_digit());
+    if !has_letter || !has_digit {
+        return Err(BifrostError::Config(
+            "Password must contain both letters and digits".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()> {
     let Some(storage) = state.values_storage.as_ref() else {
         return Err(BifrostError::Config(
@@ -105,9 +129,7 @@ pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()>
         ));
     };
 
-    if password.is_empty() {
-        return Err(BifrostError::Config("Password cannot be empty".to_string()));
-    }
+    validate_password_strength(password)?;
 
     let hashed = hash(password, DEFAULT_COST)
         .map_err(|e| BifrostError::Storage(format!("Failed to hash password: {e}")))?;
@@ -160,6 +182,79 @@ pub fn has_admin_password(state: &AdminState) -> bool {
         .get_value(ADMIN_AUTH_PASSWORD_HASH_KEY)
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false)
+}
+
+pub fn get_failed_login_count(state: &AdminState) -> u32 {
+    let Some(storage) = state.values_storage.as_ref() else {
+        return 0;
+    };
+    let mut guard = storage.write();
+    if let Err(e) = guard.refresh() {
+        warn!(error = %e, "Failed to refresh values storage");
+    }
+    guard
+        .get_value(ADMIN_AUTH_FAILED_COUNT_KEY)
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+pub fn record_failed_login(state: &AdminState) -> Result<u32> {
+    let Some(storage) = state.values_storage.as_ref() else {
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
+    };
+    let mut guard = storage.write();
+    guard.refresh()?;
+    let current = guard
+        .get_value(ADMIN_AUTH_FAILED_COUNT_KEY)
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let new_count = current.saturating_add(1);
+    guard.set_value(ADMIN_AUTH_FAILED_COUNT_KEY, &new_count.to_string())?;
+    drop(guard);
+
+    if new_count >= MAX_LOGIN_ATTEMPTS {
+        warn!(
+            failed_count = new_count,
+            "Login attempts exhausted — executing lockout"
+        );
+        execute_lockout(state)?;
+    }
+    Ok(new_count)
+}
+
+pub fn reset_failed_login_count(state: &AdminState) -> Result<()> {
+    let Some(storage) = state.values_storage.as_ref() else {
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
+    };
+    let mut guard = storage.write();
+    guard.refresh()?;
+    guard.set_value(ADMIN_AUTH_FAILED_COUNT_KEY, "0")?;
+    Ok(())
+}
+
+pub fn clear_admin_password(state: &AdminState) -> Result<()> {
+    let Some(storage) = state.values_storage.as_ref() else {
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
+    };
+    let mut guard = storage.write();
+    guard.refresh()?;
+    guard.set_value(ADMIN_AUTH_PASSWORD_HASH_KEY, "")?;
+    Ok(())
+}
+
+pub fn execute_lockout(state: &AdminState) -> Result<()> {
+    warn!("Executing brute-force lockout: disabling remote access, clearing password, revoking sessions");
+    set_remote_access_enabled(state, false)?;
+    clear_admin_password(state)?;
+    revoke_all_admin_sessions(state)?;
+    reset_failed_login_count(state)?;
+    Ok(())
 }
 
 pub fn verify_admin_credentials(
@@ -467,14 +562,120 @@ mod tests {
     fn test_has_admin_password_with_custom_username_and_credentials() {
         let (state, _tmp) = new_state();
         set_admin_username(&state, "operator").expect("set username");
-        set_admin_password_hash(&state, "securepass").expect("set password");
+        set_admin_password_hash(&state, "secure1pass").expect("set password");
 
         assert!(has_admin_password(&state));
-        let ok = verify_admin_credentials(&state, "operator", "securepass").expect("verify");
+        let ok = verify_admin_credentials(&state, "operator", "secure1pass").expect("verify");
         assert!(ok);
 
         let wrong_user =
-            verify_admin_credentials(&state, "admin", "securepass").expect("wrong user");
+            verify_admin_credentials(&state, "admin", "secure1pass").expect("wrong user");
         assert!(!wrong_user);
+    }
+
+    #[test]
+    fn test_password_strength_rejects_empty() {
+        let err = validate_password_strength("").unwrap_err().to_string();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_password_strength_rejects_short() {
+        let err = validate_password_strength("ab1").unwrap_err().to_string();
+        assert!(err.contains("at least"));
+    }
+
+    #[test]
+    fn test_password_strength_rejects_digits_only() {
+        let err = validate_password_strength("123456")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("letters and digits"));
+    }
+
+    #[test]
+    fn test_password_strength_rejects_letters_only() {
+        let err = validate_password_strength("abcdef")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("letters and digits"));
+    }
+
+    #[test]
+    fn test_password_strength_accepts_valid() {
+        validate_password_strength("abc123").expect("should pass");
+        validate_password_strength("Test99").expect("should pass");
+        validate_password_strength("longpassword1").expect("should pass");
+    }
+
+    #[test]
+    fn test_record_failed_login_increments_count() {
+        let (state, _tmp) = new_state();
+        assert_eq!(get_failed_login_count(&state), 0);
+
+        let count = record_failed_login(&state).expect("record fail");
+        assert_eq!(count, 1);
+        assert_eq!(get_failed_login_count(&state), 1);
+
+        let count = record_failed_login(&state).expect("record fail");
+        assert_eq!(count, 2);
+        assert_eq!(get_failed_login_count(&state), 2);
+    }
+
+    #[test]
+    fn test_reset_failed_login_count_works() {
+        let (state, _tmp) = new_state();
+        record_failed_login(&state).expect("record fail");
+        record_failed_login(&state).expect("record fail");
+        assert_eq!(get_failed_login_count(&state), 2);
+
+        reset_failed_login_count(&state).expect("reset");
+        assert_eq!(get_failed_login_count(&state), 0);
+    }
+
+    #[test]
+    fn test_lockout_after_max_failures_disables_remote_and_clears_password() {
+        let (state, _tmp) = new_state();
+        set_admin_password_hash(&state, "pass123abc").expect("set password");
+        set_remote_access_enabled(&state, true).expect("enable remote");
+        assert!(has_admin_password(&state));
+        assert!(is_remote_access_enabled(&state));
+
+        for i in 0..MAX_LOGIN_ATTEMPTS {
+            let count = record_failed_login(&state).expect("record fail");
+            assert_eq!(count, i + 1);
+        }
+
+        assert!(!is_remote_access_enabled(&state));
+        assert!(!has_admin_password(&state));
+        assert_eq!(get_failed_login_count(&state), 0);
+    }
+
+    #[test]
+    fn test_lockout_resets_after_local_re_enable() {
+        let (state, _tmp) = new_state();
+        set_admin_password_hash(&state, "pass123abc").expect("set password");
+        set_remote_access_enabled(&state, true).expect("enable remote");
+
+        for _ in 0..MAX_LOGIN_ATTEMPTS {
+            let _ = record_failed_login(&state);
+        }
+        assert!(!is_remote_access_enabled(&state));
+        assert!(!has_admin_password(&state));
+
+        set_admin_password_hash(&state, "newpass1abc").expect("new password");
+        set_remote_access_enabled(&state, true).expect("re-enable remote");
+        assert!(has_admin_password(&state));
+        assert!(is_remote_access_enabled(&state));
+        assert_eq!(get_failed_login_count(&state), 0);
+    }
+
+    #[test]
+    fn test_set_admin_password_rejects_weak_password() {
+        let (state, _tmp) = new_state();
+        let err = set_admin_password_hash(&state, "abc");
+        assert!(err.is_err());
+        let err = set_admin_password_hash(&state, "123456");
+        assert!(err.is_err());
     }
 }

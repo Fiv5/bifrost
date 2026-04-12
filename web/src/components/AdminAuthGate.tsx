@@ -29,7 +29,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
         setReady(true);
       })
       .catch(() => {
-        // 如果连 status 都取不到，保持现有行为（避免把离线/启动中的 core 误判为需要登录）。
+        // If status cannot be fetched, keep existing behavior (avoid misjudging offline/starting core as needing login).
         if (!cancelled) {
           setReady(true);
         }

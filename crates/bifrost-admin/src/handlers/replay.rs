@@ -1385,7 +1385,6 @@ async fn execute_replay_websocket(
             return Response::builder()
                 .status(StatusCode::UPGRADE_REQUIRED)
                 .header("Sec-WebSocket-Version", "13")
-                .header("Access-Control-Allow-Origin", "*")
                 .body(BoxBody::default())
                 .unwrap();
         }
@@ -1577,8 +1576,7 @@ async fn execute_replay_websocket(
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
-        .header("Sec-WebSocket-Accept", accept_key)
-        .header("Access-Control-Allow-Origin", "*");
+        .header("Sec-WebSocket-Accept", accept_key);
 
     if let Some(protocol) = negotiated_protocol {
         response = response.header("Sec-WebSocket-Protocol", protocol);

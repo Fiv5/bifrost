@@ -28,6 +28,7 @@
 | 文件 | 功能模块 | 测试用例数 | 说明 |
 |------|---------|-----------|------|
 | [remote-access-web-ui.md](./remote-access-web-ui.md) | 远程访问管理 Web UI | 17 | 远程访问配置、登录、会话管理、登录记录展示 |
+| [remote-access-brute-force-protection.md](./remote-access-brute-force-protection.md) | 远程访问暴力破解防护 | 13 | 登录失败计数、自动锁定、密码强度校验、本机恢复、前端锁定提示 |
 | [webui-traffic.md](./webui-traffic.md) | Web UI Traffic 页面 | 45 | 流量表格、详情面板、Tab 切换、Body 视图、筛选过滤、右键菜单、WebSocket/SSE、搜索 |
 | [webui-rules.md](./webui-rules.md) | Web UI Rules 页面 | 36 | 规则列表、创建/编辑/删除、语法高亮、自动补全、树形视图、Dynamic Island、导入导出 |
 | [webui-scripts.md](./webui-scripts.md) | Web UI Scripts 页面 | 19 | 脚本创建（Req/Res/Dec）、编辑、保存、测试运行、日志查看、名称校验、树形目录 |
@@ -72,7 +73,7 @@
 
 ---
 
-**总计：43 个测试文件，956 个测试用例**
+**总计：44 个测试文件，969 个测试用例**
 
 ## 工作流程
 

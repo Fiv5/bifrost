@@ -5,6 +5,7 @@ mod async_traffic;
 mod body_store;
 pub mod connection_monitor;
 pub mod connection_registry;
+pub mod cors;
 mod frame_store;
 mod handlers;
 pub mod ip_tls_pending;
@@ -32,10 +33,12 @@ mod ws_payload_store;
 mod tests;
 
 pub use admin_auth::{
-    get_admin_username, has_admin_password, is_remote_access_enabled, revoke_all_admin_sessions,
+    get_admin_username, get_failed_login_count, has_admin_password, is_remote_access_enabled,
+    record_failed_login, reset_failed_login_count, revoke_all_admin_sessions,
     set_admin_password_hash, set_admin_username, set_remote_access_enabled, validate_admin_jwt,
-    AdminJwtClaims, ADMIN_AUTH_PASSWORD_HASH_KEY, ADMIN_AUTH_REVOKE_BEFORE_KEY,
-    ADMIN_AUTH_USERNAME_KEY, ADMIN_REMOTE_ACCESS_ENABLED_KEY,
+    validate_password_strength, AdminJwtClaims, ADMIN_AUTH_FAILED_COUNT_KEY,
+    ADMIN_AUTH_PASSWORD_HASH_KEY, ADMIN_AUTH_REVOKE_BEFORE_KEY, ADMIN_AUTH_USERNAME_KEY,
+    ADMIN_REMOTE_ACCESS_ENABLED_KEY, MAX_LOGIN_ATTEMPTS, MIN_PASSWORD_LENGTH,
 };
 pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
 pub use async_traffic::{

@@ -70,7 +70,6 @@ pub async fn handle_websocket_upgrade(
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
         .header("Sec-WebSocket-Accept", accept_key)
-        .header("Access-Control-Allow-Origin", "*")
         .body(BoxBody::default())
         .unwrap()
 }

@@ -2,14 +2,18 @@ use std::net::SocketAddr;
 
 use hyper::{body::Incoming, header, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
-use super::{cors_preflight, error_response, json_response, method_not_allowed, BoxBody};
+use super::{
+    cors_preflight, error_response, json_response, json_response_with_status, method_not_allowed,
+    BoxBody,
+};
 use crate::admin_audit;
 use crate::admin_auth::{
-    get_admin_username, has_admin_password, is_remote_access_enabled, issue_admin_jwt,
-    revoke_all_admin_sessions, set_admin_password_hash, set_admin_username,
-    set_remote_access_enabled, verify_admin_credentials,
+    get_admin_username, get_failed_login_count, has_admin_password, is_remote_access_enabled,
+    issue_admin_jwt, record_failed_login, reset_failed_login_count, revoke_all_admin_sessions,
+    set_admin_password_hash, set_admin_username, set_remote_access_enabled,
+    validate_password_strength, verify_admin_credentials, MAX_LOGIN_ATTEMPTS, MIN_PASSWORD_LENGTH,
 };
 use crate::state::SharedAdminState;
 
@@ -32,6 +36,10 @@ pub struct AuthStatusResponse {
     pub auth_required: bool,
     pub username: String,
     pub has_password: bool,
+    pub locked_out: bool,
+    pub failed_attempts: u32,
+    pub max_attempts: u32,
+    pub min_password_length: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,11 +74,17 @@ pub async fn handle_auth(
         let remote_enabled = is_remote_access_enabled(&state);
         let username = get_admin_username(&state).unwrap_or_else(|| "admin".to_string());
         let password_set = has_admin_password(&state);
+        let failed_attempts = get_failed_login_count(&state);
+        let locked_out = !remote_enabled && failed_attempts >= MAX_LOGIN_ATTEMPTS;
         return json_response(&AuthStatusResponse {
             remote_access_enabled: remote_enabled,
             auth_required: remote_enabled && !is_loopback,
             username,
             has_password: password_set,
+            locked_out,
+            failed_attempts,
+            max_attempts: MAX_LOGIN_ATTEMPTS,
+            min_password_length: MIN_PASSWORD_LENGTH,
         });
     }
 
@@ -121,7 +135,46 @@ pub async fn handle_auth(
             }
         };
         if !ok {
-            return error_response(StatusCode::UNAUTHORIZED, "Invalid credentials");
+            let failed_count = match record_failed_login(&state) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(error = %e, "Failed to record login failure");
+                    0
+                }
+            };
+
+            if let Err(e) =
+                admin_audit::record_failed_login_attempt(&login.username, &peer_ip, &user_agent)
+            {
+                warn!(error = %e, "Failed to write failed login audit");
+            }
+
+            if failed_count >= MAX_LOGIN_ATTEMPTS {
+                return json_response_with_status(
+                    StatusCode::FORBIDDEN,
+                    &serde_json::json!({
+                        "error": "Account locked due to too many failed login attempts. Remote access has been disabled. Please re-enable from local access.",
+                        "locked_out": true,
+                        "failed_attempts": failed_count,
+                        "max_attempts": MAX_LOGIN_ATTEMPTS,
+                    }),
+                );
+            }
+
+            let remaining = MAX_LOGIN_ATTEMPTS.saturating_sub(failed_count);
+            return json_response_with_status(
+                StatusCode::UNAUTHORIZED,
+                &serde_json::json!({
+                    "error": "Invalid credentials",
+                    "remaining_attempts": remaining,
+                    "failed_attempts": failed_count,
+                    "max_attempts": MAX_LOGIN_ATTEMPTS,
+                }),
+            );
+        }
+
+        if let Err(e) = reset_failed_login_count(&state) {
+            warn!(error = %e, "Failed to reset login failure count");
         }
 
         let (token, claims) = match issue_admin_jwt(&state, &login.username) {
@@ -165,7 +218,6 @@ pub async fn handle_auth(
         return Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
             .body(super::full_body("{\"success\":true}"))
             .unwrap();
     }
@@ -191,6 +243,10 @@ pub async fn handle_auth(
 
         if payload.password.is_empty() {
             return error_response(StatusCode::BAD_REQUEST, "Password cannot be empty");
+        }
+
+        if let Err(e) = validate_password_strength(&payload.password) {
+            return error_response(StatusCode::BAD_REQUEST, &e.to_string());
         }
 
         if let Some(ref username) = payload.username {
@@ -255,11 +311,16 @@ pub async fn handle_auth(
         info!(enabled = payload.enabled, "Remote access toggled via API");
         let username = get_admin_username(&state).unwrap_or_else(|| "admin".to_string());
         let password_set = has_admin_password(&state);
+        let failed_attempts = get_failed_login_count(&state);
         return json_response(&AuthStatusResponse {
             remote_access_enabled: payload.enabled,
             auth_required: payload.enabled,
             username,
             has_password: password_set,
+            locked_out: false,
+            failed_attempts,
+            max_attempts: MAX_LOGIN_ATTEMPTS,
+            min_password_length: MIN_PASSWORD_LENGTH,
         });
     }
 

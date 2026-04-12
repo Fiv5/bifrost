@@ -33,7 +33,8 @@ fn init_db(conn: &Connection) -> std::result::Result<(), rusqlite::Error> {
            ts INTEGER NOT NULL,\
            username TEXT NOT NULL,\
            ip TEXT NOT NULL,\
-           ua TEXT NOT NULL\
+           ua TEXT NOT NULL,\
+           success INTEGER NOT NULL DEFAULT 1\
          );\
          CREATE INDEX IF NOT EXISTS idx_admin_login_audit_ts ON admin_login_audit(ts);\
          CREATE INDEX IF NOT EXISTS idx_admin_login_audit_username ON admin_login_audit(username);",
@@ -41,6 +42,14 @@ fn init_db(conn: &Connection) -> std::result::Result<(), rusqlite::Error> {
 }
 
 pub fn record_login(username: &str, ip: &str, ua: &str) -> Result<()> {
+    record_login_inner(username, ip, ua, true)
+}
+
+pub fn record_failed_login_attempt(username: &str, ip: &str, ua: &str) -> Result<()> {
+    record_login_inner(username, ip, ua, false)
+}
+
+fn record_login_inner(username: &str, ip: &str, ua: &str, success: bool) -> Result<()> {
     let db_path = audit_db_path()?;
     let conn = Connection::open(db_path)
         .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
@@ -48,8 +57,8 @@ pub fn record_login(username: &str, ip: &str, ua: &str) -> Result<()> {
 
     let ts = chrono::Utc::now().timestamp();
     conn.execute(
-        "INSERT INTO admin_login_audit(ts, username, ip, ua) VALUES (?1, ?2, ?3, ?4)",
-        params![ts, username, ip, ua],
+        "INSERT INTO admin_login_audit(ts, username, ip, ua, success) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![ts, username, ip, ua, success as i32],
     )
     .map_err(|e| BifrostError::Storage(format!("Failed to insert audit row: {e}")))?;
 

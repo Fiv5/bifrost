@@ -189,7 +189,7 @@ start_proxy() {
 
     waited=0
     while [[ $waited -lt 15 ]]; do
-        if nc -z "${PROXY_HOST}" "${SOCKS5_PORT}" >/dev/null 2>&1; then
+        if (echo > /dev/tcp/"${PROXY_HOST}"/"${SOCKS5_PORT}") >/dev/null 2>&1; then
             _log_pass "SOCKS5 port is ready on ${SOCKS5_PORT}"
             return 0
         fi
@@ -242,10 +242,10 @@ wait_for_socks5_port() {
     local timeout="${1:-15}"
     local waited=0
     while [[ $waited -lt $timeout ]]; do
-        if curl -sf --connect-timeout 2 --max-time 3 \
-            --socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}" \
-            "http://127.0.0.1:1/" >/dev/null 2>&1 || \
-           nc -z "${PROXY_HOST}" "${SOCKS5_PORT}" >/dev/null 2>&1; then
+        if (echo > /dev/tcp/"${PROXY_HOST}"/"${SOCKS5_PORT}") >/dev/null 2>&1; then
+            return 0
+        fi
+        if command -v nc &>/dev/null && nc -z "${PROXY_HOST}" "${SOCKS5_PORT}" >/dev/null 2>&1; then
             return 0
         fi
         if [[ -n "$PROXY_PID" ]] && ! kill -0 "$PROXY_PID" 2>/dev/null; then

@@ -246,7 +246,6 @@ pub async fn subscribe_frames(state: Arc<AdminState>, connection_id: &str) -> Re
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .header("Access-Control-Allow-Origin", "*")
         .body(BoxBody::new(body_stream))
         .unwrap()
 }
@@ -262,7 +261,6 @@ pub async fn unsubscribe_frames(state: Arc<AdminState>, connection_id: &str) -> 
         Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
             .body(full_body(body.to_string()))
             .unwrap()
     } else {

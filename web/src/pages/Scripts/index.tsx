@@ -1856,7 +1856,7 @@ export default function ScriptsPage() {
       setSandboxMaxDecodeInputBytes(cfg.limits.max_decode_input_bytes);
       setSandboxMaxDecompressOutputBytes(cfg.limits.max_decompress_output_bytes);
     } catch {
-      message.error("加载 Sandbox 配置失败");
+      message.error("Failed to load Sandbox config");
     } finally {
       setSandboxLoading(false);
     }
@@ -1865,7 +1865,7 @@ export default function ScriptsPage() {
   const saveSandboxSettings = useCallback(async () => {
     const dirName = sandboxDirName.trim();
     if (!dirName) {
-      message.error("Sandbox 目录不能为空");
+      message.error("Sandbox directory cannot be empty");
       return;
     }
 
@@ -1892,7 +1892,7 @@ export default function ScriptsPage() {
       !maxDecodeBytes ||
       !maxDecompressBytes
     ) {
-      message.error("数值配置必须为正整数");
+      message.error("Numeric values must be positive integers");
       return;
     }
 
@@ -1905,7 +1905,7 @@ export default function ScriptsPage() {
 
       const invalid = dirs.find((d) => !d.startsWith("/"));
       if (invalid) {
-        message.error(`allowed_dirs 必须是绝对路径：${invalid}`);
+        message.error(`allowed_dirs must be absolute paths: ${invalid}`);
         return;
       }
 
@@ -1928,10 +1928,10 @@ export default function ScriptsPage() {
           max_decompress_output_bytes: maxDecompressBytes,
         },
       });
-      message.success("Sandbox 配置已保存");
+      message.success("Sandbox config saved");
       setSandboxModalOpen(false);
     } catch {
-      message.error("保存 Sandbox 配置失败（请检查目录是否为绝对路径）");
+      message.error("Failed to save Sandbox config (check if directories are absolute paths)");
     } finally {
       setSandboxSaving(false);
     }
@@ -2089,22 +2089,22 @@ export default function ScriptsPage() {
       </Modal>
 
       <Modal
-        title="Sandbox 设置"
+        title="Sandbox Settings"
         open={sandboxModalOpen}
         onOk={saveSandboxSettings}
         onCancel={() => setSandboxModalOpen(false)}
-        okText="保存"
+        okText="Save"
         confirmLoading={sandboxSaving}
       >
         <Spin spinning={sandboxLoading}>
           <Form layout="vertical">
-            <Form.Item label="网络请求 (net.fetch) 开关">
+            <Form.Item label="Network Request (net.fetch) Toggle">
               <Switch checked={sandboxEnabled} onChange={setSandboxEnabled} />
             </Form.Item>
-            <Form.Item label="Sandbox 目录 (scripts 下的相对目录名，或绝对路径)">
+            <Form.Item label="Sandbox Directory (relative name under scripts, or absolute path)">
               <Input value={sandboxDirName} onChange={(e) => setSandboxDirName(e.target.value)} />
             </Form.Item>
-            <Form.Item label="允许访问的系统目录 (allowed_dirs，每行一个绝对路径)">
+            <Form.Item label="Allowed System Directories (allowed_dirs, one absolute path per line)">
               <Input.TextArea
                 value={sandboxDirsText}
                 onChange={(e) => setSandboxDirsText(e.target.value)}
@@ -2112,49 +2112,49 @@ export default function ScriptsPage() {
                 placeholder="/Users/xxx/data\n/var/log"
               />
             </Form.Item>
-            <Form.Item label="文件最大字节数 (file.max_bytes)">
+            <Form.Item label="Max File Size (file.max_bytes)">
               <Input
                 type="number"
                 value={sandboxFileMaxBytes}
                 onChange={(e) => setSandboxFileMaxBytes(Number(e.target.value))}
               />
             </Form.Item>
-            <Form.Item label="网络请求体最大字节数 (net.max_request_bytes)">
+            <Form.Item label="Max Request Body Size (net.max_request_bytes)">
               <Input
                 type="number"
                 value={sandboxNetMaxReqBytes}
                 onChange={(e) => setSandboxNetMaxReqBytes(Number(e.target.value))}
               />
             </Form.Item>
-            <Form.Item label="网络响应体最大字节数 (net.max_response_bytes)">
+            <Form.Item label="Max Response Body Size (net.max_response_bytes)">
               <Input
                 type="number"
                 value={sandboxNetMaxRespBytes}
                 onChange={(e) => setSandboxNetMaxRespBytes(Number(e.target.value))}
               />
             </Form.Item>
-            <Form.Item label="网络超时 (net.timeout_ms)">
+            <Form.Item label="Network Timeout (net.timeout_ms)">
               <Input
                 type="number"
                 value={sandboxNetTimeoutMs}
                 onChange={(e) => setSandboxNetTimeoutMs(Number(e.target.value))}
               />
             </Form.Item>
-            <Form.Item label="脚本超时 (limits.timeout_ms)">
+            <Form.Item label="Script Timeout (limits.timeout_ms)">
               <Input
                 type="number"
                 value={sandboxTimeoutMs}
                 onChange={(e) => setSandboxTimeoutMs(Number(e.target.value))}
               />
             </Form.Item>
-            <Form.Item label="脚本最大内存 (limits.max_memory_bytes)">
+            <Form.Item label="Script Max Memory (limits.max_memory_bytes)">
               <Input
                 type="number"
                 value={sandboxMaxMemoryBytes}
                 onChange={(e) => setSandboxMaxMemoryBytes(Number(e.target.value))}
               />
             </Form.Item>
-            <Form.Item label="decode 输入最大字节数 (limits.max_decode_input_bytes)">
+            <Form.Item label="Max Decode Input Size (limits.max_decode_input_bytes)">
               <Input
                 type="number"
                 value={sandboxMaxDecodeInputBytes}
@@ -2163,7 +2163,7 @@ export default function ScriptsPage() {
                 }
               />
             </Form.Item>
-            <Form.Item label="HTTP 解压输出最大字节数 (limits.max_decompress_output_bytes)">
+            <Form.Item label="Max HTTP Decompress Output Size (limits.max_decompress_output_bytes)">
               <Input
                 type="number"
                 value={sandboxMaxDecompressOutputBytes}

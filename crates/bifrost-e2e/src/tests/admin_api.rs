@@ -35,7 +35,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
                     .map_err(|e| format!("Preflight request failed: {}", e))?;
 
                 assert_status(&response, 204)?;
-                assert_header_value(&response, "access-control-allow-origin", "*")?;
+                assert_header_value(&response, "access-control-allow-origin", "http://127.0.0.1:3000")?;
                 assert_header_contains(&response, "access-control-allow-methods", "OPTIONS")?;
                 assert_header_contains(&response, "access-control-allow-headers", "X-Client-Id")?;
                 Ok(())
@@ -69,7 +69,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
                     .map_err(|e| format!("GET qrcode request failed: {}", e))?;
 
                 assert_status(&get_response, 200)?;
-                assert_header_value(&get_response, "access-control-allow-origin", "*")?;
+                assert_header_value(&get_response, "access-control-allow-origin", "http://127.0.0.1:3000")?;
                 assert_header_contains(&get_response, "access-control-allow-methods", "GET")?;
                 assert_header_contains(&get_response, "access-control-allow-methods", "OPTIONS")?;
                 assert_header_contains(
@@ -95,7 +95,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
                     .map_err(|e| format!("OPTIONS qrcode request failed: {}", e))?;
 
                 assert_status(&preflight_response, 204)?;
-                assert_header_value(&preflight_response, "access-control-allow-origin", "*")?;
+                assert_header_value(&preflight_response, "access-control-allow-origin", "http://127.0.0.1:3000")?;
                 assert_header_contains(
                     &preflight_response,
                     "access-control-allow-methods",

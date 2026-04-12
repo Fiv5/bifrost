@@ -39,7 +39,7 @@
 9. **项目校验**：提交前必须执行 rust-project-validate，并至少执行一次 `cargo test --workspace --all-features`
 10. **收尾清理**：清理临时数据目录，避免资源膨胀
 11. **检查 TodoWrite**：确认所有验证任务均已标记为 completed，无遗漏
-12. **检查 human_tests**：确认 `human_tests/` 下的测试用例文档已创建/更新，`readme.md` 索引已同步，所有用例已执行通过
+12. **检查 human_tests**：确认 `human_tests/` 下的测试用例文档已创建/更新，检查创建或更新的用例是否已经完成真实执行和验证，`readme.md` 索引已同步，所有用例已执行通过
 
 ## 测试覆盖要求
 

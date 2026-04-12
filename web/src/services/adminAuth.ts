@@ -7,6 +7,10 @@ export type AdminAuthStatus = {
   auth_required: boolean;
   username: string;
   has_password: boolean;
+  locked_out: boolean;
+  failed_attempts: number;
+  max_attempts: number;
+  min_password_length: number;
 };
 
 export function getAdminToken(): string | null {

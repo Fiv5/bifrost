@@ -233,26 +233,26 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
       </Modal>
       <Modal
         open={forceRefreshVisible}
-        title="页面已被断开"
+        title="Page Disconnected"
         closable={false}
         maskClosable={false}
         keyboard={false}
-        okText="刷新页面"
+        okText="Refresh Page"
         cancelButtonProps={{ style: { display: "none" } }}
         onOk={() => {
           window.location.reload();
         }}
       >
         <Typography.Paragraph>
-          由于打开页面过多，当前页面的连接已被服务端关闭。
+          The connection has been closed by the server due to too many open pages.
         </Typography.Paragraph>
         {forceRefreshReason ? (
           <Typography.Paragraph type="secondary">
-            原因：{forceRefreshReason}
+            Reason: {forceRefreshReason}
           </Typography.Paragraph>
         ) : null}
         <Typography.Paragraph type="secondary">
-          请刷新页面后继续使用。
+          Please refresh the page to continue.
         </Typography.Paragraph>
       </Modal>
       {isDesktopShell() ? (
