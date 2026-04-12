@@ -180,11 +180,12 @@ check_dependencies() {
     fi
     echo -e "${GREEN}✓${NC} curl 已安装"
 
-    if ! command -v python3 &> /dev/null; then
-        echo -e "${RED}✗${NC} python3 未安装"
+    PYTHON_BIN="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${PYTHON_BIN:-}" ]]; then
+        echo -e "${RED}✗${NC} python3 (或 python>=3) 未安装"
         exit 1
     fi
-    echo -e "${GREEN}✓${NC} python3 已安装"
+    echo -e "${GREEN}✓${NC} ${PYTHON_BIN} 已安装"
 
     if ! command -v jq &> /dev/null; then
         echo -e "${YELLOW}⚠${NC} jq 未安装 (JSON 断言将被跳过)"
@@ -224,7 +225,7 @@ check_rule_syntax() {
 
     info "检查规则文件语法..."
 
-    if python3 "$check_script" --errors-only "$RULE_FILE"; then
+    if "$PYTHON_BIN" "$check_script" --errors-only "$RULE_FILE"; then
         echo -e "${GREEN}✓${NC} 规则语法检查通过"
         return 0
     else
@@ -1004,9 +1005,9 @@ test_delay() {
     echo "    请求: $test_url"
     echo "    期望延迟: ${delay_ms}ms"
 
-    local start_time=$(python3 -c "import time; print(int(time.time() * 1000))")
+    local start_time=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
     https_request "$test_url"
-    local end_time=$(python3 -c "import time; print(int(time.time() * 1000))")
+    local end_time=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
 
     local elapsed=$((end_time - start_time))
     local min_expected=$((delay_ms - 100))
@@ -2239,7 +2240,7 @@ test_req_speed_rule() {
 
     local payload_file
     payload_file=$(mktemp)
-    python3 -c "import sys; sys.stdout.buffer.write(b'A' * $payload_size)" > "$payload_file"
+    $PYTHON_BIN -c "import sys; sys.stdout.buffer.write(b'A' * $payload_size)" > "$payload_file"
 
     if (( base_timeout > request_timeout )); then
         request_timeout=$base_timeout
@@ -2258,9 +2259,9 @@ test_req_speed_rule() {
     local end_ms=0
     local attempt=1
     while [[ "$attempt" -le "$max_attempts" ]]; do
-        start_ms=$(python3 -c "import time; print(int(time.time() * 1000))")
+        start_ms=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
         TIMEOUT="$request_timeout" http_post_file "$test_url" "$payload_file" $'Content-Type: text/plain\nExpect:'
-        end_ms=$(python3 -c "import time; print(int(time.time() * 1000))")
+        end_ms=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
 
         if [[ "$HTTP_STATUS" =~ ^2[0-9]{2}$ ]]; then
             break
@@ -2323,13 +2324,13 @@ test_res_speed_rule() {
     local end_ms=0
     local attempt=1
     while [[ "$attempt" -le "$max_attempts" ]]; do
-        start_ms=$(python3 - <<'PY'
+        start_ms=$($PYTHON_BIN - <<'PY'
 import time
 print(int(time.time() * 1000))
 PY
 )
         TIMEOUT="$request_timeout" http_get "$test_url"
-        end_ms=$(python3 - <<'PY'
+        end_ms=$($PYTHON_BIN - <<'PY'
 import time
 print(int(time.time() * 1000))
 PY

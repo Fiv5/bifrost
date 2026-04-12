@@ -249,7 +249,21 @@ extract_failure_reason() {
   local log_file="$1"
   [[ -f "$log_file" ]] || return 0
 
-  python3 - "$log_file" <<'PY'
+  local py=""
+  if command -v python3_cmd >/dev/null 2>&1; then
+    py="$(python3_cmd 2>/dev/null || true)"
+  fi
+  if [[ -z "${py:-}" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      py="python3"
+    elif command -v python >/dev/null 2>&1; then
+      py="python"
+    else
+      return 0
+    fi
+  fi
+
+  "$py" - "$log_file" <<'PY'
 import re
 import sys
 

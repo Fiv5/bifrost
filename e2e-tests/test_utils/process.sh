@@ -148,11 +148,33 @@ wait_pid() {
 }
 
 python_cmd() {
-    if command -v python3 &>/dev/null; then
-        echo "python3"
-    else
-        echo "python"
+    # Backwards-compatible alias.
+    python3_cmd
+}
+
+python3_cmd() {
+    # Prefer python3, but also allow `python` if it is Python 3.
+    # Cache the resolved command in BIFROST_E2E_PYTHON_BIN to keep logs stable.
+    if [[ -n "${BIFROST_E2E_PYTHON_BIN:-}" ]]; then
+        echo "$BIFROST_E2E_PYTHON_BIN"
+        return 0
     fi
+
+    if command -v python3 &>/dev/null; then
+        if python3 -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+            echo "python3"
+            return 0
+        fi
+    fi
+
+    if command -v python &>/dev/null; then
+        if python -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+            echo "python"
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -160,16 +182,19 @@ python_cmd() {
 # ---------------------------------------------------------------------------
 
 _require_python_for_port_alloc() {
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "ERROR: python3 is required for dynamic port allocation" >&2
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        echo "ERROR: python3 (or python>=3) is required for E2E infrastructure" >&2
         return 1
     fi
+    export BIFROST_E2E_PYTHON_BIN="$py"
     return 0
 }
 
 allocate_free_port() {
     _require_python_for_port_alloc || return 1
-    python3 - <<'PY'
+    "$BIFROST_E2E_PYTHON_BIN" - <<'PY'
 import socket
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -182,7 +207,7 @@ PY
 port_is_available() {
     local port="$1"
     _require_python_for_port_alloc || return 1
-    python3 - "$port" <<'PY'
+    "$BIFROST_E2E_PYTHON_BIN" - "$port" <<'PY'
 import socket
 import sys
 
@@ -211,7 +236,7 @@ pick_available_base_port() {
 
     _require_python_for_port_alloc || return 1
 
-    python3 - "$requested_base_port" "$span" <<'PY'
+    "$BIFROST_E2E_PYTHON_BIN" - "$requested_base_port" "$span" <<'PY'
 import random
 import socket
 import sys
@@ -292,7 +317,9 @@ start_echo_server() {
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     local server_script="${script_dir}/mock_servers/http_echo_server.py"
 
-    python3 "${server_script}" "${port}" > >(tee "${log_file}") 2>&1 &
+    _require_python_for_port_alloc || return 1
+
+    "$BIFROST_E2E_PYTHON_BIN" "${server_script}" "${port}" > >(tee "${log_file}") 2>&1 &
     local pid=$!
     echo "$pid"
 

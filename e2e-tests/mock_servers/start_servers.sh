@@ -20,17 +20,30 @@ log() {
 }
 
 run_python_server() {
-    PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python3 -X utf8 "$@"
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        echo "ERROR: python3 (or python>=3) is required to run mock servers" >&2
+        return 1
+    fi
+    PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "$py" -X utf8 "$@"
 }
 
 start_server_process() {
     local log_name=$1
     shift
 
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        echo "ERROR: python3 (or python>=3) is required to run mock servers" >&2
+        return 1
+    fi
+
     if [ "$DETACHED_MODE" = true ]; then
         mkdir -p "$SERVER_LOG_DIR"
         local log_file="$SERVER_LOG_DIR/${log_name}.log"
-        PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python3 -c '
+        PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "$py" -c '
 import os
 import subprocess
 import sys

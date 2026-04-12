@@ -7,12 +7,28 @@ SYNC_SERVER_DIR="$SCRIPT_DIR/.."
 TMP_DIR="${BIFROST_SYNC_E2E_TMP_DIR:-}"
 TMP_AUTO=false
 
-alloc_free_port() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 is required for dynamic port allocation" >&2
-    exit 1
+python3_cmd() {
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return 0
   fi
-  python3 - <<'PY'
+  if command -v python >/dev/null 2>&1; then
+    if python -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+      echo "python"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+PYTHON_BIN="$(python3_cmd 2>/dev/null || true)"
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  echo "python3 (or python>=3) is required for sync-server E2E" >&2
+  exit 1
+fi
+
+alloc_free_port() {
+  "$PYTHON_BIN" - <<'PY'
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.bind(("127.0.0.1", 0))
@@ -139,7 +155,7 @@ wait_for_sync_status() {
     body=$(curl -s "$url" 2>/dev/null) || body=""
     if [ -n "$body" ]; then
       local ok
-      ok=$(printf '%s' "$body" | python3 - <<'PY'
+      ok=$(printf '%s' "$body" | "$PYTHON_BIN" - <<'PY'
 import json
 import sys
 
@@ -175,7 +191,7 @@ wait_for_remote_env_count() {
     body=$(curl -s "$url" -H "x-bifrost-token: $token" 2>/dev/null) || body=""
     if [ -n "$body" ]; then
       local count
-      count=$(printf '%s' "$body" | python3 - <<'PY'
+      count=$(printf '%s' "$body" | "$PYTHON_BIN" - <<'PY'
 import json
 import sys
 
@@ -223,13 +239,13 @@ echo -e "${CYAN}[step 2/9] Registering users with username/password...${NC}"
 REG1_RESP=$(curl -s -X POST "$SYNC_BASE/v4/sso/register" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "alice", "password": "alice123", "nickname": "Alice", "email": "alice@test.local"}')
-REG1_CODE=$(echo "$REG1_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['code'])")
+REG1_CODE=$(echo "$REG1_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['code'])")
 assert_eq "user alice registered" "0" "$REG1_CODE"
 
 REG2_RESP=$(curl -s -X POST "$SYNC_BASE/v4/sso/register" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "bob", "password": "bob456", "nickname": "Bob", "email": "bob@test.local"}')
-REG2_CODE=$(echo "$REG2_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['code'])")
+REG2_CODE=$(echo "$REG2_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['code'])")
 assert_eq "user bob registered" "0" "$REG2_CODE"
 
 DUP_RESP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$SYNC_BASE/v4/sso/register" \
@@ -246,8 +262,8 @@ echo -e "${CYAN}[step 3/9] Logging in with username/password...${NC}"
 LOGIN_RESP=$(curl -s -X POST "$SYNC_BASE/v4/sso/login" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "alice", "password": "alice123"}')
-LOGIN_CODE=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['code'])")
-ALICE_TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])")
+LOGIN_CODE=$(echo "$LOGIN_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['code'])")
+ALICE_TOKEN=$(echo "$LOGIN_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['data']['token'])")
 assert_eq "login success" "0" "$LOGIN_CODE"
 assert_not_empty "alice got token" "$ALICE_TOKEN"
 
@@ -257,11 +273,11 @@ BAD_LOGIN=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$SYNC_BASE/v4/sso/lo
 assert_eq "wrong password rejected (401)" "401" "$BAD_LOGIN"
 
 CHECK_RESP=$(curl -s "$SYNC_BASE/v4/sso/check" -H "x-bifrost-token: $ALICE_TOKEN")
-CHECK_UID=$(echo "$CHECK_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['user_id'])")
+CHECK_UID=$(echo "$CHECK_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['data']['user_id'])")
 assert_eq "check returns alice" "alice" "$CHECK_UID"
 
 INFO_RESP=$(curl -s "$SYNC_BASE/v4/sso/info" -H "x-bifrost-token: $ALICE_TOKEN")
-INFO_NICK=$(echo "$INFO_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['nickname'])")
+INFO_NICK=$(echo "$INFO_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['data']['nickname'])")
 assert_eq "info returns Alice nickname" "Alice" "$INFO_NICK"
 
 # ═══════════════════════════════════════════════════════════
@@ -299,8 +315,8 @@ wait_for_sync_status "$ADMIN_BASE/api/sync/status" "proxy sync status" 90
 
 STATUS_RESP=$(curl -s "$ADMIN_BASE/api/sync/status")
 echo "  sync status: $STATUS_RESP"
-REACHABLE=$(echo "$STATUS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reachable', False))")
-AUTHORIZED=$(echo "$STATUS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('authorized', False))")
+REACHABLE=$(echo "$STATUS_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin).get('reachable', False))")
+AUTHORIZED=$(echo "$STATUS_RESP" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin).get('authorized', False))")
 assert_eq "remote reachable" "True" "$REACHABLE"
 assert_eq "remote authorized" "True" "$AUTHORIZED"
 
@@ -346,11 +362,11 @@ echo -e "${CYAN}[step 8/9] Verifying synced data on the remote sync server...${N
 
 REMOTE_ENVS=$(curl -s "$SYNC_BASE/v4/env?user_id=alice&offset=0&limit=500" \
   -H "x-bifrost-token: $ALICE_TOKEN")
-REMOTE_COUNT=$(echo "$REMOTE_ENVS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['data']['list']))")
+REMOTE_COUNT=$(echo "$REMOTE_ENVS" | "$PYTHON_BIN" -c "import sys,json; print(len(json.load(sys.stdin)['data']['list']))")
 echo "  remote env count: $REMOTE_COUNT"
 assert_eq "remote has 2 envs" "2" "$REMOTE_COUNT"
 
-REMOTE_NAMES=$(echo "$REMOTE_ENVS" | python3 -c "
+REMOTE_NAMES=$(echo "$REMOTE_ENVS" | "$PYTHON_BIN" -c "
 import sys,json
 envs = json.load(sys.stdin)['data']['list']
 names = sorted([e['name'] for e in envs])
@@ -359,7 +375,7 @@ print(' '.join(names))
 assert_contains "remote has rule-1" "$REMOTE_NAMES" "e2e-test-rule-1"
 assert_contains "remote has rule-2" "$REMOTE_NAMES" "e2e-test-rule-2"
 
-R1_RULE=$(echo "$REMOTE_ENVS" | python3 -c "
+R1_RULE=$(echo "$REMOTE_ENVS" | "$PYTHON_BIN" -c "
 import sys,json
 envs = json.load(sys.stdin)['data']['list']
 for e in envs:
@@ -369,7 +385,7 @@ for e in envs:
 ")
 assert_eq "rule 1 content on remote" "*.example.com host://127.0.0.1:${RULE_TARGET_PORT_1}" "$R1_RULE"
 
-R2_RULE=$(echo "$REMOTE_ENVS" | python3 -c "
+R2_RULE=$(echo "$REMOTE_ENVS" | "$PYTHON_BIN" -c "
 import sys,json
 envs = json.load(sys.stdin)['data']['list']
 for e in envs:
@@ -390,7 +406,7 @@ R3_CREATE=$(curl -s -X POST "$SYNC_BASE/v4/env" \
   -H "Content-Type: application/json" \
   -H "x-bifrost-token: $ALICE_TOKEN" \
   -d "{\"user_id\": \"alice\", \"name\": \"e2e-remote-rule\", \"rule\": \"remote.example.com host://127.0.0.1:${RULE_TARGET_PORT_2}\"}")
-R3_ID=$(echo "$R3_CREATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])")
+R3_ID=$(echo "$R3_CREATE" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['data']['id'])")
 assert_not_empty "remote rule 3 created" "$R3_ID"
 
 curl -s -X POST "$ADMIN_BASE/api/sync/run" > /dev/null
@@ -399,8 +415,8 @@ echo "  waiting for reverse sync (rule appears locally)..."
 reverse_waited=0
 while [ "$reverse_waited" -lt 120 ]; do
   LOCAL_R3=$(curl -s "$ADMIN_BASE/api/rules/e2e-remote-rule" 2>/dev/null) || LOCAL_R3=""
-  if echo "$LOCAL_R3" | python3 -c "import sys,json; json.load(sys.stdin); print('ok')" >/dev/null 2>&1; then
-    if echo "$LOCAL_R3" | python3 -c "import sys,json; data=json.load(sys.stdin); print('1' if 'content' in data else '0')" | grep -q '^1$'; then
+  if echo "$LOCAL_R3" | "$PYTHON_BIN" -c "import sys,json; json.load(sys.stdin); print('ok')" >/dev/null 2>&1; then
+    if echo "$LOCAL_R3" | "$PYTHON_BIN" -c "import sys,json; data=json.load(sys.stdin); print('1' if 'content' in data else '0')" | grep -q '^1$'; then
       break
     fi
   fi
@@ -411,14 +427,14 @@ done
 LOCAL_R3=$(curl -s "$ADMIN_BASE/api/rules/e2e-remote-rule")
 echo "  local rule 3: $LOCAL_R3"
 
-R3_FOUND=$(echo "$LOCAL_R3" | python3 -c "
+R3_FOUND=$(echo "$LOCAL_R3" | "$PYTHON_BIN" -c "
 import sys,json
 data = json.load(sys.stdin)
 print('found' if 'content' in data else 'missing')
 ")
 assert_eq "remote rule pulled to local" "found" "$R3_FOUND"
 
-R3_CONTENT=$(echo "$LOCAL_R3" | python3 -c "import sys,json; print(json.load(sys.stdin)['content'])")
+R3_CONTENT=$(echo "$LOCAL_R3" | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin)['content'])")
 assert_eq "pulled rule content matches" "remote.example.com host://127.0.0.1:${RULE_TARGET_PORT_2}" "$R3_CONTENT"
 
 # ═══════════════════════════════════════════════════════════
