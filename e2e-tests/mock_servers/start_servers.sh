@@ -179,7 +179,6 @@ start_all() {
     ! should_start_server ws || start_ws
     ! should_start_server wss || start_wss
     ! should_start_server sse || start_sse
-    sleep 0.5
     ! should_start_server proxy || start_proxy
 }
 

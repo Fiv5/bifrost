@@ -23,20 +23,21 @@ const getRepoRoot = () => {
   return path.resolve(path.dirname(current), "../../../..");
 };
 
-async function findFreePort(start: number, end: number): Promise<number> {
-  for (let port = start; port <= end; port += 1) {
-    const available = await new Promise<boolean>((resolve) => {
-      const server = net.createServer();
-      server.once("error", () => resolve(false));
-      server.listen(port, "127.0.0.1", () => {
-        server.close(() => resolve(true));
-      });
+async function findFreePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") {
+        server.close(() => reject(new Error("Failed to allocate an ephemeral port")));
+        return;
+      }
+      const { port } = addr;
+      server.close(() => resolve(port));
     });
-    if (available) {
-      return port;
-    }
-  }
-  throw new Error(`No free port found in range ${start}-${end}`);
+  });
 }
 
 function getExistingEnv(): UiTestEnv | null {
@@ -91,8 +92,8 @@ export async function allocateUiTestEnv(): Promise<UiTestEnv> {
 
   const repoRoot = getRepoRoot();
   const runId = `ui-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2, 8)}`;
-  const backendPort = await findFreePort(39100, 39599);
-  const webPort = await findFreePort(3010, 3099);
+  const backendPort = await findFreePort();
+  const webPort = await findFreePort();
   const runtimeDir = path.join(repoRoot, ".bifrost-ui-test-runs", runId);
   const dataDir = path.join(runtimeDir, "data");
   const targetDir = path.join(repoRoot, ".bifrost-ui-target");

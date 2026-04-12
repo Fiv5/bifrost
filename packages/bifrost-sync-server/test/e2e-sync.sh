@@ -4,11 +4,48 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SYNC_SERVER_DIR="$SCRIPT_DIR/.."
-SYNC_DATA_DIR="/tmp/bifrost-sync-e2e-data"
-PROXY_DATA_DIR="/tmp/bifrost-proxy-e2e-data"
+TMP_DIR="${BIFROST_SYNC_E2E_TMP_DIR:-}"
+TMP_AUTO=false
 
-SYNC_PORT=8686
-PROXY_PORT=8800
+alloc_free_port() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required for dynamic port allocation" >&2
+    exit 1
+  fi
+  python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+if [[ -z "${TMP_DIR:-}" ]]; then
+  TMP_DIR="$(mktemp -d)"
+  TMP_AUTO=true
+fi
+
+SYNC_DATA_DIR="${SYNC_DATA_DIR:-$TMP_DIR/sync-data}"
+PROXY_DATA_DIR="${PROXY_DATA_DIR:-$TMP_DIR/proxy-data}"
+
+SYNC_PORT="${SYNC_PORT:-0}"
+PROXY_PORT="${PROXY_PORT:-0}"
+if [[ "$SYNC_PORT" == "0" ]]; then
+  SYNC_PORT="$(alloc_free_port)"
+fi
+if [[ "$PROXY_PORT" == "0" ]]; then
+  PROXY_PORT="$(alloc_free_port)"
+fi
+
+RULE_TARGET_PORT_1="${RULE_TARGET_PORT_1:-0}"
+RULE_TARGET_PORT_2="${RULE_TARGET_PORT_2:-0}"
+if [[ "$RULE_TARGET_PORT_1" == "0" ]]; then
+  RULE_TARGET_PORT_1="$(alloc_free_port)"
+fi
+if [[ "$RULE_TARGET_PORT_2" == "0" ]]; then
+  RULE_TARGET_PORT_2="$(alloc_free_port)"
+fi
 ADMIN_BASE="http://127.0.0.1:$PROXY_PORT/_bifrost"
 SYNC_BASE="http://127.0.0.1:$SYNC_PORT"
 
@@ -25,7 +62,8 @@ cleanup() {
   echo -e "\n${YELLOW}[cleanup] stopping services...${NC}"
   [ -n "$SYNC_PID" ] && kill "$SYNC_PID" 2>/dev/null && wait "$SYNC_PID" 2>/dev/null || true
   [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null && wait "$PROXY_PID" 2>/dev/null || true
-  rm -rf "$SYNC_DATA_DIR" "$PROXY_DATA_DIR"
+  kill $(jobs -p) 2>/dev/null || true
+  rm -rf "$TMP_DIR" 2>/dev/null || true
   echo -e "${YELLOW}[cleanup] done${NC}"
 }
 trap cleanup EXIT
@@ -81,7 +119,7 @@ wait_for_service() {
     if [ "$http_code" != "000" ] && [ -n "$http_code" ]; then
       break
     fi
-    sleep 1
+    sleep 0.2
     waited=$((waited + 1))
     if [ "$waited" -ge "$max_wait" ]; then
       echo -e "${RED}[error] $name did not start within ${max_wait}s${NC}"
@@ -89,6 +127,74 @@ wait_for_service() {
     fi
   done
   echo -e "${GREEN}[ready] $name is running (HTTP $http_code)${NC}"
+}
+
+wait_for_sync_status() {
+  local url="$1" name="$2" max_wait="${3:-60}"
+  local waited=0
+  echo -e "${CYAN}[wait] waiting for $name to become reachable+authorized...${NC}"
+
+  while [ "$waited" -lt "$max_wait" ]; do
+    local body
+    body=$(curl -s "$url" 2>/dev/null) || body=""
+    if [ -n "$body" ]; then
+      local ok
+      ok=$(printf '%s' "$body" | python3 - <<'PY'
+import json
+import sys
+
+try:
+  data = json.load(sys.stdin)
+except Exception:
+  print("0")
+  sys.exit(0)
+
+reachable = bool(data.get("reachable", False))
+authorized = bool(data.get("authorized", False))
+print("1" if (reachable and authorized) else "0")
+PY
+)
+      if [ "$ok" = "1" ]; then
+        echo -e "${GREEN}[ready] $name is reachable+authorized${NC}"
+        return 0
+      fi
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+
+  echo -e "${RED}[error] $name did not become reachable+authorized within ${max_wait}s${NC}"
+  return 1
+}
+
+wait_for_remote_env_count() {
+  local url="$1" token="$2" expected="$3" max_wait="${4:-60}"
+  local waited=0
+  while [ "$waited" -lt "$max_wait" ]; do
+    local body
+    body=$(curl -s "$url" -H "x-bifrost-token: $token" 2>/dev/null) || body=""
+    if [ -n "$body" ]; then
+      local count
+      count=$(printf '%s' "$body" | python3 - <<'PY'
+import json
+import sys
+
+try:
+  data = json.load(sys.stdin)
+  lst = data["data"]["list"]
+  print(len(lst))
+except Exception:
+  print(-1)
+PY
+)
+      if [ "$count" = "$expected" ]; then
+        return 0
+      fi
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  return 1
 }
 
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
@@ -189,7 +295,7 @@ SESSION_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$ADMIN_BASE/api
   -d "{\"token\": \"$ALICE_TOKEN\"}")
 assert_http_ok "session token saved" "$SESSION_STATUS"
 
-sleep 3
+wait_for_sync_status "$ADMIN_BASE/api/sync/status" "proxy sync status" 90
 
 STATUS_RESP=$(curl -s "$ADMIN_BASE/api/sync/status")
 echo "  sync status: $STATUS_RESP"
@@ -206,7 +312,7 @@ echo -e "${CYAN}[step 6/9] Creating local rules on the proxy...${NC}"
 
 CR1=$(curl -s -X POST "$ADMIN_BASE/api/rules" \
   -H "Content-Type: application/json" \
-  -d '{"name": "e2e-test-rule-1", "content": "*.example.com host://127.0.0.1:3000", "enabled": true}')
+  -d "{\"name\": \"e2e-test-rule-1\", \"content\": \"*.example.com host://127.0.0.1:${RULE_TARGET_PORT_1}\", \"enabled\": true}")
 echo "  create rule 1: $CR1"
 assert_contains "rule 1 created" "$CR1" "created successfully"
 
@@ -225,8 +331,9 @@ echo -e "${CYAN}[step 7/9] Triggering sync (local → remote)...${NC}"
 SYNC_RUN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$ADMIN_BASE/api/sync/run")
 assert_http_ok "sync run triggered" "$SYNC_RUN_STATUS"
 
-echo "  waiting for sync to complete..."
-sleep 8
+echo "  waiting for sync to complete (remote env count -> 2)..."
+REMOTE_ENVS_URL="$SYNC_BASE/v4/env?user_id=alice&offset=0&limit=500"
+wait_for_remote_env_count "$REMOTE_ENVS_URL" "$ALICE_TOKEN" "2" 90 || true
 
 SYNC_STATUS2=$(curl -s "$ADMIN_BASE/api/sync/status")
 echo "  post-sync status: $SYNC_STATUS2"
@@ -260,7 +367,7 @@ for e in envs:
         print(e['rule'])
         break
 ")
-assert_eq "rule 1 content on remote" "*.example.com host://127.0.0.1:3000" "$R1_RULE"
+assert_eq "rule 1 content on remote" "*.example.com host://127.0.0.1:${RULE_TARGET_PORT_1}" "$R1_RULE"
 
 R2_RULE=$(echo "$REMOTE_ENVS" | python3 -c "
 import sys,json
@@ -282,13 +389,24 @@ echo -e "${CYAN}[step 9/9] Testing bidirectional sync (remote → local)...${NC}
 R3_CREATE=$(curl -s -X POST "$SYNC_BASE/v4/env" \
   -H "Content-Type: application/json" \
   -H "x-bifrost-token: $ALICE_TOKEN" \
-  -d '{"user_id": "alice", "name": "e2e-remote-rule", "rule": "remote.example.com host://127.0.0.1:4000"}')
+  -d "{\"user_id\": \"alice\", \"name\": \"e2e-remote-rule\", \"rule\": \"remote.example.com host://127.0.0.1:${RULE_TARGET_PORT_2}\"}")
 R3_ID=$(echo "$R3_CREATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])")
 assert_not_empty "remote rule 3 created" "$R3_ID"
 
 curl -s -X POST "$ADMIN_BASE/api/sync/run" > /dev/null
-echo "  waiting for reverse sync..."
-sleep 8
+echo "  waiting for reverse sync (rule appears locally)..."
+
+reverse_waited=0
+while [ "$reverse_waited" -lt 120 ]; do
+  LOCAL_R3=$(curl -s "$ADMIN_BASE/api/rules/e2e-remote-rule" 2>/dev/null) || LOCAL_R3=""
+  if echo "$LOCAL_R3" | python3 -c "import sys,json; json.load(sys.stdin); print('ok')" >/dev/null 2>&1; then
+    if echo "$LOCAL_R3" | python3 -c "import sys,json; data=json.load(sys.stdin); print('1' if 'content' in data else '0')" | grep -q '^1$'; then
+      break
+    fi
+  fi
+  sleep 0.5
+  reverse_waited=$((reverse_waited + 1))
+done
 
 LOCAL_R3=$(curl -s "$ADMIN_BASE/api/rules/e2e-remote-rule")
 echo "  local rule 3: $LOCAL_R3"
@@ -301,7 +419,7 @@ print('found' if 'content' in data else 'missing')
 assert_eq "remote rule pulled to local" "found" "$R3_FOUND"
 
 R3_CONTENT=$(echo "$LOCAL_R3" | python3 -c "import sys,json; print(json.load(sys.stdin)['content'])")
-assert_eq "pulled rule content matches" "remote.example.com host://127.0.0.1:4000" "$R3_CONTENT"
+assert_eq "pulled rule content matches" "remote.example.com host://127.0.0.1:${RULE_TARGET_PORT_2}" "$R3_CONTENT"
 
 # ═══════════════════════════════════════════════════════════
 # Step 10: Logout verification

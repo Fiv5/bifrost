@@ -4,14 +4,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_SCRIPT="$SCRIPT_DIR/../mock_servers/http_echo_server.py"
-PORT="${HTTPBIN_HTTP_MOCK_PORT:-39180}"
-BASE_URL="http://127.0.0.1:${PORT}"
 TMP_DIR="$(mktemp -d)"
 SERVER_PID=""
 
 source "$SCRIPT_DIR/../test_utils/process.sh"
 
+PORT="${HTTPBIN_HTTP_MOCK_PORT:-}"
+if [[ -z "${PORT}" ]]; then
+    PORT="$(allocate_free_port)"
+fi
+BASE_URL="http://127.0.0.1:${PORT}"
+
 cleanup() {
+    kill $(jobs -p) 2>/dev/null || true
     if [[ -n "${SERVER_PID}" ]]; then
         kill_pid "${SERVER_PID}"
         wait_pid "${SERVER_PID}"
@@ -168,8 +173,13 @@ assert_eq "$(json_eval "${GZIP_JSON}" "data['gzipped']")" "True" "/gzip returns 
 
 if curl --version | grep -qi 'brotli'; then
     BROTLI_JSON="${TMP_DIR}/brotli.json"
-    curl_json '/brotli' "${BROTLI_JSON}" --compressed
-    assert_eq "$(json_eval "${BROTLI_JSON}" "data['brotli']")" "True" "/brotli returns compressed JSON payload"
+    BROTLI_CODE="$(curl -sS --compressed -o "${BROTLI_JSON}" -w '%{http_code}' "${BASE_URL}/brotli" || echo 000)"
+    if [[ "${BROTLI_CODE}" == "501" ]]; then
+        echo "[SKIP] /brotli - server brotli backend unavailable"
+    else
+        assert_eq "${BROTLI_CODE}" "200" "/brotli returns 200 when supported"
+        assert_eq "$(json_eval "${BROTLI_JSON}" "data['brotli']")" "True" "/brotli returns compressed JSON payload"
+    fi
 else
     echo "[SKIP] /brotli - curl lacks brotli support"
 fi

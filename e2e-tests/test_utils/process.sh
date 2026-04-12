@@ -155,6 +155,136 @@ python_cmd() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# E2E infra helpers (ports / polling)
+# ---------------------------------------------------------------------------
+
+_require_python_for_port_alloc() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "ERROR: python3 is required for dynamic port allocation" >&2
+        return 1
+    fi
+    return 0
+}
+
+allocate_free_port() {
+    _require_python_for_port_alloc || return 1
+    python3 - <<'PY'
+import socket
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+port_is_available() {
+    local port="$1"
+    _require_python_for_port_alloc || return 1
+    python3 - "$port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    try:
+        s.close()
+    except Exception:
+        pass
+sys.exit(0)
+PY
+}
+
+# Pick a base port such that [base, base+span-1] are all available.
+# - requested_base_port: 0 means pick a randomized starting point.
+# - span: number of consecutive ports needed.
+pick_available_base_port() {
+    local requested_base_port="${1:-0}"
+    local span="${2:-1}"
+
+    _require_python_for_port_alloc || return 1
+
+    python3 - "$requested_base_port" "$span" <<'PY'
+import random
+import socket
+import sys
+
+requested = int(sys.argv[1])
+span = int(sys.argv[2])
+
+def range_ok(base: int, span: int) -> bool:
+    sockets = []
+    try:
+        for p in range(base, base + span):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", p))
+            sockets.append(s)
+        return True
+    except OSError:
+        return False
+    finally:
+        for s in sockets:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+def candidate_bases():
+    # Prefer ephemeral-ish high ports to reduce collisions.
+    low, high = 20000, 59000
+    # Leave room for span.
+    high = max(low, high - max(span, 1) - 1)
+    if requested > 0:
+        yield requested
+        for i in range(1, 50):
+            yield requested + i * 100
+    # Randomized fallback (helps when multiple jobs start concurrently).
+    for _ in range(200):
+        yield random.randint(low, high)
+
+for base in candidate_bases():
+    if base <= 0:
+        continue
+    if base + span >= 65535:
+        continue
+    if range_ok(base, span):
+        print(base)
+        sys.exit(0)
+
+print(0)
+sys.exit(1)
+PY
+}
+
+wait_for_http_ready() {
+    local url="$1"
+    local timeout_secs="${2:-30}"
+    local interval_secs="${3:-0.2}"
+
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
+        if curl -fsS --connect-timeout 2 --max-time 5 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= timeout_secs )); then
+            return 1
+        fi
+        sleep "$interval_secs"
+    done
+}
+
 start_echo_server() {
     local port=$1
     local log_file=${2:-/dev/null}

@@ -108,7 +108,7 @@ start_bifrost_server() {
             tail -n 50 "$BIFROST_LOG_FILE" 2>/dev/null || true
             return 1
         fi
-        if curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
+        if env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
             echo -e "${GREEN}✓${NC} Bifrost 已启动 (端口: ${PROXY_PORT}, PID: ${PROXY_PID})"
             return 0
         fi
@@ -135,16 +135,21 @@ seed_data() {
 generate_real_traffic() {
     header "通过代理产生真实 HTTP 流量"
 
-    curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/get?e2e=traffic1" -o /dev/null 2>&1 || true
-    curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/status/201" -o /dev/null 2>&1 || true
-    curl -sf -x "http://127.0.0.1:${PROXY_PORT}" -X POST "http://httpbin.org/post" -d "data=e2e_test" -o /dev/null 2>&1 || true
-    curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/headers" -o /dev/null 2>&1 || true
-    curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/status/404" -o /dev/null 2>&1 || true
+    env NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" \
+        curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/get?e2e=traffic1" -o /dev/null 2>&1 || true
+    env NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" \
+        curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/status/201" -o /dev/null 2>&1 || true
+    env NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" \
+        curl -sf -x "http://127.0.0.1:${PROXY_PORT}" -X POST "http://httpbin.org/post" -d "data=e2e_test" -o /dev/null 2>&1 || true
+    env NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" \
+        curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/headers" -o /dev/null 2>&1 || true
+    env NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" \
+        curl -sf -x "http://127.0.0.1:${PROXY_PORT}" "http://httpbin.org/status/404" -o /dev/null 2>&1 || true
 
     sleep 1
 
     local count
-    count=$(curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "0")
+    count=$(env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "0")
 
     if [[ "$count" -gt 0 ]]; then
         pass "已产生 ${count} 条真实流量记录"
@@ -269,7 +274,7 @@ test_traffic_get_by_id() {
     header "测试 traffic get <id> 获取单条记录详情"
 
     local first_id
-    first_id=$(curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['records'][0]['id'])" 2>/dev/null || echo "")
+    first_id=$(env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['records'][0]['id'])" 2>/dev/null || echo "")
 
     if [[ -z "$first_id" ]]; then
         fail "无法获取第一条流量记录 ID"
@@ -333,7 +338,7 @@ test_traffic_clear_by_ids() {
     header "测试 traffic clear --ids (按 ID 删除)"
 
     local first_id
-    first_id=$(curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['records'][0]['id'])" 2>/dev/null || echo "")
+    first_id=$(env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['records'][0]['id'])" 2>/dev/null || echo "")
 
     if [[ -z "$first_id" ]]; then
         fail "无法获取要删除的流量记录 ID"
@@ -341,7 +346,7 @@ test_traffic_clear_by_ids() {
     fi
 
     local count_before
-    count_before=$(curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "0")
+    count_before=$(env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "0")
 
     local result
     result=$(run_bifrost traffic clear --ids "$first_id" -y)
@@ -353,7 +358,7 @@ test_traffic_clear_by_ids() {
     fi
 
     local count_after
-    count_after=$(curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "0")
+    count_after=$(env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "0")
 
     if [[ "$count_after" -lt "$count_before" ]]; then
         pass "traffic clear --ids 后记录数减少 (${count_before} -> ${count_after})"
@@ -375,7 +380,7 @@ test_traffic_clear_all() {
     fi
 
     local count_after
-    count_after=$(curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "unknown")
+    count_after=$(env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/traffic?limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total',0))" 2>/dev/null || echo "unknown")
 
     if [[ "$count_after" == "0" ]]; then
         pass "traffic clear -y 后记录为 0"
@@ -1120,7 +1125,7 @@ test_stop_verify() {
 
     sleep 2
 
-    if ! curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
+    if ! env NO_PROXY="*" no_proxy="*" curl -sf "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
         pass "stop 后服务已停止 (API 不可达)"
     else
         fail "stop 后服务仍在运行"

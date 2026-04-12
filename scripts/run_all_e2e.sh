@@ -564,7 +564,7 @@ should_skip_full_shell_test() {
 
 run_shell_tests_parallel() {
   local max_jobs="$1"
-  local shell_base_port="${BIFROST_E2E_SHELL_BASE_PORT:-15000}"
+  local shell_base_port="${BIFROST_E2E_SHELL_BASE_PORT:-0}"
   local port_step=10
 
   local serial_tests=()
@@ -597,6 +597,8 @@ run_shell_tests_parallel() {
 
   if [[ ${#parallel_tests[@]} -gt 0 ]]; then
     header "Running ${#parallel_tests[@]} safe shell tests in parallel (jobs=$max_jobs)"
+    local span=$(( (${#parallel_tests[@]} - 1) * port_step + 12 ))
+    shell_base_port="$(pick_available_base_port "$shell_base_port" "$span")"
     _SHELL_BATCH_LIST=("${parallel_tests[@]}")
     run_shell_batch_parallel "$max_jobs" "$shell_base_port" "$port_step"
   fi
@@ -605,9 +607,58 @@ run_shell_tests_parallel() {
     header "Running ${#serial_tests[@]} mock-managing shell tests serially"
     for script_name in "${serial_tests[@]}"; do
       log_info "Queue serial shell test: $script_name"
-      run_and_capture "shell:${script_name}" bash "$E2E_DIR/tests/$script_name"
+      run_shell_test_isolated "$script_name"
     done
   fi
+}
+
+run_shell_test_isolated() {
+  local script_name="$1"
+
+  # Allocate a small contiguous span and derive service ports from it.
+  local base
+  base="$(pick_available_base_port 0 32)"
+  local shell_port="$base"
+
+  local shell_data_dir
+  mkdir -p "$E2E_SANDBOX_DIR" 2>/dev/null || true
+  shell_data_dir="$(mktemp -d "$E2E_SANDBOX_DIR/shell-${script_name//\//_}-XXXXXX")"
+
+  local echo_http="$((shell_port + 1))"
+  local echo_https="$((shell_port + 2))"
+  local echo_ws="$((shell_port + 3))"
+  local echo_wss="$((shell_port + 4))"
+  local echo_sse="$((shell_port + 5))"
+  local socks5_port="$((shell_port + 6))"
+  local echo_proxy="$((shell_port + 7))"
+
+  run_and_capture "shell:${script_name}" \
+    env \
+      ADMIN_PORT="$shell_port" \
+      ADMIN_HOST="127.0.0.1" \
+      PROXY_PORT="$shell_port" \
+      PROXY_HOST="127.0.0.1" \
+      ECHO_HTTP_PORT="$echo_http" \
+      HTTP_PORT="$echo_http" \
+      MOCK_HTTP_PORT="$echo_http" \
+      ECHO_HTTPS_PORT="$echo_https" \
+      HTTPS_PORT="$echo_https" \
+      HTTPS_MOCK_PORT="$echo_https" \
+      ECHO_WS_PORT="$echo_ws" \
+      WS_PORT="$echo_ws" \
+      MOCK_WS_PORT="$echo_ws" \
+      ECHO_WSS_PORT="$echo_wss" \
+      WSS_PORT="$echo_wss" \
+      ECHO_SSE_PORT="$echo_sse" \
+      SSE_PORT="$echo_sse" \
+      MOCK_SSE_PORT="$echo_sse" \
+      SOCKS5_PORT="$socks5_port" \
+      MOCK_ECHO_PROXY_PORT="$echo_proxy" \
+      ECHO_PROXY_PORT="$echo_proxy" \
+      SERVER_LOG_DIR="$shell_data_dir/mock-logs" \
+      BIFROST_DATA_DIR="$shell_data_dir" \
+      SKIP_BUILD=true \
+    bash "$E2E_DIR/tests/$script_name"
 }
 
 run_shell_batch_parallel() {
@@ -630,8 +681,6 @@ run_shell_batch_parallel() {
 
       local shell_port=$((base_port + next_index * port_step))
       local shell_admin_port="$shell_port"
-      local shell_data_dir
-      shell_data_dir="$(mktemp -d)"
       local log_slug
       log_slug="$(printf 'shell_%s' "$script_name" | tr ' /:.' '____' | tr -cd '[:alnum:]_.-')"
       local log_file="$REPORT_DIR/${log_slug}.log"
@@ -641,21 +690,28 @@ run_shell_batch_parallel() {
       log_info "Starting shell test $script_name (port=$shell_port, index=$next_index)"
 
       (
+        shell_data_dir="$(mktemp -d "$E2E_SANDBOX_DIR/shell-${log_slug}-XXXXXX")"
+        trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$shell_data_dir" 2>/dev/null || true' EXIT
         ADMIN_PORT="$shell_admin_port" \
         ADMIN_HOST="127.0.0.1" \
         PROXY_PORT="$shell_port" \
         PROXY_HOST="127.0.0.1" \
         ECHO_HTTP_PORT="$((shell_port + 1))" \
         HTTP_PORT="$((shell_port + 1))" \
+        MOCK_HTTP_PORT="$((shell_port + 1))" \
         ECHO_HTTPS_PORT="$((shell_port + 2))" \
         HTTPS_PORT="$((shell_port + 2))" \
+        HTTPS_MOCK_PORT="$((shell_port + 2))" \
         WS_PORT="$((shell_port + 3))" \
+        MOCK_WS_PORT="$((shell_port + 3))" \
         WSS_PORT="$((shell_port + 4))" \
         SSE_PORT="$((shell_port + 5))" \
+        MOCK_SSE_PORT="$((shell_port + 5))" \
         SOCKS5_PORT="$((shell_port + 6))" \
         MOCK_ECHO_PROXY_PORT="$((shell_port + 7))" \
         ECHO_PROXY_PORT="$((shell_port + 7))" \
         BIFROST_DATA_DIR="$shell_data_dir" \
+        SERVER_LOG_DIR="$shell_data_dir/mock-logs" \
         SKIP_BUILD=true \
         bash "$E2E_DIR/tests/$script_name"
       ) > "$log_file" 2>&1 &
@@ -723,21 +779,47 @@ EOF
 
 cd "$ROOT_DIR"
 
+E2E_SANDBOX_DIR="${BIFROST_E2E_SANDBOX_DIR:-}"
+E2E_SANDBOX_AUTO="false"
+
+e2e_cleanup() {
+  set +e
+  # Best-effort cleanup: background jobs + sandbox dir.
+  kill $(jobs -p) 2>/dev/null || true
+
+  if [[ "${E2E_SANDBOX_AUTO:-false}" == "true" ]] && [[ -n "${E2E_SANDBOX_DIR:-}" ]]; then
+    rm -rf "$E2E_SANDBOX_DIR" 2>/dev/null || true
+  fi
+}
+
+trap e2e_cleanup EXIT
+
 export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
 export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 export CARGO_BIN="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
 export NODE_BIN="${NODE_BIN:-$(resolve_non_shim_command node)}"
 export PNPM_BIN="${PNPM_BIN:-$(resolve_non_shim_command pnpm)}"
 export BIFROST_UI_TEST_TARGET_DIR="${BIFROST_UI_TEST_TARGET_DIR:-$ROOT_DIR/.bifrost-ui-target}"
-export BIFROST_UI_TEST_RUNNER_PORT="${BIFROST_UI_TEST_RUNNER_PORT:-18080}"
+export BIFROST_UI_TEST_RUNNER_PORT="${BIFROST_UI_TEST_RUNNER_PORT:-}"
 export BIFROST_E2E_ROOT="$ROOT_DIR"
-export HOME="${HOME:-$ROOT_DIR/.bifrost-e2e-home}"
-export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$ROOT_DIR/.bifrost-e2e-xdg-config}"
-export XDG_DATA_HOME="${XDG_DATA_HOME:-$ROOT_DIR/.bifrost-e2e-xdg-data}"
+mkdir -p "$ROOT_DIR/.bifrost-e2e-runs" 2>/dev/null || true
+if [[ -z "${E2E_SANDBOX_DIR:-}" ]]; then
+  E2E_SANDBOX_DIR="$(mktemp -d "$ROOT_DIR/.bifrost-e2e-runs/sandbox-XXXXXX")"
+  E2E_SANDBOX_AUTO="true"
+fi
+
+export HOME="${HOME:-$E2E_SANDBOX_DIR/home}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$E2E_SANDBOX_DIR/xdg-config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$E2E_SANDBOX_DIR/xdg-data}"
 export PATH="$ROOT_DIR/e2e-tests/bin:$(dirname "$CARGO_BIN"):$(dirname "$NODE_BIN"):$(dirname "$PNPM_BIN"):$PATH"
 source "$E2E_DIR/test_utils/process.sh"
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+if [[ -z "${BIFROST_UI_TEST_RUNNER_PORT:-}" ]]; then
+  BIFROST_UI_TEST_RUNNER_PORT="$(allocate_free_port)"
+  export BIFROST_UI_TEST_RUNNER_PORT
+fi
+
 REPORT_DIR="${BIFROST_E2E_REPORT_DIR:-$ROOT_DIR/.e2e-reports/run-all-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$REPORT_DIR"
 print_runtime_context
@@ -844,7 +926,7 @@ if [[ "$RUN_SHELL" -eq 1 ]]; then
           skip_suite "shell:${script_name}" "skipped on ${PLATFORM}"
           continue
         fi
-        run_and_capture "shell:${script_name}" bash "$E2E_DIR/tests/$script_name"
+        run_shell_test_isolated "$script_name"
       done
     fi
   else

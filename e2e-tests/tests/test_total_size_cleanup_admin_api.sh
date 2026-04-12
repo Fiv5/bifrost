@@ -22,7 +22,7 @@ server_pid=$!
 
 waited=0
 while [ $waited -lt 15 ]; do
-  if curl -sf --connect-timeout 2 --max-time 3 "http://127.0.0.1:${HTTP_PORT}/health" >/dev/null 2>&1; then
+  if env NO_PROXY="*" no_proxy="*" curl -sf --connect-timeout 2 --max-time 3 "http://127.0.0.1:${HTTP_PORT}/health" >/dev/null 2>&1; then
     break
   fi
   sleep 1
@@ -48,7 +48,7 @@ print("a" * 32768)
 PY
 )
 
-config_response=$(curl -s -X PUT -H "Content-Type: application/json" \
+config_response=$(env NO_PROXY="*" no_proxy="*" curl -s -X PUT -H "Content-Type: application/json" \
   -d '{"max_db_size_bytes":262144,"max_body_memory_size":1024}' \
   "http://127.0.0.1:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/config/performance")
 if echo "$config_response" | jq -e '.error' >/dev/null 2>&1; then

@@ -169,8 +169,12 @@ sse_fetch_all() {
     fi
 
     if [[ -n "$SSE_PROXY" ]]; then
-        curl --max-time "$timeout" -sN -x "$SSE_PROXY" "$url" 2>/dev/null
+        # 在 CI/沙盒环境下，127.0.0.1 通常会被 no_proxy 拦截。
+        # 我们通过设置 NO_PROXY="" 来确保 curl 强制走代理。
+        echo "[DEBUG] curl -sN -x $SSE_PROXY $url (forcing proxy)" >&2
+        NO_PROXY="" curl --max-time "$timeout" -sN -x "$SSE_PROXY" "$url" 2>/dev/null
     else
+        echo "[DEBUG] curl -sN $url" >&2
         curl --max-time "$timeout" -sN "$url" 2>/dev/null
     fi
 }

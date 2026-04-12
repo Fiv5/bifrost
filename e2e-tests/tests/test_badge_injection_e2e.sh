@@ -71,7 +71,7 @@ start_html_server() {
   HTML_PID=$!
 
   for _ in $(seq 1 30); do
-    if curl -sS "http://127.0.0.1:${HTML_PORT}/index.html" >/dev/null 2>&1; then
+    if env NO_PROXY="*" no_proxy="*" curl -sS "http://127.0.0.1:${HTML_PORT}/index.html" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.2
@@ -95,7 +95,7 @@ start_proxy() {
   PROXY_PID=$!
 
   for _ in $(seq 1 120); do
-    if curl -sS "http://${PROXY_HOST}:${PROXY_PORT}/_bifrost/api/proxy/address" >/dev/null 2>&1; then
+    if env NO_PROXY="*" no_proxy="*" curl -sS "http://${PROXY_HOST}:${PROXY_PORT}/_bifrost/api/proxy/address" >/dev/null 2>&1; then
       return 0
     fi
     if ! kill -0 "$PROXY_PID" >/dev/null 2>&1; then

@@ -64,7 +64,7 @@ wait_for_admin_ready() {
     local timeout="${1:-60}"
     local waited=0
     while [[ "$waited" -lt "$timeout" ]]; do
-        if curl -sf "${ADMIN_BASE_URL}/api/system" >/dev/null 2>&1; then
+        if env NO_PROXY="*" no_proxy="*" curl -sf "${ADMIN_BASE_URL}/api/system" >/dev/null 2>&1; then
             return 0
         fi
         if [[ -n "$BIFROST_PID" ]] && ! kill -0 "$BIFROST_PID" 2>/dev/null; then
@@ -83,7 +83,7 @@ start_sse_server() {
 
     local waited=0
     while [[ "$waited" -lt 50 ]]; do
-        if curl -sf "${SSE_TARGET}/health" >/dev/null 2>&1; then
+        if env NO_PROXY="*" no_proxy="*" curl -sf "${SSE_TARGET}/health" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.1
@@ -120,7 +120,7 @@ wait_for_traffic_id_by_url() {
     local waited=0
     while [[ "$waited" -lt $((timeout * 10)) ]]; do
         local traffic_id
-        traffic_id=$(curl -sf "${ADMIN_BASE_URL}/api/traffic?limit=50" | jq -r --arg pattern "$url_pattern" '
+        traffic_id=$(env NO_PROXY="*" no_proxy="*" curl -sf "${ADMIN_BASE_URL}/api/traffic?limit=50" | jq -r --arg pattern "$url_pattern" '
             [.records[]
              | select((.url // .p // .path // "") | contains($pattern))]
             | sort_by(.sequence)
@@ -139,7 +139,7 @@ wait_for_traffic_id_by_url() {
 
 post_response_body_search() {
     local keyword="$1"
-    curl -sf -X POST \
+    env NO_PROXY="*" no_proxy="*" curl -sf -X POST \
         -H "Content-Type: application/json" \
         -d "$(jq -nc --arg keyword "$keyword" '{
             keyword: $keyword,
@@ -202,7 +202,7 @@ wait_for_search_empty() {
 
 fetch_sse_via_proxy() {
     local path="$1"
-    curl --max-time 10 -sfN -x "$SSE_PROXY" "${SSE_TARGET}${path}" >/dev/null
+    env NO_PROXY="" no_proxy="" curl --max-time 10 -sfN -x "$SSE_PROXY" "${SSE_TARGET}${path}" >/dev/null
 }
 
 test_search_api_and_cli_use_derived_sse_body() {
@@ -261,7 +261,7 @@ test_invalid_openai_like_sse_falls_back_safely() {
     _log_pass "traffic captured for invalid OpenAI-like SSE"
 
     local system_status
-    system_status="$(curl -s -o /dev/null -w "%{http_code}" "${ADMIN_BASE_URL}/api/system")"
+    system_status="$(env NO_PROXY="*" no_proxy="*" curl -s -o /dev/null -w "%{http_code}" "${ADMIN_BASE_URL}/api/system")"
     assert_status 200 "$system_status" "admin server stays healthy after invalid SSE"
 
     local invalid_response

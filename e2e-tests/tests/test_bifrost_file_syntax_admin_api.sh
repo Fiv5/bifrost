@@ -5,13 +5,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
-ADMIN_PORT="${ADMIN_PORT:-$((19000 + ($$ % 1000)))}"
+ADMIN_PORT="${ADMIN_PORT:-}"
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 export ADMIN_PATH_PREFIX
+source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+
+if [[ -z "${ADMIN_PORT}" ]]; then
+  ADMIN_PORT="$(allocate_free_port)"
+fi
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 export ADMIN_HOST ADMIN_PORT ADMIN_BASE_URL
-
-source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 
 TESTS_RUN=0
 TESTS_PASSED=0

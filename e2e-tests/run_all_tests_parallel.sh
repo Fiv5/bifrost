@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULES_DIR="${SCRIPT_DIR}/rules"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RESULTS_DIR="${SCRIPT_DIR}/.test_results"
+AUTO_RESULTS_DIR="false"
 source "$SCRIPT_DIR/test_utils/process.sh"
 
 GREEN='\033[0;32m'
@@ -35,7 +36,7 @@ usage() {
     echo "  -j, --jobs N       并行任务数 (默认: CPU 核心数)"
     echo "  -c, --category CAT 只运行指定分类的测试"
     echo "  --no-build         跳过编译步骤"
-    echo "  --base-port PORT   起始端口号 (默认: 9000)"
+    echo "  --base-port PORT   起始端口号 (默认: 自动分配)"
     echo "  -v, --verbose      详细输出"
     echo ""
     echo "示例:"
@@ -43,6 +44,57 @@ usage() {
     echo "  $0 -j 4                # 使用 4 个并行任务"
     echo "  $0 -c forwarding       # 只运行转发测试"
     exit 0
+}
+
+alloc_unique_port() {
+    local used_csv="$1"
+    local attempt=0
+    while [[ $attempt -lt 50 ]]; do
+        local port
+        port="$(allocate_free_port)"
+        if [[ ",${used_csv}," != *",${port},"* ]]; then
+            printf '%s\n' "$port"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+wait_for_mock_servers_ready() {
+    local timeout_secs="${1:-60}"
+
+    wait_for_http_ready "http://127.0.0.1:${ECHO_HTTP_PORT}/health" "$timeout_secs" 0.2 || return 1
+
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
+        if curl -skf --connect-timeout 2 --max-time 5 "https://127.0.0.1:${ECHO_HTTPS_PORT}/health" >/dev/null 2>&1; then
+            break
+        fi
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= timeout_secs )); then
+            return 1
+        fi
+        sleep 0.2
+    done
+
+    wait_for_http_ready "http://127.0.0.1:${ECHO_SSE_PORT}/health" "$timeout_secs" 0.2 || return 1
+    wait_for_http_ready "http://127.0.0.1:${ECHO_PROXY_PORT}/health" "$timeout_secs" 0.2 || return 1
+
+    start_ts="$(date +%s)"
+    while true; do
+        if is_ws_echo_ready && is_wss_echo_ready; then
+            return 0
+        fi
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= timeout_secs )); then
+            return 1
+        fi
+        sleep 0.2
+    done
 }
 
 detect_cpu_count() {
@@ -235,7 +287,16 @@ run_single_test() {
 
         local test_id="${rel_path}:${proxy_port}"
         local test_pid
-        TIMEOUT="$timeout" TEST_ID="$test_id" BIFROST_E2E_HTTP_RETRIES="$http_retries" "$SCRIPT_DIR/test_rules.sh" \
+        TIMEOUT="$timeout" \
+        TEST_ID="$test_id" \
+        BIFROST_E2E_HTTP_RETRIES="$http_retries" \
+        ECHO_HTTP_PORT="$ECHO_HTTP_PORT" \
+        ECHO_HTTPS_PORT="$ECHO_HTTPS_PORT" \
+        ECHO_WS_PORT="$ECHO_WS_PORT" \
+        ECHO_WSS_PORT="$ECHO_WSS_PORT" \
+        ECHO_SSE_PORT="$ECHO_SSE_PORT" \
+        ECHO_PROXY_PORT="$ECHO_PROXY_PORT" \
+        "$SCRIPT_DIR/test_rules.sh" \
             --no-build \
             --use-binary \
             --skip-mock-servers \
@@ -421,10 +482,23 @@ aggregate_results() {
 
 cleanup() {
     info "清理资源..."
+
+    # 确保无论成功/失败/中断，都能回收后台任务，避免残留 bifrost/mock 进程占用端口。
+    kill $(jobs -p) 2>/dev/null || true
     if is_windows; then
         kill_all_bifrost
     fi
-    "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+    HTTP_PORT="${ECHO_HTTP_PORT:-${HTTP_PORT:-}}" \
+    HTTPS_PORT="${ECHO_HTTPS_PORT:-${HTTPS_PORT:-}}" \
+    WS_PORT="${ECHO_WS_PORT:-${WS_PORT:-}}" \
+    WSS_PORT="${ECHO_WSS_PORT:-${WSS_PORT:-}}" \
+    SSE_PORT="${ECHO_SSE_PORT:-${SSE_PORT:-}}" \
+    MOCK_ECHO_PROXY_PORT="${ECHO_PROXY_PORT:-${MOCK_ECHO_PROXY_PORT:-}}" \
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+
+    if [[ "$AUTO_RESULTS_DIR" == "true" ]] && [[ -n "$RESULTS_DIR" ]] && [[ -d "$RESULTS_DIR" ]]; then
+        rm -rf "$RESULTS_DIR" 2>/dev/null || true
+    fi
 }
 
 collect_failed_result_indices() {
@@ -465,12 +539,22 @@ ensure_mock_servers_alive() {
     fi
 
     warn "Mock 服务器不可用，尝试重启..."
-    "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
-    sleep 1
-    "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
-    sleep 2
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
+    WS_PORT="$ECHO_WS_PORT" \
+    WSS_PORT="$ECHO_WSS_PORT" \
+    SSE_PORT="$ECHO_SSE_PORT" \
+    MOCK_ECHO_PROXY_PORT="$ECHO_PROXY_PORT" \
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
+    WS_PORT="$ECHO_WS_PORT" \
+    WSS_PORT="$ECHO_WSS_PORT" \
+    SSE_PORT="$ECHO_SSE_PORT" \
+    MOCK_ECHO_PROXY_PORT="$ECHO_PROXY_PORT" \
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
 
-    if is_http_echo_ready && is_https_echo_ready && is_ws_echo_ready && is_wss_echo_ready; then
+    if wait_for_mock_servers_ready 60; then
         echo -e "${GREEN}✓${NC} Mock 服务器已重启"
         return 0
     fi
@@ -579,11 +663,11 @@ retry_failed_suites_once() {
 }
 
 is_http_echo_ready() {
-    curl -sf "http://127.0.0.1:3000/health" >/dev/null 2>&1
+    curl -sf --connect-timeout 2 --max-time 5 "http://127.0.0.1:${ECHO_HTTP_PORT:-3000}/health" >/dev/null 2>&1
 }
 
 is_https_echo_ready() {
-    curl -skf --connect-timeout 2 --max-time 5 "https://127.0.0.1:${HTTPS_PORT:-3443}/health" >/dev/null 2>&1
+    curl -skf --connect-timeout 2 --max-time 5 "https://127.0.0.1:${ECHO_HTTPS_PORT:-3443}/health" >/dev/null 2>&1
 }
 
 check_tcp_port_ready() {
@@ -610,48 +694,8 @@ JOBS="${BIFROST_E2E_RULE_JOBS:-$(detect_cpu_count)}"
 CATEGORY=""
 SKIP_BUILD="false"
 VERBOSE="false"
-BASE_PORT=9000
+BASE_PORT=0
 RETRY_FAILED_ONCE="false"
-
-pick_available_base_port() {
-    local requested_base_port="$1"
-    local suite_count="$2"
-    local attempt=0
-
-    while [[ $attempt -lt 30 ]]; do
-        local candidate=$((requested_base_port + attempt * 100))
-        local ok=true
-
-        if is_windows; then
-            local used_ports
-            used_ports=$(netstat.exe -ano 2>/dev/null \
-                | awk '$1 == "TCP" && $4 == "LISTENING" { split($2, a, ":"); print a[length(a)] }' \
-                | tr -d '\r' | sort -un | tr '\n' ',' || true)
-            for ((p=candidate; p<candidate + suite_count; p++)); do
-                if [[ ",$used_ports," == *",$p,"* ]]; then
-                    ok=false
-                    break
-                fi
-            done
-        else
-            for ((p=candidate; p<candidate + suite_count; p++)); do
-                if lsof -i ":${p}" -t >/dev/null 2>&1; then
-                    ok=false
-                    break
-                fi
-            done
-        fi
-
-        if [[ "$ok" == "true" ]]; then
-            echo "$candidate"
-            return 0
-        fi
-
-        attempt=$((attempt + 1))
-    done
-
-    echo "$requested_base_port"
-}
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -697,9 +741,18 @@ main() {
         RETRY_FAILED_ONCE="true"
     fi
 
+    if [[ -z "${JOBS:-}" || "$JOBS" -lt 1 ]]; then
+        JOBS=1
+    fi
+    local jobs_cap="${BIFROST_E2E_RULE_JOBS_CAP:-16}"
+    if [[ -n "${jobs_cap:-}" && "$jobs_cap" -gt 0 && "$JOBS" -gt "$jobs_cap" ]]; then
+        warn "并行度过高 (jobs=$JOBS)，为稳定性自动降级到 ${jobs_cap}。可通过 BIFROST_E2E_RULE_JOBS_CAP 或 --jobs 调整。"
+        JOBS="$jobs_cap"
+    fi
+
     header "Bifrost 并行端到端测试运行器"
     echo "并行任务数: $JOBS"
-    echo "起始端口: $BASE_PORT"
+    echo "起始端口(请求): ${BASE_PORT:-0}"
     if [[ -n "$CATEGORY" ]]; then
         echo "测试分类: $CATEGORY"
     fi
@@ -708,7 +761,15 @@ main() {
     fi
     echo ""
 
-    rm -rf "$RESULTS_DIR"
+    if [[ -n "${BIFROST_E2E_RULE_RESULTS_DIR:-}" ]]; then
+        RESULTS_DIR="$BIFROST_E2E_RULE_RESULTS_DIR"
+        AUTO_RESULTS_DIR="false"
+    else
+        mkdir -p "$PROJECT_DIR/.bifrost-e2e-runs" 2>/dev/null || true
+        RESULTS_DIR="$(mktemp -d "$PROJECT_DIR/.bifrost-e2e-runs/rules-XXXXXX")"
+        AUTO_RESULTS_DIR="true"
+    fi
+    rm -rf "$RESULTS_DIR" 2>/dev/null || true
     mkdir -p "$RESULTS_DIR"
 
     trap cleanup EXIT
@@ -719,42 +780,35 @@ main() {
     header "启动共享 Mock 服务器"
     info "停止可能存在的旧 Mock 服务器..."
     "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
-    sleep 1
+
+    info "为共享 Mock 服务器分配动态端口..."
+    local used_ports=""
+    ECHO_HTTP_PORT="${ECHO_HTTP_PORT:-$(alloc_unique_port "$used_ports")}"; used_ports+="${used_ports:+,}${ECHO_HTTP_PORT}"
+    ECHO_HTTPS_PORT="${ECHO_HTTPS_PORT:-$(alloc_unique_port "$used_ports")}"; used_ports+="${used_ports:+,}${ECHO_HTTPS_PORT}"
+    ECHO_WS_PORT="${ECHO_WS_PORT:-$(alloc_unique_port "$used_ports")}"; used_ports+="${used_ports:+,}${ECHO_WS_PORT}"
+    ECHO_WSS_PORT="${ECHO_WSS_PORT:-$(alloc_unique_port "$used_ports")}"; used_ports+="${used_ports:+,}${ECHO_WSS_PORT}"
+    ECHO_SSE_PORT="${ECHO_SSE_PORT:-$(alloc_unique_port "$used_ports")}"; used_ports+="${used_ports:+,}${ECHO_SSE_PORT}"
+    ECHO_PROXY_PORT="${ECHO_PROXY_PORT:-$(alloc_unique_port "$used_ports")}"; used_ports+="${used_ports:+,}${ECHO_PROXY_PORT}"
+    export ECHO_HTTP_PORT ECHO_HTTPS_PORT ECHO_WS_PORT ECHO_WSS_PORT ECHO_SSE_PORT ECHO_PROXY_PORT
+
+    export SERVER_LOG_DIR="$RESULTS_DIR/mock-logs"
+
     info "启动 Mock 服务器 (后台模式)..."
-    "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
-    info "等待 Mock 服务器就绪..."
-    sleep 2
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
+    WS_PORT="$ECHO_WS_PORT" \
+    WSS_PORT="$ECHO_WSS_PORT" \
+    SSE_PORT="$ECHO_SSE_PORT" \
+    MOCK_ECHO_PROXY_PORT="$ECHO_PROXY_PORT" \
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
 
-    if is_http_echo_ready && is_https_echo_ready; then
-        echo -e "${GREEN}✓${NC} HTTP/HTTPS Mock 服务器已启动"
+    info "轮询等待 Mock 服务器就绪..."
+    if wait_for_mock_servers_ready 60; then
+        echo -e "${GREEN}✓${NC} Mock 服务器已就绪 (http=$ECHO_HTTP_PORT https=$ECHO_HTTPS_PORT ws=$ECHO_WS_PORT wss=$ECHO_WSS_PORT sse=$ECHO_SSE_PORT proxy=$ECHO_PROXY_PORT)"
     else
-        if ! is_http_echo_ready; then
-            echo -e "${RED}✗${NC} HTTP Mock 服务器启动失败"
-        fi
-        if ! is_https_echo_ready; then
-            echo -e "${RED}✗${NC} HTTPS Mock 服务器启动失败"
-        fi
+        echo -e "${RED}✗${NC} Mock 服务器就绪超时"
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" status 2>/dev/null || true
         exit 1
-    fi
-
-    local ws_wait=0
-    local ws_max_wait=15
-    while [[ $ws_wait -lt $ws_max_wait ]]; do
-        if is_ws_echo_ready && is_wss_echo_ready; then
-            break
-        fi
-        sleep 1
-        ws_wait=$((ws_wait + 1))
-    done
-    if is_ws_echo_ready && is_wss_echo_ready; then
-        echo -e "${GREEN}✓${NC} WebSocket Mock 服务器已启动 (${ws_wait}s)"
-    else
-        if ! is_ws_echo_ready; then
-            echo -e "${YELLOW}⚠${NC} WebSocket (ws) Mock 服务器未就绪"
-        fi
-        if ! is_wss_echo_ready; then
-            echo -e "${YELLOW}⚠${NC} WebSocket (wss) Mock 服务器未就绪"
-        fi
     fi
 
     header "收集测试文件"
@@ -775,10 +829,8 @@ main() {
     info "选择可用端口段..."
     local selected_base_port
     selected_base_port=$(pick_available_base_port "$BASE_PORT" "$total_suites")
-    if [[ "$selected_base_port" != "$BASE_PORT" ]]; then
-        warn "起始端口 ${BASE_PORT} 的端口段已被占用，自动切换到 ${selected_base_port}"
-    fi
     BASE_PORT="$selected_base_port"
+    info "已选择起始端口: $BASE_PORT"
 
     info "找到 $total_suites 个测试套件，使用 $JOBS 个并行任务"
 

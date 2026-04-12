@@ -77,9 +77,10 @@ setup_test_data_dir() {
 
 seed_rules() {
     header "准备测试规则"
-    run_bifrost rule add rule_alpha -c "alpha.com host://127.0.0.1:3001" >/dev/null
-    run_bifrost rule add rule_beta -c "beta.com host://127.0.0.1:3002" >/dev/null
-    run_bifrost rule add rule_gamma -c "gamma.com host://127.0.0.1:3003" >/dev/null
+    local target_base="${E2E_OFFLINE_RULE_TARGET_BASE_PORT:-${ECHO_HTTP_PORT:-3000}}"
+    run_bifrost rule add rule_alpha -c "alpha.com host://127.0.0.1:$((target_base + 1))" >/dev/null
+    run_bifrost rule add rule_beta -c "beta.com host://127.0.0.1:$((target_base + 2))" >/dev/null
+    run_bifrost rule add rule_gamma -c "gamma.com host://127.0.0.1:$((target_base + 3))" >/dev/null
     pass "测试规则已写入 (alpha, beta, gamma)"
 }
 
