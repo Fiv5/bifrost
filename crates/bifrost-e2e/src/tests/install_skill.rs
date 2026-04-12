@@ -100,7 +100,8 @@ pub fn get_all_tests() -> Vec<TestCase> {
                 let content =
                     fs::read_to_string(&target).map_err(|e| format!("Failed to read file: {e}"))?;
 
-                if !content.starts_with("---\n") {
+                let normalized = content.replace("\r\n", "\n");
+                if !normalized.starts_with("---\n") {
                     return Err("SKILL.md should start with YAML frontmatter (---)".to_string());
                 }
 

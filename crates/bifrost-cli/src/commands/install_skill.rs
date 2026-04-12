@@ -294,7 +294,8 @@ fn download_skill() -> Result<String, BifrostError> {
         ));
     }
 
-    if !body.starts_with("---\n") || body.matches("---").count() < 2 {
+    let normalized_body = body.replace("\r\n", "\n");
+    if !normalized_body.starts_with("---\n") || normalized_body.matches("---").count() < 2 {
         println!(
             "  {} {}",
             "⚠".bright_yellow(),
