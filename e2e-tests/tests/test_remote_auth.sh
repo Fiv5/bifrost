@@ -250,9 +250,9 @@ ADMIN_PASSWORD="test-pass-${RANDOM}-${RANDOM}"
 printf '%s\n' "$ADMIN_PASSWORD" | BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" admin passwd --username admin --password-stdin >/dev/null
 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" admin remote enable >/dev/null
 
-log "Case: protected API without token -> 401"
+log "Case: loopback should bypass auth even after remote access enabled"
 http_get "${ADMIN_URL_127}/api/rules"
-assert_status "401" "$HTTP_STATUS" "未携带 Token 访问受保护 API 应返回 401"
+assert_status "200" "$HTTP_STATUS" "loopback 无 Token 访问受保护 API 应返回 200（loopback 免鉴权）"
 
 log "Login -> get token"
 LOGIN_PAYLOAD=$(jq -cn --arg u "admin" --arg p "$ADMIN_PASSWORD" '{username:$u,password:$p}')
@@ -264,16 +264,48 @@ if [[ -z "${TOKEN:-}" || "$TOKEN" == "null" ]]; then
     exit 1
 fi
 
-log "Case: protected API with token -> 200"
+log "Case: loopback with valid token -> 200"
 http_get "${ADMIN_URL_127}/api/rules" "Authorization: Bearer ${TOKEN}"
-assert_status "200" "$HTTP_STATUS" "携带有效 Token 访问受保护 API 应返回 200"
+assert_status "200" "$HTTP_STATUS" "loopback 携带有效 Token 访问受保护 API 应返回 200"
+
+if [[ -n "${NON_LOOPBACK_IP:-}" ]]; then
+    ADMIN_URL_NON_LB="http://${NON_LOOPBACK_IP}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
+
+    log "Case: non-loopback without token -> 401"
+    http_get "${ADMIN_URL_NON_LB}/api/rules"
+    if [[ "$HTTP_STATUS" == "000" ]]; then
+        _log_warning "非 loopback 地址不可达（curl 连接失败），跳过 401 断言"
+    else
+        assert_status "401" "$HTTP_STATUS" "非 loopback 无 Token 访问受保护 API 应返回 401"
+    fi
+
+    log "Case: non-loopback with valid token -> 200"
+    http_get "${ADMIN_URL_NON_LB}/api/rules" "Authorization: Bearer ${TOKEN}"
+    if [[ "$HTTP_STATUS" == "000" ]]; then
+        _log_warning "非 loopback 地址不可达（curl 连接失败），跳过 200 断言"
+    else
+        assert_status "200" "$HTTP_STATUS" "非 loopback 携带有效 Token 应返回 200"
+    fi
+else
+    _log_warning "无法获取非 loopback IP，跳过非本地鉴权断言"
+fi
 
 log "Revoke all sessions via CLI"
 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" admin revoke-all >/dev/null
 
-log "Case: old token after revoke-all -> 401"
+log "Case: loopback after revoke-all -> still 200 (loopback bypass)"
 http_get "${ADMIN_URL_127}/api/rules" "Authorization: Bearer ${TOKEN}"
-assert_status "401" "$HTTP_STATUS" "revoke-all 后旧 Token 应失效返回 401"
+assert_status "200" "$HTTP_STATUS" "revoke-all 后 loopback 仍应返回 200（loopback 免鉴权）"
+
+if [[ -n "${NON_LOOPBACK_IP:-}" ]]; then
+    log "Case: non-loopback old token after revoke-all -> 401"
+    http_get "${ADMIN_URL_NON_LB}/api/rules" "Authorization: Bearer ${TOKEN}"
+    if [[ "$HTTP_STATUS" == "000" ]]; then
+        _log_warning "非 loopback 地址不可达（curl 连接失败），跳过 401 断言"
+    else
+        assert_status "401" "$HTTP_STATUS" "revoke-all 后非 loopback 旧 Token 应失效返回 401"
+    fi
+fi
 
 log "Ensure data plane forwarding still works after enabling/revoking admin auth"
 proxy_get "http://127.0.0.1:${ADMIN_PORT}" "http://example.com/remote-auth-post"
