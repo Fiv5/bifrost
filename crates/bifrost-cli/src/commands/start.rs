@@ -28,7 +28,10 @@ use crate::commands::ca::{check_and_install_certificate, load_tls_config};
 use crate::config::get_bifrost_dir;
 use crate::help::print_startup_help;
 use crate::parsing::{parse_cli_rules, DynamicRulesResolver, SharedDynamicRulesResolver};
-use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_info, RuntimeInfo};
+use crate::process::{
+    find_process_on_port, is_process_running, kill_process_by_pid, read_pid, remove_pid,
+    write_runtime_info, RuntimeInfo,
+};
 
 const ASYNC_TRAFFIC_BUFFER_SIZE: usize = 10000;
 const MAX_PORT_INCREMENT_ATTEMPTS: u16 = 64;
@@ -48,6 +51,148 @@ fn prompt_restart_if_running(pid: u32) -> bifrost_core::Result<bool> {
         pid
     );
 
+    for _ in 0..3 {
+        print!("> ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        let bytes = io::stdin().read_line(&mut input)?;
+        if bytes == 0 {
+            return Ok(false);
+        }
+
+        if let Some(answer) = parse_yes_no_answer(&input) {
+            return Ok(answer);
+        }
+
+        println!("Please answer with y/yes or n/no.");
+    }
+
+    Ok(false)
+}
+
+fn check_and_resolve_port_conflict(host: &str, port: u16, yes: bool) -> bifrost_core::Result<()> {
+    if !is_port_in_use(host, port) {
+        return Ok(());
+    }
+
+    let bind_addr = format!("{}:{}", host, port);
+
+    if let Some(proc_info) = find_process_on_port(port) {
+        println!(
+            "Port {} is already in use by process \"{}\" (PID: {}). Kill it and continue? (y/n)",
+            bind_addr, proc_info.name, proc_info.pid
+        );
+
+        let should_kill = if yes {
+            println!("> y (auto-confirmed with --yes)");
+            true
+        } else {
+            prompt_yes_no()?
+        };
+
+        if should_kill {
+            println!(
+                "Stopping process {} (PID: {})...",
+                proc_info.name, proc_info.pid
+            );
+            if kill_process_by_pid(proc_info.pid) {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                if is_port_in_use(host, port) {
+                    return Err(bifrost_core::BifrostError::Network(format!(
+                        "Failed to free port {}: port is still in use after killing process",
+                        bind_addr
+                    )));
+                }
+                println!("Process stopped. Continuing startup...");
+                Ok(())
+            } else {
+                Err(bifrost_core::BifrostError::Network(format!(
+                    "Failed to kill process \"{}\" (PID: {}). Please stop it manually and try again.",
+                    proc_info.name, proc_info.pid
+                )))
+            }
+        } else {
+            println!("Start cancelled.");
+            std::process::exit(0);
+        }
+    } else {
+        println!(
+            "Port {} is already in use by an unknown process. Kill it and continue? (y/n)",
+            bind_addr
+        );
+
+        let should_kill = if yes {
+            println!("> y (auto-confirmed with --yes)");
+            true
+        } else {
+            prompt_yes_no()?
+        };
+
+        if should_kill {
+            #[cfg(unix)]
+            {
+                let output = std::process::Command::new("lsof")
+                    .args(["-t", "-i", &format!("TCP:{}", port), "-sTCP:LISTEN"])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .output();
+
+                if let Ok(output) = output {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        if let Ok(pid) = line.trim().parse::<u32>() {
+                            println!("Stopping process PID: {}...", pid);
+                            kill_process_by_pid(pid);
+                        }
+                    }
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                let output = std::process::Command::new("netstat")
+                    .args(["-ano"])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .output();
+
+                if let Ok(output) = output {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let port_suffix = format!(":{}", port);
+                    for line in stdout.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.contains("LISTENING") {
+                            continue;
+                        }
+                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                        if parts.len() >= 5 && parts[1].ends_with(&port_suffix) {
+                            if let Ok(pid) = parts[4].parse::<u32>() {
+                                println!("Stopping process PID: {}...", pid);
+                                kill_process_by_pid(pid);
+                            }
+                        }
+                    }
+                }
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if is_port_in_use(host, port) {
+                return Err(bifrost_core::BifrostError::Network(format!(
+                    "Failed to free port {}: port is still in use. Please stop the process manually and try again.",
+                    bind_addr
+                )));
+            }
+            println!("Port freed. Continuing startup...");
+            Ok(())
+        } else {
+            println!("Start cancelled.");
+            std::process::exit(0);
+        }
+    }
+}
+
+fn prompt_yes_no() -> bifrost_core::Result<bool> {
     for _ in 0..3 {
         print!("> ");
         io::stdout().flush()?;
@@ -572,6 +717,8 @@ pub fn run_start(
     } else {
         stored_config.tls.disconnect_on_change
     };
+
+    check_and_resolve_port_conflict(&host, port, yes)?;
 
     if daemon {
         #[cfg(unix)]
@@ -1425,9 +1572,16 @@ pub fn run_daemon(
 
             let bind_addr = format!("{}:{}", config.host, config.port);
             if is_port_in_use(&config.host, config.port) {
+                let proc_info = find_process_on_port(config.port);
+                let detail = match proc_info {
+                    Some(info) => {
+                        format!(" (occupied by process \"{}\" PID: {})", info.name, info.pid)
+                    }
+                    None => String::new(),
+                };
                 return Err(bifrost_core::BifrostError::Network(format!(
-                    "Failed to bind to {}: another process is already listening on this port",
-                    bind_addr
+                    "Failed to bind to {}: another process is already listening on this port{}",
+                    bind_addr, detail
                 )));
             }
             std::net::TcpListener::bind(&bind_addr).map_err(|e| {

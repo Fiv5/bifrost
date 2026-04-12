@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_LOGIN_RECORDS: i64 = 100;
 const MAX_LOGIN_AGE_DAYS: i64 = 30;
+const AUDIT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminLoginAuditEntry {
@@ -23,11 +24,76 @@ pub fn audit_db_path() -> Result<PathBuf> {
     Ok(dir.join("audit.db"))
 }
 
-fn init_db(conn: &Connection) -> std::result::Result<(), rusqlite::Error> {
+fn open_audit_db() -> Result<Connection> {
+    let db_path = audit_db_path()?;
+    let conn = Connection::open(&db_path)
+        .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
+
+    match init_db(&conn) {
+        Ok(()) => Ok(conn),
+        Err(SchemaError::VersionMismatch { current, expected }) => {
+            tracing::warn!(
+                current_version = current,
+                expected_version = expected,
+                "[AUDIT_DB] Schema version mismatch, resetting database"
+            );
+            drop(conn);
+            if let Err(e) = fs::remove_file(&db_path) {
+                tracing::error!("[AUDIT_DB] Failed to remove old database: {e}");
+            }
+            let new_conn = Connection::open(&db_path)
+                .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
+            init_db(&new_conn)
+                .map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
+            tracing::info!("[AUDIT_DB] Database reset successfully");
+            Ok(new_conn)
+        }
+        Err(e) => Err(BifrostError::Storage(format!(
+            "Failed to init audit db: {e}"
+        ))),
+    }
+}
+
+enum SchemaError {
+    Sqlite(rusqlite::Error),
+    VersionMismatch { current: u32, expected: u32 },
+}
+
+impl std::fmt::Debug for SchemaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::fmt::Display for SchemaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SchemaError::Sqlite(e) => write!(f, "SQLite error: {e}"),
+            SchemaError::VersionMismatch { current, expected } => {
+                write!(
+                    f,
+                    "Schema version mismatch: current={current}, expected={expected}"
+                )
+            }
+        }
+    }
+}
+
+impl From<rusqlite::Error> for SchemaError {
+    fn from(e: rusqlite::Error) -> Self {
+        SchemaError::Sqlite(e)
+    }
+}
+
+fn init_db(conn: &Connection) -> std::result::Result<(), SchemaError> {
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;\
          PRAGMA journal_mode = WAL;\
          PRAGMA synchronous = NORMAL;\
+         CREATE TABLE IF NOT EXISTS audit_metadata (\
+           key TEXT PRIMARY KEY NOT NULL,\
+           value TEXT NOT NULL\
+         );\
          CREATE TABLE IF NOT EXISTS admin_login_audit (\
            id INTEGER PRIMARY KEY AUTOINCREMENT,\
            ts INTEGER NOT NULL,\
@@ -38,7 +104,34 @@ fn init_db(conn: &Connection) -> std::result::Result<(), rusqlite::Error> {
          );\
          CREATE INDEX IF NOT EXISTS idx_admin_login_audit_ts ON admin_login_audit(ts);\
          CREATE INDEX IF NOT EXISTS idx_admin_login_audit_username ON admin_login_audit(username);",
+    )?;
+
+    let current = get_schema_version(conn);
+    if current != 0 && current != AUDIT_SCHEMA_VERSION {
+        return Err(SchemaError::VersionMismatch {
+            current,
+            expected: AUDIT_SCHEMA_VERSION,
+        });
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO audit_metadata (key, value) VALUES ('schema_version', ?1)",
+        params![AUDIT_SCHEMA_VERSION.to_string()],
+    )?;
+
+    Ok(())
+}
+
+fn get_schema_version(conn: &Connection) -> u32 {
+    conn.query_row(
+        "SELECT value FROM audit_metadata WHERE key = 'schema_version'",
+        [],
+        |row| {
+            let v: String = row.get(0)?;
+            Ok(v.parse::<u32>().unwrap_or(0))
+        },
     )
+    .unwrap_or(0)
 }
 
 pub fn record_login(username: &str, ip: &str, ua: &str) -> Result<()> {
@@ -50,10 +143,7 @@ pub fn record_failed_login_attempt(username: &str, ip: &str, ua: &str) -> Result
 }
 
 fn record_login_inner(username: &str, ip: &str, ua: &str, success: bool) -> Result<()> {
-    let db_path = audit_db_path()?;
-    let conn = Connection::open(db_path)
-        .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
-    init_db(&conn).map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
+    let conn = open_audit_db()?;
 
     let ts = chrono::Utc::now().timestamp();
     conn.execute(
@@ -73,9 +163,7 @@ pub fn list_logins(limit: usize, offset: usize) -> Result<Vec<AdminLoginAuditEnt
     if !db_path.exists() {
         return Ok(Vec::new());
     }
-    let conn = Connection::open(db_path)
-        .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
-    init_db(&conn).map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
+    let conn = open_audit_db()?;
 
     let mut stmt = conn
         .prepare(
@@ -110,9 +198,7 @@ pub fn count_logins() -> Result<i64> {
     if !db_path.exists() {
         return Ok(0);
     }
-    let conn = Connection::open(db_path)
-        .map_err(|e| BifrostError::Storage(format!("Failed to open audit db: {e}")))?;
-    init_db(&conn).map_err(|e| BifrostError::Storage(format!("Failed to init audit db: {e}")))?;
+    let conn = open_audit_db()?;
 
     let count: i64 = conn
         .query_row("SELECT COUNT(1) FROM admin_login_audit", [], |row| {

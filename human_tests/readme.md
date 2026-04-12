@@ -22,6 +22,7 @@
 | [cli-system-proxy.md](./cli-system-proxy.md) | CLI 系统代理 | 10 | system-proxy status/enable/disable，含自定义 host/port/bypass |
 | [cli-group.md](./cli-group.md) | CLI Group 管理 | 14 | group list/show、group rule list/show/add/update/enable/disable/delete |
 | [cli-import-export.md](./cli-import-export.md) | CLI 导入导出与杂项 | 22 | export/import、metrics、sync、version-check、upgrade、completions、install-skill |
+| [port-conflict-restart.md](./port-conflict-restart.md) | 端口冲突检测与自动重启 | 5 | 端口占用检测、进程信息显示、交互式终止确认、--yes 自动确认、PID 检测兼容性 |
 
 ### Web UI 测试
 
@@ -73,7 +74,7 @@
 
 ---
 
-**总计：44 个测试文件，969 个测试用例**
+**总计：45 个测试文件，974 个测试用例**
 
 ## 工作流程
 

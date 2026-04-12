@@ -359,6 +359,7 @@ run_single_test() {
                 kill_pid "$test_pid"
                 sleep 3
                 kill_pid_force "$test_pid"
+                kill_bifrost_on_port "$proxy_port"
             fi
         ) &
         watchdog_pid=$!
@@ -379,6 +380,9 @@ run_single_test() {
 
         # Best-effort cleanup: ensure the port is released for retries / next runs.
         kill_bifrost_on_port "$proxy_port"
+        if is_windows; then
+            win_wait_port_free "$proxy_port" 20
+        fi
     } > "$result_file"
 }
 
@@ -931,6 +935,9 @@ main() {
             pids[$next_index]=$!
             running=$((running + 1))
             next_index=$((next_index + 1))
+            if is_windows; then
+                sleep_seconds 0.5
+            fi
         done
 
         for i in "${!pids[@]}"; do
