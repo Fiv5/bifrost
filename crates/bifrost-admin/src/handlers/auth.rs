@@ -1,10 +1,13 @@
 use hyper::{body::Incoming, header, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::{cors_preflight, error_response, json_response, method_not_allowed, BoxBody};
 use crate::admin_audit;
 use crate::admin_auth::{
-    get_admin_username, is_remote_access_enabled, issue_admin_jwt, verify_admin_credentials,
+    get_admin_username, has_admin_password, is_remote_access_enabled, issue_admin_jwt,
+    revoke_all_admin_sessions, set_admin_password_hash, set_admin_username,
+    set_remote_access_enabled, verify_admin_credentials,
 };
 use crate::state::SharedAdminState;
 
@@ -26,6 +29,18 @@ pub struct AuthStatusResponse {
     pub remote_access_enabled: bool,
     pub auth_required: bool,
     pub username: String,
+    pub has_password: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub username: Option<String>,
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteAccessRequest {
+    pub enabled: bool,
 }
 
 pub async fn handle_auth(
@@ -43,10 +58,12 @@ pub async fn handle_auth(
         }
         let remote_enabled = is_remote_access_enabled(&state);
         let username = get_admin_username(&state).unwrap_or_else(|| "admin".to_string());
+        let password_set = has_admin_password(&state);
         return json_response(&AuthStatusResponse {
             remote_access_enabled: remote_enabled,
             auth_required: remote_enabled,
             username,
+            has_password: password_set,
         });
     }
 
@@ -135,7 +152,6 @@ pub async fn handle_auth(
     }
 
     if path == "/api/auth/logout" {
-        // 无状态 JWT：前端/CLI 丢弃 token 即完成注销。
         if *req.method() != Method::POST {
             return method_not_allowed();
         }
@@ -145,6 +161,118 @@ pub async fn handle_auth(
             .header("Access-Control-Allow-Origin", "*")
             .body(super::full_body("{\"success\":true}"))
             .unwrap();
+    }
+
+    if path == "/api/auth/passwd" {
+        if *req.method() != Method::POST {
+            return method_not_allowed();
+        }
+
+        let body = match http_body_util::BodyExt::collect(req.into_body()).await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "Failed to read request body")
+            }
+        };
+
+        let payload: ChangePasswordRequest = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}"))
+            }
+        };
+
+        if payload.password.is_empty() {
+            return error_response(StatusCode::BAD_REQUEST, "Password cannot be empty");
+        }
+
+        if let Some(ref username) = payload.username {
+            if let Err(e) = set_admin_username(&state, username) {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to set username: {e}"),
+                );
+            }
+        }
+
+        if let Err(e) = set_admin_password_hash(&state, &payload.password) {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to set password: {e}"),
+            );
+        }
+
+        let username = payload
+            .username
+            .unwrap_or_else(|| get_admin_username(&state).unwrap_or_else(|| "admin".to_string()));
+        info!(username = %username, "Admin password updated via API");
+        return json_response(&serde_json::json!({
+            "success": true,
+            "message": "Password updated"
+        }));
+    }
+
+    if path == "/api/auth/remote" {
+        if *req.method() != Method::POST {
+            return method_not_allowed();
+        }
+
+        let body = match http_body_util::BodyExt::collect(req.into_body()).await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "Failed to read request body")
+            }
+        };
+
+        let payload: RemoteAccessRequest = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}"))
+            }
+        };
+
+        if payload.enabled && !has_admin_password(&state) {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Cannot enable remote access without setting a password first",
+            );
+        }
+
+        if let Err(e) = set_remote_access_enabled(&state, payload.enabled) {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to update remote access: {e}"),
+            );
+        }
+
+        info!(enabled = payload.enabled, "Remote access toggled via API");
+        let username = get_admin_username(&state).unwrap_or_else(|| "admin".to_string());
+        let password_set = has_admin_password(&state);
+        return json_response(&AuthStatusResponse {
+            remote_access_enabled: payload.enabled,
+            auth_required: payload.enabled,
+            username,
+            has_password: password_set,
+        });
+    }
+
+    if path == "/api/auth/revoke-all" {
+        if *req.method() != Method::POST {
+            return method_not_allowed();
+        }
+
+        if let Err(e) = revoke_all_admin_sessions(&state) {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to revoke sessions: {e}"),
+            );
+        }
+
+        info!("All admin sessions revoked via API");
+        return json_response(&serde_json::json!({
+            "success": true,
+            "message": "All sessions revoked"
+        }));
     }
 
     error_response(StatusCode::NOT_FOUND, "API endpoint not found")

@@ -32,7 +32,8 @@ mod ws_payload_store;
 mod tests;
 
 pub use admin_auth::{
-    get_admin_username, is_remote_access_enabled, revoke_all_admin_sessions, validate_admin_jwt,
+    get_admin_username, has_admin_password, is_remote_access_enabled, revoke_all_admin_sessions,
+    set_admin_password_hash, set_admin_username, set_remote_access_enabled, validate_admin_jwt,
     AdminJwtClaims, ADMIN_AUTH_PASSWORD_HASH_KEY, ADMIN_AUTH_REVOKE_BEFORE_KEY,
     ADMIN_AUTH_USERNAME_KEY, ADMIN_REMOTE_ACCESS_ENABLED_KEY,
 };

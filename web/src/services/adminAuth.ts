@@ -6,6 +6,7 @@ export type AdminAuthStatus = {
   remote_access_enabled: boolean;
   auth_required: boolean;
   username: string;
+  has_password: boolean;
 };
 
 export function getAdminToken(): string | null {
@@ -39,5 +40,49 @@ export async function fetchAdminAuthStatus(): Promise<AdminAuthStatus> {
     throw new Error(`Failed to load auth status: ${resp.status}`);
   }
   return (await resp.json()) as AdminAuthStatus;
+}
+
+export async function changeAdminPassword(
+  password: string,
+  username?: string,
+): Promise<void> {
+  const body: Record<string, string> = { password };
+  if (username) {
+    body.username = username;
+  }
+  const resp = await apiFetch('/api/auth/passwd', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const data = (await resp.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `Failed to change password: ${resp.status}`);
+  }
+}
+
+export async function setRemoteAccess(
+  enabled: boolean,
+): Promise<AdminAuthStatus> {
+  const resp = await apiFetch('/api/auth/remote', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!resp.ok) {
+    const data = (await resp.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `Failed to set remote access: ${resp.status}`);
+  }
+  return (await resp.json()) as AdminAuthStatus;
+}
+
+export async function revokeAllSessions(): Promise<void> {
+  const resp = await apiFetch('/api/auth/revoke-all', {
+    method: 'POST',
+  });
+  if (!resp.ok) {
+    const data = (await resp.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `Failed to revoke sessions: ${resp.status}`);
+  }
 }
 

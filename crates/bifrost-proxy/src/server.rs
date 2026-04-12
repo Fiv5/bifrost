@@ -835,13 +835,21 @@ impl ProxyServer {
                 (decision, should_defer_userpass)
             };
 
+            let allow_remote_admin_bypass = self
+                .admin_state
+                .as_ref()
+                .map(|s| bifrost_admin::is_remote_access_enabled(s))
+                .unwrap_or(false);
+
             match decision {
                 AccessDecision::Allow => {}
                 AccessDecision::Deny => {
-                    if should_defer_userpass {
+                    if should_defer_userpass || allow_remote_admin_bypass {
                         debug!(
-                            "Deferring access denial for {} to protocol-level userpass auth",
-                            peer_addr.ip()
+                            "Deferring access denial for {} (userpass={}, remote_admin={})",
+                            peer_addr.ip(),
+                            should_defer_userpass,
+                            allow_remote_admin_bypass
                         );
                     } else {
                         warn!(
@@ -852,10 +860,12 @@ impl ProxyServer {
                     }
                 }
                 AccessDecision::Prompt(ip) => {
-                    if should_defer_userpass {
+                    if should_defer_userpass || allow_remote_admin_bypass {
                         debug!(
-                            "Deferring interactive authorization for {} to protocol-level userpass auth",
-                            ip
+                            "Deferring interactive authorization for {} (userpass={}, remote_admin={})",
+                            ip,
+                            should_defer_userpass,
+                            allow_remote_admin_bypass
                         );
                     } else {
                         {

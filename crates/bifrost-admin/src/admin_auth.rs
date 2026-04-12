@@ -98,7 +98,6 @@ pub fn ensure_admin_auth_material(state: &AdminState) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()> {
     let Some(storage) = state.values_storage.as_ref() else {
         return Err(BifrostError::Config(
@@ -116,6 +115,51 @@ pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()>
     guard.refresh()?;
     guard.set_value(ADMIN_AUTH_PASSWORD_HASH_KEY, &hashed)?;
     Ok(())
+}
+
+pub fn set_remote_access_enabled(state: &AdminState, enabled: bool) -> Result<()> {
+    let Some(storage) = state.values_storage.as_ref() else {
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
+    };
+    let mut guard = storage.write();
+    guard.refresh()?;
+    guard.set_value(
+        ADMIN_REMOTE_ACCESS_ENABLED_KEY,
+        if enabled { "true" } else { "false" },
+    )?;
+    Ok(())
+}
+
+pub fn set_admin_username(state: &AdminState, username: &str) -> Result<()> {
+    let Some(storage) = state.values_storage.as_ref() else {
+        return Err(BifrostError::Config(
+            "Values storage not configured".to_string(),
+        ));
+    };
+    let trimmed = username.trim();
+    if trimmed.is_empty() {
+        return Err(BifrostError::Config("Username cannot be empty".to_string()));
+    }
+    let mut guard = storage.write();
+    guard.refresh()?;
+    guard.set_value(ADMIN_AUTH_USERNAME_KEY, trimmed)?;
+    Ok(())
+}
+
+pub fn has_admin_password(state: &AdminState) -> bool {
+    let Some(storage) = state.values_storage.as_ref() else {
+        return false;
+    };
+    let mut guard = storage.write();
+    if let Err(e) = guard.refresh() {
+        warn!(error = %e, "Failed to refresh values storage");
+    }
+    guard
+        .get_value(ADMIN_AUTH_PASSWORD_HASH_KEY)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
 }
 
 pub fn verify_admin_credentials(
@@ -355,5 +399,82 @@ mod tests {
         let token = encode_with_secret(&secret, &claims);
         let err = validate_admin_jwt(&state, &token).unwrap_err().to_string();
         assert!(err.contains("Token revoked"));
+    }
+
+    #[test]
+    fn test_set_admin_password_hash_and_verify_credentials() {
+        let (state, _tmp) = new_state();
+        assert!(!has_admin_password(&state));
+
+        set_admin_password_hash(&state, "testpass123").expect("set password");
+        assert!(has_admin_password(&state));
+
+        let ok = verify_admin_credentials(&state, "admin", "testpass123").expect("verify");
+        assert!(ok);
+
+        let wrong = verify_admin_credentials(&state, "admin", "wrongpass").expect("verify wrong");
+        assert!(!wrong);
+    }
+
+    #[test]
+    fn test_set_admin_password_rejects_empty() {
+        let (state, _tmp) = new_state();
+        let err = set_admin_password_hash(&state, "");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_set_and_get_admin_username() {
+        let (state, _tmp) = new_state();
+        set_admin_username(&state, "myuser").expect("set username");
+        let username = get_admin_username(&state);
+        assert_eq!(username, Some("myuser".to_string()));
+    }
+
+    #[test]
+    fn test_set_admin_username_rejects_empty() {
+        let (state, _tmp) = new_state();
+        let err = set_admin_username(&state, "   ");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_set_remote_access_enabled_toggle() {
+        let (state, _tmp) = new_state();
+        assert!(!is_remote_access_enabled(&state));
+
+        set_remote_access_enabled(&state, true).expect("enable");
+        assert!(is_remote_access_enabled(&state));
+
+        set_remote_access_enabled(&state, false).expect("disable");
+        assert!(!is_remote_access_enabled(&state));
+    }
+
+    #[test]
+    fn test_revoke_all_invalidates_existing_tokens() {
+        let (state, _tmp) = new_state();
+        let (token, _claims) = issue_admin_jwt(&state, "admin").expect("issue token");
+        validate_admin_jwt(&state, &token).expect("token should be valid before revoke");
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        revoke_all_admin_sessions(&state).expect("revoke all");
+        let err = validate_admin_jwt(&state, &token).unwrap_err().to_string();
+        assert!(err.contains("Token revoked"));
+    }
+
+    #[test]
+    fn test_has_admin_password_with_custom_username_and_credentials() {
+        let (state, _tmp) = new_state();
+        set_admin_username(&state, "operator").expect("set username");
+        set_admin_password_hash(&state, "securepass").expect("set password");
+
+        assert!(has_admin_password(&state));
+        let ok = verify_admin_credentials(&state, "operator", "securepass").expect("verify");
+        assert!(ok);
+
+        let wrong_user =
+            verify_admin_credentials(&state, "admin", "securepass").expect("wrong user");
+        assert!(!wrong_user);
     }
 }

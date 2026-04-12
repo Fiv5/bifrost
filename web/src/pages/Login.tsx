@@ -44,7 +44,7 @@ export default function Login() {
         form.setFieldsValue({ username: s.username || 'admin' });
       })
       .catch(() => {
-        setStatus({ remote_access_enabled: false, auth_required: false, username: 'admin' });
+        setStatus({ remote_access_enabled: false, auth_required: false, username: 'admin', has_password: false });
         form.setFieldsValue({ username: 'admin' });
       });
   }, [form]);
