@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use tracing::debug;
 
@@ -42,6 +44,7 @@ impl AdminRouter {
         req: Request<Incoming>,
         state: SharedAdminState,
         push_manager: Option<SharedPushManager>,
+        peer_addr: Option<SocketAddr>,
     ) -> Response<BoxBody> {
         let path = req.uri().path().to_string();
 
@@ -67,7 +70,7 @@ impl AdminRouter {
         }
 
         if admin_path.starts_with("/api/") {
-            Self::handle_api(req, state, push_manager, &admin_path).await
+            Self::handle_api(req, state, push_manager, &admin_path, peer_addr).await
         } else {
             serve_static_file(&admin_path)
         }
@@ -78,13 +81,14 @@ impl AdminRouter {
         state: SharedAdminState,
         push_manager: Option<SharedPushManager>,
         path: &str,
+        peer_addr: Option<SocketAddr>,
     ) -> Response<BoxBody> {
-        if let Some(resp) = Self::check_api_auth(&req, &state, path) {
+        if let Some(resp) = Self::check_api_auth(&req, &state, path, peer_addr) {
             return resp;
         }
 
         if path.starts_with("/api/auth") {
-            return handle_auth(req, state, path).await;
+            return handle_auth(req, state, path, peer_addr).await;
         }
 
         if path.starts_with("/api/admin/audit") {
@@ -183,9 +187,17 @@ impl AdminRouter {
         req: &Request<T>,
         state: &SharedAdminState,
         path: &str,
+        peer_addr: Option<SocketAddr>,
     ) -> Option<Response<BoxBody>> {
-        // 远程访问开启时：除登录/状态接口外，所有管理端 API 强制 JWT 鉴权。
         if is_remote_access_enabled(state) && !path.starts_with("/api/auth/") {
+            let is_loopback = peer_addr
+                .map(|addr| addr.ip().is_loopback())
+                .unwrap_or(true);
+
+            if is_loopback {
+                return None;
+            }
+
             let token = extract_bearer_token(req);
             let Some(token) = token else {
                 return Some(error_response(
@@ -228,16 +240,35 @@ mod tests {
         (state, tmp)
     }
 
+    fn remote_peer() -> Option<SocketAddr> {
+        Some("192.168.1.100:12345".parse().unwrap())
+    }
+
+    fn loopback_peer() -> Option<SocketAddr> {
+        Some("127.0.0.1:12345".parse().unwrap())
+    }
+
     #[test]
-    fn test_check_api_auth_requires_token_when_remote_enabled() {
+    fn test_check_api_auth_requires_token_when_remote_enabled_for_remote_peer() {
         let (state, _tmp) = new_state_remote_enabled();
         let req = Request::builder()
             .uri("/_bifrost/api/system/status")
             .body(())
             .unwrap();
-        let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status")
-            .expect("should reject without token");
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status", remote_peer())
+            .expect("should reject remote without token");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_check_api_auth_skips_for_loopback_when_remote_enabled() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder()
+            .uri("/_bifrost/api/system/status")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status", loopback_peer());
+        assert!(resp.is_none(), "loopback should skip auth");
     }
 
     #[test]
@@ -247,7 +278,18 @@ mod tests {
             .uri("/_bifrost/api/auth/status")
             .body(())
             .unwrap();
-        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/status");
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/status", remote_peer());
         assert!(resp.is_none());
+    }
+
+    #[test]
+    fn test_check_api_auth_skips_when_peer_addr_none() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder()
+            .uri("/_bifrost/api/system/status")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status", None);
+        assert!(resp.is_none(), "None peer_addr should default to loopback");
     }
 }

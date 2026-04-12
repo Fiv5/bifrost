@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button, Form, Input, Typography, message } from 'antd';
 
 import { post } from '../api/client';
+import { getAdminPrefix } from '../runtime';
 import {
   clearAdminToken,
   fetchAdminAuthStatus,
@@ -29,7 +30,11 @@ export default function Login() {
       return '/traffic';
     }
     try {
-      const decoded = decodeURIComponent(raw);
+      let decoded = decodeURIComponent(raw);
+      const prefix = getAdminPrefix();
+      if (prefix && decoded.startsWith(prefix)) {
+        decoded = decoded.slice(prefix.length) || '/';
+      }
       return decoded.startsWith('/') ? decoded : '/traffic';
     } catch {
       return '/traffic';

@@ -1361,7 +1361,7 @@ async fn handle_request(
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             } else if path.starts_with(CERT_PUBLIC_PATH_PREFIX) && is_cert_public_request(&req) {
                 debug!(
@@ -1369,7 +1369,7 @@ async fn handle_request(
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             } else if path.starts_with(&format!("{ADMIN_PATH_PREFIX}/public/"))
                 && (is_loopback || allow_remote_admin)
@@ -1379,7 +1379,7 @@ async fn handle_request(
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             } else if is_valid_admin_request(
                 &req,
@@ -1392,7 +1392,7 @@ async fn handle_request(
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             } else {
                 warn!(
@@ -1427,7 +1427,7 @@ async fn handle_request(
                 );
                 let req = rewrite_virtual_host_request(req);
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             }
             return Ok(error_response(403, "Forbidden"));
@@ -1435,7 +1435,12 @@ async fn handle_request(
         return Ok(error_response(503, "Admin interface not enabled"));
     }
 
-    if is_direct_browser_access(&req, &proxy_config) && admin_state.is_some() {
+    let allow_remote_admin = admin_state
+        .as_ref()
+        .map(|s| bifrost_admin::is_remote_access_enabled(s))
+        .unwrap_or(false);
+
+    if is_direct_browser_access(&req, &proxy_config, allow_remote_admin) && admin_state.is_some() {
         debug!(
             "Redirecting direct browser access from {} to admin UI",
             peer_addr
@@ -1781,7 +1786,11 @@ fn rewrite_virtual_host_request(req: Request<Incoming>) -> Request<Incoming> {
     Request::from_parts(parts, body)
 }
 
-fn is_direct_browser_access(req: &Request<Incoming>, config: &ProxyConfig) -> bool {
+fn is_direct_browser_access(
+    req: &Request<Incoming>,
+    config: &ProxyConfig,
+    allow_remote: bool,
+) -> bool {
     let uri = req.uri();
     let path = uri.path();
 
@@ -1804,7 +1813,7 @@ fn is_direct_browser_access(req: &Request<Incoming>, config: &ProxyConfig) -> bo
         || host_without_port == "127.0.0.1"
         || host_without_port == config.host;
 
-    if !is_local {
+    if !is_local && !allow_remote {
         return false;
     }
 

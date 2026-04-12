@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use hyper::{body::Incoming, header, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -47,10 +49,15 @@ pub async fn handle_auth(
     req: Request<Incoming>,
     state: SharedAdminState,
     path: &str,
+    peer_addr: Option<SocketAddr>,
 ) -> Response<BoxBody> {
     if req.method() == Method::OPTIONS {
         return cors_preflight();
     }
+
+    let is_loopback = peer_addr
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or(true);
 
     if path == "/api/auth/status" {
         if *req.method() != Method::GET {
@@ -61,7 +68,7 @@ pub async fn handle_auth(
         let password_set = has_admin_password(&state);
         return json_response(&AuthStatusResponse {
             remote_access_enabled: remote_enabled,
-            auth_required: remote_enabled,
+            auth_required: remote_enabled && !is_loopback,
             username,
             has_password: password_set,
         });
