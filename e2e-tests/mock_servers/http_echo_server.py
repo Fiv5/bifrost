@@ -920,9 +920,43 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 
+def _parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(description="HTTP Echo Server for Bifrost E2E Testing")
+    parser.add_argument("port_positional", nargs="?", type=int, default=None,
+                        help="Port number (positional, for backward compatibility)")
+    parser.add_argument("--port", "-p", type=int, default=None, dest="port_flag",
+                        help="Port number")
+    parser.add_argument("--retries", "-r", type=int, default=0,
+                        help="Number of retry attempts with incremented port on bind failure")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind")
+    args = parser.parse_args()
+    if args.port_flag is not None:
+        args.port = args.port_flag
+    elif args.port_positional is not None:
+        args.port = args.port_positional
+    else:
+        args.port = 3000
+    return args
+
+
+def _try_bind(host, port, retries):
+    last_err = None
+    for attempt in range(retries + 1):
+        candidate = port + attempt
+        try:
+            httpd = ThreadedHTTPServer((host, candidate), EchoHandler)
+            return httpd, candidate
+        except OSError as exc:
+            last_err = exc
+            print(f"Port {candidate} bind failed: {exc}; retries left={retries - attempt}", flush=True)
+    raise last_err
+
+
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
-    host = '127.0.0.1'
+    args = _parse_args()
+    port = args.port
+    host = args.host
 
     unicode_banner = f"""
 ╔══════════════════════════════════════════════════════════════╗
@@ -948,8 +982,11 @@ def main():
     )
     print_banner(unicode_banner, ascii_banner)
 
-    with ThreadedHTTPServer((host, port), EchoHandler) as httpd:
-        print(f"Starting HTTP Echo Server on {host}:{port}...")
+    httpd, actual_port = _try_bind(host, port, args.retries)
+    if actual_port != port:
+        print(f"NOTE: Requested port {port} was busy; bound to {actual_port} instead", flush=True)
+    with httpd:
+        print(f"Starting HTTP Echo Server on {host}:{actual_port}...")
         print("READY", flush=True)
         try:
             httpd.serve_forever()
