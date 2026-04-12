@@ -830,7 +830,10 @@ source "$E2E_DIR/test_utils/process.sh"
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 if [[ -z "${BIFROST_UI_TEST_RUNNER_PORT:-}" ]]; then
-  BIFROST_UI_TEST_RUNNER_PORT="$(allocate_free_port)"
+  # bifrost-e2e runner uses `--port` as a *base* and will bind to `base + test_index`.
+  # Allocate a contiguous port span to avoid random mid-run conflicts.
+  RUNNER_PORT_SPAN="${BIFROST_E2E_RUNNER_PORT_SPAN:-512}"
+  BIFROST_UI_TEST_RUNNER_PORT="$(pick_available_base_port 0 "$RUNNER_PORT_SPAN")"
   export BIFROST_UI_TEST_RUNNER_PORT
 fi
 
@@ -872,39 +875,8 @@ if [[ "$RUN_RULES" -eq 1 || "$RUN_SHELL" -eq 1 ]]; then
   fi
 fi
 
-RUNNER_BG_PID=""
-RUNNER_WATCHDOG_PID=""
-RUNNER_LOG_FILE=""
-RUNNER_STATUS_FILE=""
-RUNNER_START_TS=""
 RUNNER_TIMEOUT="${BIFROST_E2E_RUNNER_TIMEOUT:-2400}"
-if [[ "$RUN_RUNNER" -eq 1 ]]; then
-  header "Starting bifrost-e2e custom runner (background)"
-  RUNNER_JOBS="${BIFROST_E2E_RUNNER_JOBS:-1}"
-  RUNNER_LOG_FILE="$REPORT_DIR/runner__bifrost-e2e.log"
-  RUNNER_STATUS_FILE="$REPORT_DIR/runner__bifrost-e2e.status"
-  RUNNER_START_TS="$(date +%s)"
-  (
-    set +e
-    "$CARGO_BIN" run -p bifrost-e2e -- --port "$BIFROST_UI_TEST_RUNNER_PORT" --jobs "$RUNNER_JOBS" --timeout "$RUNNER_TIMEOUT" \
-      > "$RUNNER_LOG_FILE" 2>&1
-    rc=$?
-    echo "$rc" > "$RUNNER_STATUS_FILE"
-    exit "$rc"
-  ) &
-  RUNNER_BG_PID=$!
-  (
-    sleep "$RUNNER_TIMEOUT"
-    if kill -0 "$RUNNER_BG_PID" 2>/dev/null; then
-      echo "[TIMEOUT] bifrost-e2e runner exceeded ${RUNNER_TIMEOUT}s limit, killing pid ${RUNNER_BG_PID}" >&2
-      kill -TERM "$RUNNER_BG_PID" 2>/dev/null || true
-      sleep 5
-      kill -9 "$RUNNER_BG_PID" 2>/dev/null || true
-    fi
-  ) &
-  RUNNER_WATCHDOG_PID=$!
-  log_info "bifrost-e2e runner started in background (PID: $RUNNER_BG_PID, jobs: $RUNNER_JOBS)"
-fi
+RUNNER_JOBS="${BIFROST_E2E_RUNNER_JOBS:-1}"
 
 if [[ "$RUN_RULES" -eq 1 ]]; then
   header "Running rule fixture E2E suite"
@@ -955,33 +927,20 @@ if [[ "$RUN_SHELL" -eq 1 ]]; then
   fi
 fi
 
-if [[ -n "$RUNNER_BG_PID" ]]; then
-  header "Waiting for bifrost-e2e runner to complete"
-  RUNNER_END_TS=""
-  if wait "$RUNNER_BG_PID" 2>/dev/null; then
-    RUNNER_END_TS="$(date +%s)"
-    RUNNER_DURATION=$((RUNNER_END_TS - RUNNER_START_TS))
-    register_suite "runner:bifrost-e2e" "passed" "$RUNNER_LOG_FILE" "" "$RUNNER_DURATION"
-    echo "[PASS] runner:bifrost-e2e (${RUNNER_DURATION}s)"
+if [[ "$RUN_RUNNER" -eq 1 ]]; then
+  header "Running bifrost-e2e custom runner"
+
+  # Avoid interference with shell/rules suites (some tests use broad cleanup like pkill).
+  # Also give runner its own extended suite timeout.
+  _prev_suite_timeout="${BIFROST_E2E_SUITE_TIMEOUT:-}"
+  export BIFROST_E2E_SUITE_TIMEOUT="$RUNNER_TIMEOUT"
+  run_and_capture \
+    "runner:bifrost-e2e" \
+    "$CARGO_BIN" run -p bifrost-e2e -- --port "$BIFROST_UI_TEST_RUNNER_PORT" --jobs "$RUNNER_JOBS" --timeout "$RUNNER_TIMEOUT"
+  if [[ -n "${_prev_suite_timeout:-}" ]]; then
+    export BIFROST_E2E_SUITE_TIMEOUT="$_prev_suite_timeout"
   else
-    RUNNER_END_TS="$(date +%s)"
-    RUNNER_DURATION=$((RUNNER_END_TS - RUNNER_START_TS))
-    RUNNER_REASON="$(extract_failure_reason "$RUNNER_LOG_FILE")"
-    RUNNER_REASON="$(trim_line "${RUNNER_REASON:-unknown failure}")"
-    register_suite "runner:bifrost-e2e" "failed" "$RUNNER_LOG_FILE" "$RUNNER_REASON" "$RUNNER_DURATION"
-    echo "[FAIL] runner:bifrost-e2e (${RUNNER_DURATION}s)"
-    echo "       reason: $RUNNER_REASON"
-    echo "       log: $RUNNER_LOG_FILE"
-  fi
-  if [[ -f "$RUNNER_LOG_FILE" ]]; then
-    print_section "bifrost-e2e runner output"
-    cat "$RUNNER_LOG_FILE"
-  fi
-  RUNNER_BG_PID=""
-  if [[ -n "$RUNNER_WATCHDOG_PID" ]]; then
-    kill "$RUNNER_WATCHDOG_PID" 2>/dev/null || true
-    wait "$RUNNER_WATCHDOG_PID" 2>/dev/null || true
-    RUNNER_WATCHDOG_PID=""
+    unset BIFROST_E2E_SUITE_TIMEOUT
   fi
 fi
 

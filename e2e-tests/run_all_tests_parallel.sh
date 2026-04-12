@@ -26,6 +26,36 @@ truthy() {
     [[ "$value" == "1" || "$value" == "true" || "$value" == "yes" || "$value" == "on" ]]
 }
 
+sleep_seconds() {
+    # Cross-platform fractional sleep helper.
+    # - Prefer native `sleep`.
+    # - Fall back to Python to support environments where `sleep 0.1` is not supported.
+    local secs="${1:-}"
+    [[ -n "${secs:-}" ]] || return 0
+
+    if sleep "$secs" 2>/dev/null; then
+        return 0
+    fi
+
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        # Last resort: best-effort integer sleep.
+        sleep 1 2>/dev/null || true
+        return 0
+    fi
+
+    "$py" - "$secs" <<'PY'
+import sys
+import time
+
+try:
+    time.sleep(float(sys.argv[1]))
+except Exception:
+    time.sleep(1)
+PY
+}
+
 usage() {
     echo "用法: $0 [选项]"
     echo ""
@@ -326,9 +356,9 @@ run_single_test() {
 
             if kill -0 "$test_pid" 2>/dev/null; then
                 echo "[TIMEOUT] fixture ${rel_path} exceeded ${fixture_timeout}s on port ${proxy_port}" >> "$log_file"
-                kill -TERM "$test_pid" 2>/dev/null || true
+                kill_pid "$test_pid"
                 sleep 3
-                kill -9 "$test_pid" 2>/dev/null || true
+                kill_pid_force "$test_pid"
             fi
         ) &
         watchdog_pid=$!
@@ -658,7 +688,7 @@ retry_failed_suites_once() {
         kill_bifrost_on_port "$proxy_port"
         local wait_free=0
         while ! port_is_available "$proxy_port" 2>/dev/null && [[ $wait_free -lt 50 ]]; do
-            sleep 0.1
+            sleep_seconds 0.1
             wait_free=$((wait_free + 1))
         done
         run_single_test "$rule_file" "$idx"
@@ -699,7 +729,32 @@ check_tcp_port_ready() {
     if command -v nc &>/dev/null; then
         nc -z "$host" "$port" >/dev/null 2>&1
     else
-        (echo > /dev/tcp/"$host"/"$port") >/dev/null 2>&1
+        # `/dev/tcp` is not supported by all bash builds on Windows.
+        # Use Python (which is already a hard dependency of the E2E infra).
+        local py
+        py="$(python3_cmd 2>/dev/null || true)"
+        if [[ -z "${py:-}" ]]; then
+            return 1
+        fi
+        "$py" - "$host" "$port" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(1.0)
+try:
+    s.connect((host, port))
+except Exception:
+    sys.exit(1)
+finally:
+    try:
+        s.close()
+    except Exception:
+        pass
+sys.exit(0)
+PY
     fi
 }
 

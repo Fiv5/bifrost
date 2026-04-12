@@ -15,14 +15,17 @@ is_windows() {
 
 _win_stop_process() {
     local pid=$1
-    taskkill.exe //F //PID "$pid" >/dev/null 2>&1 || true
+    # Use canonical taskkill flags; `//F` can be rejected in some environments.
+    taskkill.exe /F /PID "$pid" >/dev/null 2>&1 || true
 }
 
 _win_find_pid_on_port() {
     local port=$1
+    # Best-effort: avoid aborting the whole suite under `set -e -o pipefail`.
     netstat.exe -ano 2>/dev/null \
         | awk -v p=":${port}" '$1 == "TCP" && $2 ~ p"$" && $4 == "LISTENING" { print $5; exit }' \
-        | tr -d '\r'
+        | tr -d '\r' \
+        || true
 }
 
 kill_pid() {
@@ -55,7 +58,7 @@ kill_process_tree() {
         return 0
     fi
     if is_windows; then
-        taskkill.exe //F //T //PID "$pid" >/dev/null 2>&1 || true
+        taskkill.exe /F /T /PID "$pid" >/dev/null 2>&1 || true
     else
         kill -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
     fi
@@ -68,12 +71,12 @@ kill_bifrost_on_port() {
     fi
     if is_windows; then
         local win_pid
-        win_pid=$(_win_find_pid_on_port "$port")
+        win_pid="$(_win_find_pid_on_port "$port" || true)"
         if [ -n "$win_pid" ]; then
             _win_stop_process "$win_pid"
             local wait_count=0
             while [[ $wait_count -lt 30 ]]; do
-                win_pid=$(_win_find_pid_on_port "$port")
+                win_pid="$(_win_find_pid_on_port "$port" || true)"
                 if [[ -z "$win_pid" ]]; then
                     break
                 fi
@@ -87,9 +90,13 @@ kill_bifrost_on_port() {
     else
         local target_pid=""
         if command -v lsof &>/dev/null; then
-            target_pid=$(lsof -ti :"$port" 2>/dev/null | head -n 1)
+            # NOTE: `lsof -ti` returns exit code 1 when no process is found.
+            # Under `set -e -o pipefail` this would abort the whole test suite,
+            # so make it best-effort.
+            target_pid="$(lsof -ti :"$port" 2>/dev/null | head -n 1 || true)"
         elif command -v fuser &>/dev/null; then
-            target_pid=$(fuser "$port"/tcp 2>/dev/null | awk '{print $1}')
+            # `fuser` also returns non-zero when no process is found.
+            target_pid="$(fuser "$port"/tcp 2>/dev/null | awk '{print $1}' || true)"
         fi
         if [ -n "$target_pid" ]; then
             kill -9 "$target_pid" 2>/dev/null || true
@@ -103,7 +110,7 @@ win_wait_port_free() {
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
         local pid
-        pid=$(_win_find_pid_on_port "$port")
+        pid="$(_win_find_pid_on_port "$port" || true)"
         if [[ -z "$pid" ]]; then
             return 0
         fi
@@ -119,7 +126,7 @@ win_find_pid_on_port() {
 
 kill_all_bifrost() {
     if is_windows; then
-        taskkill.exe //F //IM bifrost.exe >/dev/null 2>&1 || true
+        taskkill.exe /F /IM bifrost.exe >/dev/null 2>&1 || true
         sleep 2
     else
         pkill -f bifrost 2>/dev/null || killall bifrost 2>/dev/null || true
