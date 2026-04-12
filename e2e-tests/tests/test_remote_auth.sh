@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 HTTP_STATUS=""
 HTTP_HEADERS=""
 HTTP_BODY=""
+CURL_ERROR=""
 
 http_request() {
     local url="$1"
@@ -23,8 +24,10 @@ http_request() {
 
     local headers_file
     local body_file
+    local err_file
     headers_file="$(mktemp)"
     body_file="$(mktemp)"
+    err_file="$(mktemp)"
 
     local curl_args=(
         -sS
@@ -49,11 +52,13 @@ http_request() {
         done <<< "$extra_headers"
     fi
 
-    HTTP_STATUS="$(curl "${curl_args[@]}" "$url" 2>/dev/null)" || HTTP_STATUS="000"
+    CURL_ERROR=""
+    HTTP_STATUS="$(curl "${curl_args[@]}" "$url" 2>"$err_file")" || HTTP_STATUS="000"
     HTTP_HEADERS="$(cat "$headers_file" | tr -d '\r')"
     HTTP_BODY="$(cat "$body_file")"
+    CURL_ERROR="$(cat "$err_file")"
 
-    rm -f "$headers_file" "$body_file"
+    rm -f "$headers_file" "$body_file" "$err_file"
 }
 
 http_get() {
@@ -75,7 +80,21 @@ proxy_get() {
     http_request "$url" "GET" "" "" "$proxy_url"
 }
 
-ADMIN_PORT="${ADMIN_PORT:-18800}"
+pick_free_port() {
+    # 用 python 绑定 127.0.0.1:0 获取空闲端口，避免 CI 并行任务端口冲突。
+    python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+ADMIN_PORT="${ADMIN_PORT:-}"
+if [[ -z "$ADMIN_PORT" ]]; then
+    ADMIN_PORT="$(pick_free_port)"
+fi
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 export ADMIN_PATH_PREFIX
 
@@ -86,11 +105,19 @@ export ADMIN_BASE_URL="${ADMIN_BASE_URL:-http://127.0.0.1:${ADMIN_PORT}${ADMIN_P
 BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-$SCRIPT_DIR/../../.bifrost-e2e-remote-auth-$RANDOM}"
 export BIFROST_DATA_DIR
 
-MOCK_SERVERS="$SCRIPT_DIR/../mock_servers/start_servers.sh"
+MOCK_SERVERS_SCRIPT="$SCRIPT_DIR/../mock_servers/start_servers.sh"
+
+# remote-auth E2E 仅依赖 HTTP echo server；限制 mock server 集合 + 使用动态端口，避免与其他 E2E 并发抢占固定端口（如 3000/3443/3020 等）。
+export MOCK_SERVERS="${MOCK_SERVERS_LIST:-http}"
+HTTP_PORT="${HTTP_PORT:-}"
+if [[ -z "$HTTP_PORT" ]]; then
+    HTTP_PORT="$(pick_free_port)"
+fi
+export HTTP_PORT
 
 cleanup() {
     admin_cleanup_bifrost || true
-    "$MOCK_SERVERS" stop >/dev/null 2>&1 || true
+    "$MOCK_SERVERS_SCRIPT" stop >/dev/null 2>&1 || true
     rm -rf "$BIFROST_DATA_DIR" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -117,7 +144,35 @@ assert_json_field() {
     local msg="${4:-JSON field should match}"
 
     local actual
-    actual=$(echo "$json" | jq -r "$field")
+    # 注意：不能用 `jq -e` 直接取字段，因为布尔 false 会导致 jq 以非 0 退出码返回。
+    if ! echo "$json" | jq -e . >/dev/null 2>&1; then
+        _log_fail "$msg（响应体不是合法 JSON）" "$expected" "<invalid-json>"
+        echo "[debug] HTTP_STATUS=$HTTP_STATUS" >&2
+        echo "[debug] curl_error=${CURL_ERROR:-<empty>}" >&2
+        echo "[debug] HTTP_HEADERS:" >&2
+        echo "$HTTP_HEADERS" >&2
+        echo "[debug] HTTP_BODY(head 600):" >&2
+        printf '%s' "$HTTP_BODY" | head -c 600 >&2 || true
+        echo >&2
+        return 1
+    fi
+
+    if ! actual=$(echo "$json" | jq -r "$field" 2>/dev/null); then
+        _log_fail "$msg（jq 取字段失败）" "$expected" "<jq-error>"
+        echo "[debug] HTTP_STATUS=$HTTP_STATUS" >&2
+        echo "[debug] curl_error=${CURL_ERROR:-<empty>}" >&2
+        echo "[debug] HTTP_HEADERS:" >&2
+        echo "$HTTP_HEADERS" >&2
+        echo "[debug] HTTP_BODY(head 600):" >&2
+        printf '%s' "$HTTP_BODY" | head -c 600 >&2 || true
+        echo >&2
+        return 1
+    fi
+
+    if [[ "$actual" == "null" ]]; then
+        _log_fail "$msg（字段不存在或为 null）" "$expected" "null"
+        return 1
+    fi
     assert_equals "$expected" "$actual" "$msg"
 }
 
@@ -143,7 +198,7 @@ if [[ ! -x "$BIFROST_BIN" ]]; then
 fi
 
 log "Start mock servers..."
-"$MOCK_SERVERS" start-bg >/dev/null
+"$MOCK_SERVERS_SCRIPT" start-bg >/dev/null
 
 log "Start bifrost (admin+proxy)..."
 export ADMIN_HOST
@@ -184,11 +239,11 @@ fi
 
 log "Ensure data plane forwarding works before enabling remote auth"
 RULE_NAME="remote_auth_forward_${RANDOM}"
-create_rule "$RULE_NAME" "example.com http://127.0.0.1:3000" "true" >/dev/null
+create_rule "$RULE_NAME" "example.com http://127.0.0.1:${HTTP_PORT}" "true" >/dev/null
 
 proxy_get "http://127.0.0.1:${ADMIN_PORT}" "http://example.com/remote-auth-pre"
 assert_status "200" "$HTTP_STATUS" "代理转发在鉴权开启前应正常工作"
-assert_json_field "$HTTP_BODY" ".server.port" "3000" "代理应转发到 mock http_echo_server(3000)"
+assert_json_field "$HTTP_BODY" ".server.port" "${HTTP_PORT}" "代理应转发到 mock http_echo_server(${HTTP_PORT})"
 
 log "Enable remote access and set admin password via CLI"
 ADMIN_PASSWORD="test-pass-${RANDOM}-${RANDOM}"
@@ -223,7 +278,7 @@ assert_status "401" "$HTTP_STATUS" "revoke-all 后旧 Token 应失效返回 401"
 log "Ensure data plane forwarding still works after enabling/revoking admin auth"
 proxy_get "http://127.0.0.1:${ADMIN_PORT}" "http://example.com/remote-auth-post"
 assert_status "200" "$HTTP_STATUS" "代理转发不应受管理端鉴权影响"
-assert_json_field "$HTTP_BODY" ".server.port" "3000" "代理应持续转发到 mock http_echo_server(3000)"
+assert_json_field "$HTTP_BODY" ".server.port" "${HTTP_PORT}" "代理应持续转发到 mock http_echo_server(${HTTP_PORT})"
 
 delete_rule "$RULE_NAME" >/dev/null 2>&1 || true
 
