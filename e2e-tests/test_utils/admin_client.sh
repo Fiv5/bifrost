@@ -195,6 +195,10 @@ admin_start_bifrost() {
 
     if [[ $rc -eq 2 ]]; then
         admin_log_fail "Bifrost process exited early (PID: $ADMIN_CLIENT_BIFROST_PID)"
+        if command -v lsof &>/dev/null; then
+            echo "Port $port listeners:" >&2
+            lsof -i :"$port" 2>/dev/null >&2 || true
+        fi
     else
         admin_log_fail "Timeout waiting for admin server at ${admin_url}"
     fi
@@ -239,12 +243,25 @@ admin_ensure_bifrost() {
     local admin_url
     admin_url="$(admin_base_url)"
 
-    # If admin is already reachable, do nothing.
     if env NO_PROXY="*" no_proxy="*" curl -s "${admin_url}/api/system/status" >/dev/null 2>&1 || \
        env NO_PROXY="*" no_proxy="*" curl -s "${admin_url}/api/system" >/dev/null 2>&1; then
         return 0
     fi
-    admin_start_bifrost
+
+    local max_retries="${ADMIN_ENSURE_RETRIES:-2}"
+    local attempt=1
+    while [[ $attempt -le $max_retries ]]; do
+        if [[ $attempt -gt 1 ]]; then
+            admin_log_info "Retrying Bifrost startup (attempt $attempt/$max_retries)..."
+            admin_stop_bifrost
+            sleep 1
+        fi
+        if admin_start_bifrost; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
 }
 
 admin_cleanup_bifrost() {

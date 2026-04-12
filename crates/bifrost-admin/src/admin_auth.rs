@@ -7,14 +7,8 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::admin_auth_db::AuthDb;
 use crate::state::AdminState;
-
-pub const ADMIN_REMOTE_ACCESS_ENABLED_KEY: &str = "admin.remote_access.enabled";
-pub const ADMIN_AUTH_USERNAME_KEY: &str = "admin.auth.username";
-pub const ADMIN_AUTH_PASSWORD_HASH_KEY: &str = "admin.auth.password_hash";
-pub const ADMIN_AUTH_JWT_SECRET_KEY: &str = "admin.auth.jwt_secret";
-pub const ADMIN_AUTH_REVOKE_BEFORE_KEY: &str = "admin.auth.revoke_before";
-pub const ADMIN_AUTH_FAILED_COUNT_KEY: &str = "admin.auth.login_failed_count";
 
 pub const MAX_LOGIN_ATTEMPTS: u32 = 5;
 pub const MIN_PASSWORD_LENGTH: usize = 6;
@@ -36,67 +30,41 @@ fn now_unix() -> i64 {
         .as_secs() as i64
 }
 
+fn require_auth_db(state: &AdminState) -> Result<&AuthDb> {
+    state
+        .auth_db
+        .as_ref()
+        .map(|db| db.as_ref())
+        .ok_or_else(|| BifrostError::Config("Auth database not configured".to_string()))
+}
+
 pub fn is_remote_access_enabled(state: &AdminState) -> bool {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return false;
-    };
-    let mut guard = storage.write();
-    if let Err(e) = guard.refresh() {
-        warn!(error = %e, "Failed to refresh values storage");
-    }
-    match guard.get_value(ADMIN_REMOTE_ACCESS_ENABLED_KEY) {
-        Some(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        None => false,
-    }
+    state
+        .auth_db
+        .as_ref()
+        .map(|db| db.is_remote_access_enabled())
+        .unwrap_or(false)
 }
 
 pub fn get_admin_username(state: &AdminState) -> Option<String> {
-    let storage = state.values_storage.as_ref()?;
-    {
-        let mut guard = storage.write();
-        if let Err(e) = guard.refresh() {
-            warn!(error = %e, "Failed to refresh values storage");
-        }
-    }
-    let guard = storage.read();
-    guard
-        .get_value(ADMIN_AUTH_USERNAME_KEY)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| Some("admin".to_string()))
+    let db = state.auth_db.as_ref()?;
+    db.get_username().or_else(|| Some("admin".to_string()))
 }
 
 pub fn ensure_admin_auth_material(state: &AdminState) -> Result<()> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-    let mut guard = storage.write();
-    guard.refresh()?;
+    let db = require_auth_db(state)?;
 
-    if guard
-        .get_value(ADMIN_AUTH_USERNAME_KEY)
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true)
-    {
-        let _ = guard.set_value(ADMIN_AUTH_USERNAME_KEY, "admin");
+    if db.get_username().is_none() {
+        db.set_username("admin")?;
     }
 
-    if guard
-        .get_value(ADMIN_AUTH_JWT_SECRET_KEY)
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true)
-    {
+    if db.get_jwt_secret().is_none() {
         let secret: String = rand::thread_rng()
             .sample_iter(&Alphanumeric)
             .take(64)
             .map(char::from)
             .collect();
-        guard.set_value(ADMIN_AUTH_JWT_SECRET_KEY, &secret)?;
+        db.set_jwt_secret(&secret)?;
     }
 
     Ok(())
@@ -123,96 +91,49 @@ pub fn validate_password_strength(password: &str) -> Result<()> {
 }
 
 pub fn set_admin_password_hash(state: &AdminState, password: &str) -> Result<()> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-
+    let db = require_auth_db(state)?;
     validate_password_strength(password)?;
-
     let hashed = hash(password, DEFAULT_COST)
         .map_err(|e| BifrostError::Storage(format!("Failed to hash password: {e}")))?;
-    let mut guard = storage.write();
-    guard.refresh()?;
-    guard.set_value(ADMIN_AUTH_PASSWORD_HASH_KEY, &hashed)?;
+    db.set_password_hash(&hashed)?;
     Ok(())
 }
 
 pub fn set_remote_access_enabled(state: &AdminState, enabled: bool) -> Result<()> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-    let mut guard = storage.write();
-    guard.refresh()?;
-    guard.set_value(
-        ADMIN_REMOTE_ACCESS_ENABLED_KEY,
-        if enabled { "true" } else { "false" },
-    )?;
+    let db = require_auth_db(state)?;
+    db.set_remote_access_enabled(enabled)?;
     Ok(())
 }
 
 pub fn set_admin_username(state: &AdminState, username: &str) -> Result<()> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
+    let db = require_auth_db(state)?;
     let trimmed = username.trim();
     if trimmed.is_empty() {
         return Err(BifrostError::Config("Username cannot be empty".to_string()));
     }
-    let mut guard = storage.write();
-    guard.refresh()?;
-    guard.set_value(ADMIN_AUTH_USERNAME_KEY, trimmed)?;
+    db.set_username(trimmed)?;
     Ok(())
 }
 
 pub fn has_admin_password(state: &AdminState) -> bool {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return false;
-    };
-    let mut guard = storage.write();
-    if let Err(e) = guard.refresh() {
-        warn!(error = %e, "Failed to refresh values storage");
-    }
-    guard
-        .get_value(ADMIN_AUTH_PASSWORD_HASH_KEY)
-        .map(|v| !v.trim().is_empty())
+    state
+        .auth_db
+        .as_ref()
+        .map(|db| db.has_password())
         .unwrap_or(false)
 }
 
 pub fn get_failed_login_count(state: &AdminState) -> u32 {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return 0;
-    };
-    let mut guard = storage.write();
-    if let Err(e) = guard.refresh() {
-        warn!(error = %e, "Failed to refresh values storage");
-    }
-    guard
-        .get_value(ADMIN_AUTH_FAILED_COUNT_KEY)
-        .and_then(|s| s.trim().parse::<u32>().ok())
+    state
+        .auth_db
+        .as_ref()
+        .map(|db| db.get_failed_count())
         .unwrap_or(0)
 }
 
 pub fn record_failed_login(state: &AdminState) -> Result<u32> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-    let mut guard = storage.write();
-    guard.refresh()?;
-    let current = guard
-        .get_value(ADMIN_AUTH_FAILED_COUNT_KEY)
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0);
-    let new_count = current.saturating_add(1);
-    guard.set_value(ADMIN_AUTH_FAILED_COUNT_KEY, &new_count.to_string())?;
-    drop(guard);
+    let db = require_auth_db(state)?;
+    let new_count = db.increment_failed_count()?;
 
     if new_count >= MAX_LOGIN_ATTEMPTS {
         warn!(
@@ -225,26 +146,14 @@ pub fn record_failed_login(state: &AdminState) -> Result<u32> {
 }
 
 pub fn reset_failed_login_count(state: &AdminState) -> Result<()> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-    let mut guard = storage.write();
-    guard.refresh()?;
-    guard.set_value(ADMIN_AUTH_FAILED_COUNT_KEY, "0")?;
+    let db = require_auth_db(state)?;
+    db.reset_failed_count()?;
     Ok(())
 }
 
 pub fn clear_admin_password(state: &AdminState) -> Result<()> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-    let mut guard = storage.write();
-    guard.refresh()?;
-    guard.set_value(ADMIN_AUTH_PASSWORD_HASH_KEY, "")?;
+    let db = require_auth_db(state)?;
+    db.clear_password_hash()?;
     Ok(())
 }
 
@@ -262,23 +171,12 @@ pub fn verify_admin_credentials(
     username: &str,
     password: &str,
 ) -> Result<bool> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-    {
-        let mut guard = storage.write();
-        guard.refresh()?;
-    }
-    let guard = storage.read();
-    let expected_username = guard
-        .get_value(ADMIN_AUTH_USERNAME_KEY)
-        .unwrap_or_else(|| "admin".to_string());
+    let db = require_auth_db(state)?;
+    let expected_username = db.get_username().unwrap_or_else(|| "admin".to_string());
     if username.trim() != expected_username.trim() {
         return Ok(false);
     }
-    let Some(hash_str) = guard.get_value(ADMIN_AUTH_PASSWORD_HASH_KEY) else {
+    let Some(hash_str) = db.get_password_hash() else {
         return Ok(false);
     };
     let ok = verify(password, &hash_str)
@@ -287,20 +185,10 @@ pub fn verify_admin_credentials(
 }
 
 fn jwt_secret(state: &AdminState) -> Result<String> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
-    {
-        let mut guard = storage.write();
-        guard.refresh()?;
-    }
-    let guard = storage.read();
-    let secret = guard
-        .get_value(ADMIN_AUTH_JWT_SECRET_KEY)
+    let db = require_auth_db(state)?;
+    let secret = db
+        .get_jwt_secret()
         .ok_or_else(|| BifrostError::Config("JWT secret not initialized".to_string()))?;
-    let secret = secret.trim().to_string();
     if secret.is_empty() {
         return Err(BifrostError::Config("JWT secret is empty".to_string()));
     }
@@ -331,15 +219,9 @@ pub fn issue_admin_jwt(state: &AdminState, username: &str) -> Result<(String, Ad
 }
 
 pub fn revoke_all_admin_sessions(state: &AdminState) -> Result<()> {
-    let Some(storage) = state.values_storage.as_ref() else {
-        return Err(BifrostError::Config(
-            "Values storage not configured".to_string(),
-        ));
-    };
+    let db = require_auth_db(state)?;
     let ts = now_unix();
-    let mut guard = storage.write();
-    guard.refresh()?;
-    guard.set_value(ADMIN_AUTH_REVOKE_BEFORE_KEY, &ts.to_string())?;
+    db.set_revoke_before(ts)?;
     Ok(())
 }
 
@@ -360,7 +242,6 @@ pub fn validate_admin_jwt(state: &AdminState, token: &str) -> Result<AdminJwtCla
 
     let claims = data.claims;
 
-    // 严格控制生命周期：exp - iat <= 7 天
     if claims.exp <= claims.iat {
         return Err(BifrostError::Proxy("Invalid token timestamps".to_string()));
     }
@@ -371,14 +252,8 @@ pub fn validate_admin_jwt(state: &AdminState, token: &str) -> Result<AdminJwtCla
         ));
     }
 
-    // revoke-all：iat 必须 > revoke_before（秒级时间戳，使用 <= 兼容同秒 revoke）
-    if let Some(storage) = state.values_storage.as_ref() {
-        let mut guard = storage.write();
-        guard.refresh()?;
-        if let Some(revoke_before) = guard
-            .get_value(ADMIN_AUTH_REVOKE_BEFORE_KEY)
-            .and_then(|s| s.trim().parse::<i64>().ok())
-        {
+    if let Some(db) = state.auth_db.as_ref() {
+        if let Some(revoke_before) = db.get_revoke_before() {
             if claims.iat <= revoke_before {
                 return Err(BifrostError::Proxy("Token revoked".to_string()));
             }
@@ -391,14 +266,14 @@ pub fn validate_admin_jwt(state: &AdminState, token: &str) -> Result<AdminJwtCla
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bifrost_storage::ValuesStorage;
+    use crate::admin_auth_db::AuthDb;
 
     fn new_state() -> (AdminState, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let values_dir = tmp.path().join("values");
-        let storage = ValuesStorage::with_dir(values_dir).expect("values storage");
+        let auth_db_path = tmp.path().join("auth.db");
+        let auth_db = AuthDb::open(&auth_db_path).expect("auth db");
 
-        (AdminState::new(19999).with_values_storage(storage), tmp)
+        (AdminState::new(19999).with_auth_db(auth_db), tmp)
     }
 
     fn encode_with_secret(secret: &str, claims: &AdminJwtClaims) -> String {
@@ -431,16 +306,14 @@ mod tests {
         let (state, _tmp) = new_state();
         ensure_admin_auth_material(&state).expect("init auth material");
         let secret = state
-            .values_storage
+            .auth_db
             .as_ref()
             .unwrap()
-            .read()
-            .get_value(ADMIN_AUTH_JWT_SECRET_KEY)
+            .get_jwt_secret()
             .expect("jwt secret");
 
         let now = now_unix();
 
-        // exp 仍在未来，但 iat > exp，应被自定义校验拒绝。
         let claims = AdminJwtClaims {
             sub: "admin".to_string(),
             iat: now + 120,
@@ -451,7 +324,6 @@ mod tests {
         let err = validate_admin_jwt(&state, &token).unwrap_err().to_string();
         assert!(err.contains("Invalid token timestamps"));
 
-        // TTL 超过 7 天，应被自定义校验拒绝。
         let claims = AdminJwtClaims {
             sub: "admin".to_string(),
             iat: now,
@@ -468,21 +340,18 @@ mod tests {
         let (state, _tmp) = new_state();
         ensure_admin_auth_material(&state).expect("init auth material");
         let secret = state
-            .values_storage
+            .auth_db
             .as_ref()
             .unwrap()
-            .read()
-            .get_value(ADMIN_AUTH_JWT_SECRET_KEY)
+            .get_jwt_secret()
             .expect("jwt secret");
 
         let now = now_unix();
-        let revoke_before = now;
         state
-            .values_storage
+            .auth_db
             .as_ref()
             .unwrap()
-            .write()
-            .set_value(ADMIN_AUTH_REVOKE_BEFORE_KEY, &revoke_before.to_string())
+            .set_revoke_before(now)
             .expect("set revoke_before");
 
         let claims = AdminJwtClaims {

@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 use hyper::{body::Incoming, header, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 use tracing::{info, warn};
 
 use super::{
@@ -65,7 +66,7 @@ pub async fn handle_auth(
 
     let is_loopback = peer_addr
         .map(|addr| addr.ip().is_loopback())
-        .unwrap_or(true);
+        .unwrap_or(false);
 
     if path == "/api/auth/status" {
         if *req.method() != Method::GET {
@@ -74,8 +75,12 @@ pub async fn handle_auth(
         let remote_enabled = is_remote_access_enabled(&state);
         let username = get_admin_username(&state).unwrap_or_else(|| "admin".to_string());
         let password_set = has_admin_password(&state);
-        let failed_attempts = get_failed_login_count(&state);
-        let locked_out = !remote_enabled && failed_attempts >= MAX_LOGIN_ATTEMPTS;
+        let failed_attempts = if is_loopback {
+            get_failed_login_count(&state)
+        } else {
+            0
+        };
+        let locked_out = !remote_enabled && get_failed_login_count(&state) >= MAX_LOGIN_ATTEMPTS;
         return json_response(&AuthStatusResponse {
             remote_access_enabled: remote_enabled,
             auth_required: remote_enabled && !is_loopback,
@@ -149,26 +154,32 @@ pub async fn handle_auth(
                 warn!(error = %e, "Failed to write failed login audit");
             }
 
+            // Progressive delay: increase response time with each failure
+            let delay_secs = std::cmp::min(failed_count as u64, 10);
+            if delay_secs > 0 {
+                sleep(std::time::Duration::from_secs(delay_secs)).await;
+            }
+
             if failed_count >= MAX_LOGIN_ATTEMPTS {
                 return json_response_with_status(
                     StatusCode::FORBIDDEN,
                     &serde_json::json!({
                         "error": "Account locked due to too many failed login attempts. Remote access has been disabled. Please re-enable from local access.",
                         "locked_out": true,
-                        "failed_attempts": failed_count,
-                        "max_attempts": MAX_LOGIN_ATTEMPTS,
                     }),
                 );
             }
 
             let remaining = MAX_LOGIN_ATTEMPTS.saturating_sub(failed_count);
+            let error_msg = if remaining <= 3 {
+                "Invalid credentials. Few attempts remaining before lockout."
+            } else {
+                "Invalid credentials"
+            };
             return json_response_with_status(
                 StatusCode::UNAUTHORIZED,
                 &serde_json::json!({
-                    "error": "Invalid credentials",
-                    "remaining_attempts": remaining,
-                    "failed_attempts": failed_count,
-                    "max_attempts": MAX_LOGIN_ATTEMPTS,
+                    "error": error_msg,
                 }),
             );
         }

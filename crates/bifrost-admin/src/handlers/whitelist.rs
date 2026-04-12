@@ -23,6 +23,7 @@ struct WhitelistResponse {
     allow_lan: bool,
     whitelist: Vec<String>,
     temporary_whitelist: Vec<String>,
+    session_denied: Vec<String>,
     userpass: UserPassAuthResponse,
 }
 
@@ -121,6 +122,12 @@ pub async fn handle_whitelist_request(
         (&Method::DELETE, "/api/whitelist/pending") => {
             handle_clear_pending(access_control, push_manager).await
         }
+        (&Method::GET, "/api/whitelist/session-denied") => {
+            handle_get_session_denied(access_control).await
+        }
+        (&Method::DELETE, "/api/whitelist/session-denied") => {
+            handle_remove_session_denied(req, access_control, push_manager).await
+        }
         _ => method_not_allowed(),
     }
 }
@@ -133,6 +140,11 @@ async fn handle_list(access_control: Arc<RwLock<ClientAccessControl>>) -> Respon
         whitelist: ac.whitelist_entries(),
         temporary_whitelist: ac
             .temporary_whitelist_entries()
+            .iter()
+            .map(|ip| ip.to_string())
+            .collect(),
+        session_denied: ac
+            .session_denied_entries()
             .iter()
             .map(|ip| ip.to_string())
             .collect(),
@@ -755,4 +767,84 @@ async fn handle_clear_pending(
         .header("Content-Type", "application/json")
         .body(full_body(response.to_string()))
         .unwrap()
+}
+
+async fn handle_get_session_denied(
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let ac = access_control.read().await;
+    let denied: Vec<String> = ac
+        .session_denied_entries()
+        .iter()
+        .map(|ip| ip.to_string())
+        .collect();
+    json_response(&denied)
+}
+
+async fn handle_remove_session_denied(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    #[derive(Deserialize)]
+    struct RemoveSessionDeniedRequest {
+        ip: Option<String>,
+    }
+
+    let request: RemoveSessionDeniedRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => RemoveSessionDeniedRequest { ip: None },
+    };
+
+    let ac = access_control.read().await;
+    if let Some(ip_str) = request.ip {
+        let ip: IpAddr = match ip_str.parse() {
+            Ok(ip) => ip,
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    &format!("Invalid IP address: {}", e),
+                )
+            }
+        };
+        let removed = ac.remove_session_denied(&ip);
+        drop(ac);
+        if removed {
+            broadcast_access_snapshots(&push_manager, false).await;
+            info!("Removed {} from session denied list via API", ip);
+            let response = serde_json::json!({
+                "success": true,
+                "message": format!("Removed {} from session denied list", ip)
+            });
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(full_body(response.to_string()))
+                .unwrap()
+        } else {
+            error_response(
+                StatusCode::NOT_FOUND,
+                &format!("{} not found in session denied list", ip),
+            )
+        }
+    } else {
+        ac.clear_session_denied();
+        drop(ac);
+        broadcast_access_snapshots(&push_manager, false).await;
+        info!("Cleared all session denied entries via API");
+        let response = serde_json::json!({
+            "success": true,
+            "message": "Cleared all session denied entries"
+        });
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(full_body(response.to_string()))
+            .unwrap()
+    }
 }

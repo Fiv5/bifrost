@@ -41,17 +41,8 @@ pub fn get_all_tests() -> Vec<TestCase> {
                         .json()
                         .await
                         .map_err(|e| format!("Failed to parse response: {}", e))?;
-                    let remaining = body
-                        .get("remaining_attempts")
-                        .and_then(|v| v.as_u64())
-                        .ok_or("Missing remaining_attempts")?;
-                    if remaining != 5 - i {
-                        return Err(format!(
-                            "Expected remaining_attempts {} after attempt {}, got {}",
-                            5 - i,
-                            i,
-                            remaining
-                        ));
+                    if body.get("error").is_none() {
+                        return Err(format!("Missing error field in attempt {}", i));
                     }
                 }
 

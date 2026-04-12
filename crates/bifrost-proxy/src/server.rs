@@ -1321,10 +1321,29 @@ async fn handle_request(
             let decision = ac.check_access(&peer_addr.ip());
             let should_defer_userpass = ac.should_defer_userpass(&decision);
             drop(ac);
+
+            let allow_remote_admin_bypass = admin_state
+                .as_ref()
+                .map(|s| bifrost_admin::is_remote_access_enabled(s))
+                .unwrap_or(false);
+
             match decision {
                 AccessDecision::Allow => {}
-                AccessDecision::Deny | AccessDecision::Prompt(_) => {
-                    if should_defer_userpass {
+                AccessDecision::Prompt(_) => {
+                    if !should_defer_userpass && !allow_remote_admin_bypass {
+                        warn!(
+                        "[{}] Access denied for {} on existing connection (access control changed)",
+                        ctx.id_str(),
+                        peer_addr.ip()
+                    );
+                        return Ok(error_response(
+                            403,
+                            "Access denied - access control policy changed",
+                        ));
+                    }
+                }
+                AccessDecision::Deny => {
+                    if should_defer_userpass || allow_remote_admin_bypass {
                         debug!(
                             "[{}] Deferring access policy re-check for {} to HTTP userpass auth",
                             ctx.id_str(),

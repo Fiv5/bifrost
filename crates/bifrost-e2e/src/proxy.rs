@@ -1251,6 +1251,12 @@ impl ProxyInstance {
         let values_storage = bifrost_storage::ValuesStorage::with_dir(values_dir)
             .expect("failed to create temp values storage");
 
+        let auth_db_path = temp_dir.join("admin").join("auth.db");
+        std::fs::create_dir_all(auth_db_path.parent().unwrap())
+            .expect("failed to create admin dir");
+        let auth_db = bifrost_admin::admin_auth_db::AuthDb::open(&auth_db_path)
+            .expect("failed to create auth db");
+
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
@@ -1260,7 +1266,8 @@ impl ProxyInstance {
             .with_async_traffic_writer(async_traffic_writer)
             .with_frame_store_shared(frame_store)
             .with_rules_storage(rules_storage)
-            .with_values_storage(values_storage);
+            .with_values_storage(values_storage)
+            .with_auth_db(auth_db);
         std::mem::drop(start_connection_cleanup_task(
             admin_state.connection_monitor.clone(),
         ));
@@ -1437,6 +1444,12 @@ impl ProxyInstance {
         let values_storage = bifrost_storage::ValuesStorage::with_dir(values_dir)
             .expect("failed to create temp values storage");
 
+        let auth_db_path2 = temp_dir.join("admin").join("auth.db");
+        std::fs::create_dir_all(auth_db_path2.parent().unwrap())
+            .expect("failed to create admin dir");
+        let auth_db2 = bifrost_admin::admin_auth_db::AuthDb::open(&auth_db_path2)
+            .expect("failed to create auth db");
+
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
@@ -1447,7 +1460,8 @@ impl ProxyInstance {
             .with_frame_store_shared(frame_store)
             .with_sync_manager_shared(sync_manager)
             .with_rules_storage(rules_storage)
-            .with_values_storage(values_storage);
+            .with_values_storage(values_storage)
+            .with_auth_db(auth_db2);
         std::mem::drop(start_connection_cleanup_task(
             admin_state.connection_monitor.clone(),
         ));

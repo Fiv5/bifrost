@@ -1,20 +1,19 @@
+use bifrost_admin::admin_auth_db::AuthDb;
 use bifrost_core::{BifrostError, Result};
-use bifrost_storage::ValuesStorage;
 use dialoguer::{theme::ColorfulTheme, Password};
 
 use crate::cli::{AdminCommands, AdminRemoteCommands};
 
-fn open_values_storage() -> Result<ValuesStorage> {
-    let values_dir = bifrost_storage::data_dir().join("values");
-    ValuesStorage::with_dir(values_dir)
+fn open_auth_db() -> Result<AuthDb> {
+    AuthDb::open_default()
 }
 
-fn ensure_username(storage: &mut ValuesStorage, username: &str) -> Result<()> {
+fn ensure_username(db: &AuthDb, username: &str) -> Result<()> {
     let u = username.trim();
     if u.is_empty() {
         return Err(BifrostError::Config("Username cannot be empty".to_string()));
     }
-    storage.set_value(bifrost_admin::ADMIN_AUTH_USERNAME_KEY, u)?;
+    db.set_username(u)?;
     Ok(())
 }
 
@@ -40,74 +39,42 @@ fn read_password_from_stdin() -> Result<String> {
     Ok(pwd)
 }
 
-fn set_password(storage: &mut ValuesStorage, password: &str) -> Result<()> {
+fn set_password(db: &AuthDb, password: &str) -> Result<()> {
     bifrost_admin::validate_password_strength(password)?;
     let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST)
         .map_err(|e| BifrostError::Storage(format!("Failed to hash password: {e}")))?;
-    storage.set_value(bifrost_admin::ADMIN_AUTH_PASSWORD_HASH_KEY, &hashed)?;
-    storage.set_value(bifrost_admin::ADMIN_AUTH_FAILED_COUNT_KEY, "0")?;
+    db.set_password_hash(&hashed)?;
+    db.reset_failed_count()?;
     Ok(())
-}
-
-fn set_remote_enabled(storage: &mut ValuesStorage, enabled: bool) -> Result<()> {
-    storage.set_value(
-        bifrost_admin::ADMIN_REMOTE_ACCESS_ENABLED_KEY,
-        if enabled { "true" } else { "false" },
-    )?;
-    Ok(())
-}
-
-fn get_remote_enabled(storage: &ValuesStorage) -> bool {
-    storage
-        .get_value(bifrost_admin::ADMIN_REMOTE_ACCESS_ENABLED_KEY)
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn has_password(storage: &ValuesStorage) -> bool {
-    storage
-        .get_value(bifrost_admin::ADMIN_AUTH_PASSWORD_HASH_KEY)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
 }
 
 pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
     match action {
         AdminCommands::Remote { action } => {
-            let mut storage = open_values_storage()?;
+            let db = open_auth_db()?;
             match action {
                 AdminRemoteCommands::Enable => {
-                    if !has_password(&storage) {
+                    if !db.has_password() {
                         println!(
                             "Admin password not set yet. Please set a password to enable remote access."
                         );
                         let pwd = prompt_new_password().map_err(|e| {
                             BifrostError::Config(format!("Failed to read password: {e}"))
                         })?;
-                        ensure_username(&mut storage, "admin")?;
-                        set_password(&mut storage, &pwd)?;
+                        ensure_username(&db, "admin")?;
+                        set_password(&db, &pwd)?;
                     }
-                    set_remote_enabled(&mut storage, true)?;
+                    db.set_remote_access_enabled(true)?;
                     println!("Remote admin access: enabled");
                 }
                 AdminRemoteCommands::Disable => {
-                    set_remote_enabled(&mut storage, false)?;
+                    db.set_remote_access_enabled(false)?;
                     println!("Remote admin access: disabled");
                 }
                 AdminRemoteCommands::Status => {
-                    let enabled = get_remote_enabled(&storage);
-                    let username = storage
-                        .get_value(bifrost_admin::ADMIN_AUTH_USERNAME_KEY)
-                        .unwrap_or_else(|| "admin".to_string());
-                    let failed_count = storage
-                        .get_value(bifrost_admin::ADMIN_AUTH_FAILED_COUNT_KEY)
-                        .and_then(|s| s.trim().parse::<u32>().ok())
-                        .unwrap_or(0);
+                    let enabled = db.is_remote_access_enabled();
+                    let username = db.get_username().unwrap_or_else(|| "admin".to_string());
+                    let failed_count = db.get_failed_count();
                     println!(
                         "Remote admin access: {}",
                         if enabled { "enabled" } else { "disabled" }
@@ -115,11 +82,7 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                     println!("Admin username: {}", username.trim());
                     println!(
                         "Admin password: {}",
-                        if has_password(&storage) {
-                            "set"
-                        } else {
-                            "not set"
-                        }
+                        if db.has_password() { "set" } else { "not set" }
                     );
                     println!(
                         "Failed login attempts: {}/{}",
@@ -140,8 +103,8 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
             username,
             password_stdin,
         } => {
-            let mut storage = open_values_storage()?;
-            ensure_username(&mut storage, &username)?;
+            let db = open_auth_db()?;
+            ensure_username(&db, &username)?;
 
             let pwd = if password_stdin {
                 read_password_from_stdin()?
@@ -149,13 +112,13 @@ pub fn handle_admin_command(action: AdminCommands) -> Result<()> {
                 prompt_new_password()
                     .map_err(|e| BifrostError::Config(format!("Failed to read password: {e}")))?
             };
-            set_password(&mut storage, &pwd)?;
+            set_password(&db, &pwd)?;
             println!("Admin password updated.");
         }
         AdminCommands::RevokeAll => {
-            let mut storage = open_values_storage()?;
+            let db = open_auth_db()?;
             let ts = chrono::Utc::now().timestamp();
-            storage.set_value(bifrost_admin::ADMIN_AUTH_REVOKE_BEFORE_KEY, &ts.to_string())?;
+            db.set_revoke_before(ts)?;
             println!("All admin sessions revoked (revoke_before={}).", ts);
         }
         AdminCommands::Audit {

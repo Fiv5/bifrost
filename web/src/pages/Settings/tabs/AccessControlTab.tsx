@@ -20,12 +20,14 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import {
   ClockCircleOutlined,
+  ClearOutlined,
   DeleteOutlined,
   GlobalOutlined,
   LaptopOutlined,
   PlusOutlined,
   ReloadOutlined,
   SafetyOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
 import { useWhitelistStore } from "../../../stores/useWhitelistStore";
 import type { AccessMode } from "../../../types";
@@ -112,6 +114,8 @@ export default function AccessControlTab() {
     setUserPassConfig,
     addTemporary,
     removeTemporary,
+    removeSessionDenied,
+    clearSessionDenied,
     clearError,
   } = useWhitelistStore();
 
@@ -190,6 +194,20 @@ export default function AccessControlTab() {
     const success = await removeTemporary(ip);
     if (success) {
       message.success(`Removed ${ip} from temporary whitelist`);
+    }
+  };
+
+  const handleRemoveSessionDenied = async (ip: string) => {
+    const success = await removeSessionDenied(ip);
+    if (success) {
+      message.success(`Removed ${ip} from denied list`);
+    }
+  };
+
+  const handleClearSessionDenied = async () => {
+    const success = await clearSessionDenied();
+    if (success) {
+      message.success("Cleared all denied IPs");
     }
   };
 
@@ -305,6 +323,34 @@ export default function AccessControlTab() {
           title="Remove from temporary whitelist"
           description={`Remove ${record.ip}?`}
           onConfirm={() => handleRemoveTemp(record.ip)}
+          okText="Yes"
+          cancelText="No"
+        >
+          <Tooltip title="Remove">
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+          </Tooltip>
+        </Popconfirm>
+      ),
+    },
+  ];
+
+  const sessionDeniedColumns: ColumnsType<{ ip: string }> = [
+    {
+      title: "IP Address",
+      dataIndex: "ip",
+      key: "ip",
+      render: (ip: string) => <Text code>{ip}</Text>,
+    },
+    {
+      title: "Actions",
+      key: "actions",
+      width: 100,
+      align: "center",
+      render: (_, record) => (
+        <Popconfirm
+          title="Remove from denied list"
+          description={`Allow ${record.ip} to connect again?`}
+          onConfirm={() => handleRemoveSessionDenied(record.ip)}
           okText="Yes"
           cancelText="No"
         >
@@ -583,6 +629,56 @@ export default function AccessControlTab() {
             />
           </Card>
         </Col>
+
+        {status.session_denied.length > 0 && (
+        <Col xs={24}>
+          <Card
+            title={
+              <Space>
+                <StopOutlined />
+                <span>
+                  Session Denied IPs ({status.session_denied.length})
+                </span>
+              </Space>
+            }
+            size="small"
+            extra={
+              <Popconfirm
+                title="Clear all denied IPs"
+                description="This will allow all previously denied IPs to connect again."
+                onConfirm={handleClearSessionDenied}
+                okText="Yes"
+                cancelText="No"
+              >
+                <Button
+                  icon={<ClearOutlined />}
+                  size="small"
+                  danger
+                  data-testid="settings-session-denied-clear-button"
+                >
+                  Clear All
+                </Button>
+              </Popconfirm>
+            }
+          >
+            <Alert
+              type="info"
+              message="These IPs were denied during this session. They will be blocked until removed or the service restarts."
+              style={{ marginBottom: 12 }}
+              showIcon
+            />
+            <Table
+              columns={sessionDeniedColumns}
+              dataSource={status.session_denied.map((ip) => ({ ip }))}
+              rowKey="ip"
+              loading={loading}
+              size="small"
+              pagination={{ pageSize: 10 }}
+              data-testid="settings-session-denied-table"
+            />
+          </Card>
+        </Col>
+        )}
       </Row>
     </div>
   );

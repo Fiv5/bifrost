@@ -95,11 +95,10 @@ export default function Login() {
           />
         ) : null}
 
-        {loginError && !loginError.locked_out && loginError.remaining_attempts != null ? (
+        {loginError && !loginError.locked_out && loginError.error ? (
           <Alert
             type="warning"
-            message={`Login failed. Remaining attempts: ${loginError.remaining_attempts}`}
-            description={loginError.remaining_attempts <= 2 ? 'Warning: Remote access will be locked and the password will be deleted after multiple failures.' : undefined}
+            message={loginError.error}
             showIcon
             style={{ marginTop: 12 }}
           />

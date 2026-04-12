@@ -559,6 +559,7 @@ export interface WhitelistStatus {
   allow_lan: boolean;
   whitelist: string[];
   temporary_whitelist: string[];
+  session_denied: string[];
   userpass: UserPassStatus;
 }
 

@@ -384,6 +384,22 @@ impl ClientAccessControl {
     pub fn clear_session_denied(&self) {
         let mut denied = self.session_denied.write().unwrap();
         denied.clear();
+        self.increment_generation();
+    }
+
+    pub fn session_denied_entries(&self) -> Vec<IpAddr> {
+        let denied = self.session_denied.read().unwrap();
+        denied.iter().cloned().collect()
+    }
+
+    pub fn remove_session_denied(&self, ip: &IpAddr) -> bool {
+        let mut denied = self.session_denied.write().unwrap();
+        let removed = denied.remove(ip);
+        if removed {
+            self.increment_generation();
+            info!("Removed {} from session denied list", ip);
+        }
+        removed
     }
 
     pub fn whitelist_entries(&self) -> Vec<String> {

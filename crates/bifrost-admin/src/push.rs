@@ -1156,6 +1156,7 @@ impl PushManager {
                     "allow_lan": ac.allow_lan(),
                     "whitelist": ac.whitelist_entries(),
                     "temporary_whitelist": ac.temporary_whitelist_entries().iter().map(|ip| ip.to_string()).collect::<Vec<_>>(),
+                    "session_denied": ac.session_denied_entries().iter().map(|ip| ip.to_string()).collect::<Vec<_>>(),
                     "userpass": {
                         "enabled": userpass.enabled,
                         "accounts": userpass.accounts.into_iter().map(|account| json!({

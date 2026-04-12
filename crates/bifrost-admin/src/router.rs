@@ -189,34 +189,46 @@ impl AdminRouter {
         }
     }
 
+    const AUTH_PUBLIC_PATHS: &[&str] = &["/api/auth/status", "/api/auth/login", "/api/auth/logout"];
+
+    fn is_auth_public_path(path: &str) -> bool {
+        Self::AUTH_PUBLIC_PATHS.contains(&path)
+    }
+
     fn check_api_auth<T>(
         req: &Request<T>,
         state: &SharedAdminState,
         path: &str,
         peer_addr: Option<SocketAddr>,
     ) -> Option<Response<BoxBody>> {
-        if is_remote_access_enabled(state) && !path.starts_with("/api/auth/") {
-            let is_loopback = peer_addr
-                .map(|addr| addr.ip().is_loopback())
-                .unwrap_or(true);
+        if !is_remote_access_enabled(state) {
+            return None;
+        }
 
-            if is_loopback {
-                return None;
-            }
+        if Self::is_auth_public_path(path) {
+            return None;
+        }
 
-            let token = extract_bearer_token(req);
-            let Some(token) = token else {
-                return Some(error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "Missing bearer token",
-                ));
-            };
-            if let Err(e) = validate_admin_jwt(state, &token) {
-                return Some(error_response(
-                    StatusCode::UNAUTHORIZED,
-                    &format!("Unauthorized: {e}"),
-                ));
-            }
+        let is_loopback = peer_addr
+            .map(|addr| addr.ip().is_loopback())
+            .unwrap_or(false);
+
+        if is_loopback {
+            return None;
+        }
+
+        let token = extract_bearer_token(req);
+        let Some(token) = token else {
+            return Some(error_response(
+                StatusCode::UNAUTHORIZED,
+                "Missing bearer token",
+            ));
+        };
+        if let Err(e) = validate_admin_jwt(state, &token) {
+            return Some(error_response(
+                StatusCode::UNAUTHORIZED,
+                &format!("Unauthorized: {e}"),
+            ));
         }
         None
     }
@@ -225,23 +237,21 @@ impl AdminRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::admin_auth::ADMIN_REMOTE_ACCESS_ENABLED_KEY;
+    use crate::admin_auth_db::AuthDb;
     use crate::state::AdminState;
-    use bifrost_storage::ValuesStorage;
 
     fn new_state_remote_enabled() -> (SharedAdminState, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let values_dir = tmp.path().join("values");
-        let storage = ValuesStorage::with_dir(values_dir).expect("values storage");
+        let auth_db_path = tmp.path().join("auth.db");
+        let auth_db = AuthDb::open(&auth_db_path).expect("auth db");
 
-        let state = AdminState::new(19998).with_values_storage(storage);
+        let state = AdminState::new(19998).with_auth_db(auth_db);
         let state = std::sync::Arc::new(state);
         state
-            .values_storage
+            .auth_db
             .as_ref()
             .unwrap()
-            .write()
-            .set_value(ADMIN_REMOTE_ACCESS_ENABLED_KEY, "true")
+            .set_remote_access_enabled(true)
             .expect("enable remote access");
         (state, tmp)
     }
@@ -285,17 +295,93 @@ mod tests {
             .body(())
             .unwrap();
         let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/status", remote_peer());
-        assert!(resp.is_none());
+        assert!(resp.is_none(), "auth/status should be public");
+
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/login")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/login", remote_peer());
+        assert!(resp.is_none(), "auth/login should be public");
+
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/logout")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/logout", remote_peer());
+        assert!(resp.is_none(), "auth/logout should be public");
     }
 
     #[test]
-    fn test_check_api_auth_skips_when_peer_addr_none() {
+    fn test_check_api_auth_rejects_remote_passwd_without_token() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/passwd")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/passwd", remote_peer())
+            .expect("should reject remote passwd without token");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_check_api_auth_rejects_remote_remote_toggle_without_token() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/remote")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/remote", remote_peer())
+            .expect("should reject remote toggle without token");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_check_api_auth_rejects_remote_revoke_all_without_token() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/revoke-all")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/revoke-all", remote_peer())
+            .expect("should reject remote revoke-all without token");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_check_api_auth_allows_loopback_passwd() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/passwd")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/passwd", loopback_peer());
+        assert!(resp.is_none(), "loopback should access passwd freely");
+    }
+
+    #[test]
+    fn test_check_api_auth_allows_loopback_remote_toggle() {
+        let (state, _tmp) = new_state_remote_enabled();
+        let req = Request::builder()
+            .uri("/_bifrost/api/auth/remote")
+            .body(())
+            .unwrap();
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/auth/remote", loopback_peer());
+        assert!(
+            resp.is_none(),
+            "loopback should access remote toggle freely"
+        );
+    }
+
+    #[test]
+    fn test_check_api_auth_rejects_when_peer_addr_none() {
         let (state, _tmp) = new_state_remote_enabled();
         let req = Request::builder()
             .uri("/_bifrost/api/system/status")
             .body(())
             .unwrap();
-        let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status", None);
-        assert!(resp.is_none(), "None peer_addr should default to loopback");
+        let resp = AdminRouter::check_api_auth(&req, &state, "/api/system/status", None)
+            .expect("None peer_addr should default to non-local and require token");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_LOGIN_RECORDS: i64 = 100;
 const MAX_LOGIN_AGE_DAYS: i64 = 30;
-const AUDIT_SCHEMA_VERSION: u32 = 2;
+const AUDIT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminLoginAuditEntry {

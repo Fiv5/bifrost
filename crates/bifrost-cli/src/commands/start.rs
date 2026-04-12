@@ -113,8 +113,10 @@ fn check_and_resolve_port_conflict(host: &str, port: u16, yes: bool) -> bifrost_
                 )))
             }
         } else {
-            println!("Start cancelled.");
-            std::process::exit(0);
+            Err(bifrost_core::BifrostError::Network(format!(
+                "Port {} is already in use. Start cancelled.",
+                bind_addr
+            )))
         }
     } else {
         println!(
@@ -186,8 +188,10 @@ fn check_and_resolve_port_conflict(host: &str, port: u16, yes: bool) -> bifrost_
             println!("Port freed. Continuing startup...");
             Ok(())
         } else {
-            println!("Start cancelled.");
-            std::process::exit(0);
+            Err(bifrost_core::BifrostError::Network(format!(
+                "Port {} is already in use. Start cancelled.",
+                bind_addr
+            )))
         }
     }
 }
@@ -1042,6 +1046,11 @@ pub fn run_foreground(
             let phase_started_at = Instant::now();
             let values_storage = config_manager.values_storage().await;
             let rules_storage = config_manager.rules_storage().await;
+            let auth_db = {
+                let auth_db_path =
+                    bifrost_admin::admin_auth_db::auth_db_path_in(&bifrost_dir)?;
+                bifrost_admin::admin_auth_db::AuthDb::open(&auth_db_path)?
+            };
             let mut values = {
                 use bifrost_core::ValueStore;
                 values_storage.as_hashmap()
@@ -1105,6 +1114,7 @@ pub fn run_foreground(
                 .with_runtime_config(runtime_config)
                 .with_connection_registry(connection_registry)
                 .with_values_storage(values_storage)
+                .with_auth_db(auth_db)
                 .with_rules_storage(rules_storage)
                 .with_ca_cert_path(ca_cert_path)
                 .with_system_proxy_manager_shared(system_proxy_manager.clone())
@@ -1701,6 +1711,11 @@ pub fn run_daemon(
 
                     let values_storage = config_manager.values_storage().await;
                     let rules_storage = config_manager.rules_storage().await;
+                    let auth_db = {
+                        let auth_db_path =
+                            bifrost_admin::admin_auth_db::auth_db_path_in(&bifrost_dir)?;
+                        bifrost_admin::admin_auth_db::AuthDb::open(&auth_db_path)?
+                    };
                     let mut values = {
                         use bifrost_core::ValueStore;
                         values_storage.as_hashmap()
@@ -1754,6 +1769,7 @@ pub fn run_daemon(
                         .with_runtime_config(runtime_config)
                         .with_connection_registry(connection_registry)
                         .with_values_storage(values_storage)
+                        .with_auth_db(auth_db)
                         .with_rules_storage(rules_storage)
                         .with_ca_cert_path(ca_cert_path)
                         .with_system_proxy_manager_shared(system_proxy_manager.clone())
