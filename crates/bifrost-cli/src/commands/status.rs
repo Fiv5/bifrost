@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::process::{is_process_running, read_pid};
+use crate::process::{is_process_running, read_runtime_info};
 
 #[derive(Debug, Deserialize)]
 struct RuleGroup {
@@ -26,15 +26,24 @@ pub fn run_status() -> bifrost_core::Result<()> {
     println!("Bifrost Proxy Status");
     println!("====================");
 
-    let is_running = match read_pid() {
-        Some(pid) => {
-            if is_process_running(pid) {
+    let runtime_info = read_runtime_info();
+
+    let is_running = match &runtime_info {
+        Some(info) => {
+            if is_process_running(info.pid) {
                 println!("Status: Running");
-                println!("PID: {}", pid);
+                println!("PID: {}", info.pid);
+                println!("Port: {}", info.port);
+                if let Some(ref host) = info.host {
+                    println!("Host: {}", host);
+                }
+                if let Some(socks5_port) = info.socks5_port {
+                    println!("SOCKS5 Port: {}", socks5_port);
+                }
                 true
             } else {
                 println!("Status: Stopped (stale PID file exists)");
-                println!("Stale PID: {}", pid);
+                println!("Stale PID: {}", info.pid);
                 false
             }
         }
@@ -50,7 +59,7 @@ pub fn run_status() -> bifrost_core::Result<()> {
     println!("-----------");
 
     if is_running {
-        let port = 9900;
+        let port = runtime_info.map(|info| info.port).unwrap_or(9900);
         match fetch_rules_from_api(port) {
             Some(groups) => {
                 let enabled_groups: Vec<_> = groups.iter().filter(|g| g.enabled).collect();

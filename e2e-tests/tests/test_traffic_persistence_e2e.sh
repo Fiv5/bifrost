@@ -116,7 +116,7 @@ start_proxy() {
             return 0
         fi
         sleep 1
-        ((waited++))
+        waited=$((waited + 1))
     done
     
     log_fail "Failed to start proxy within ${max_wait} seconds"
@@ -159,7 +159,7 @@ restart_proxy() {
             return 0
         fi
         sleep 1
-        ((waited++))
+        waited=$((waited + 1))
     done
     
     log_fail "Failed to restart proxy within ${max_wait} seconds"
@@ -186,7 +186,7 @@ start_mock_server() {
             return 0
         fi
         sleep 1
-        ((waited++))
+        waited=$((waited + 1))
     done
     return 1
 }

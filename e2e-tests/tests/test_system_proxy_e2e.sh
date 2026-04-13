@@ -212,10 +212,10 @@ test_enable_on_startup() {
         Darwin)
             if macos_check_proxy_enabled_for_any_service "127.0.0.1" "$PROXY_PORT"; then
                 _log_pass "macOS: 系统代理设置正确"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "macOS: 未检测到正确的系统代理设置" "127.0.0.1:${PROXY_PORT}" "networksetup 状态不匹配"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
         MINGW*|MSYS*|CYGWIN*)
@@ -223,10 +223,10 @@ test_enable_on_startup() {
             server="$(windows_proxy_server)"
             if windows_proxy_enabled && windows_proxy_matches "$server" "127.0.0.1:${PROXY_PORT}"; then
                 _log_pass "Windows: 系统代理设置正确"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "Windows: 未检测到正确的系统代理设置" "127.0.0.1:${PROXY_PORT}" "${server:-disabled}"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
     esac
@@ -239,19 +239,19 @@ test_disable_on_startup() {
         Darwin)
             if macos_check_proxy_disabled_for_all_services; then
                 _log_pass "macOS: 未启用系统代理（符合预期）"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "macOS: 未启用系统代理检查失败" "Disabled" "存在 Enabled=Yes"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
         MINGW*|MSYS*|CYGWIN*)
             if ! windows_proxy_enabled; then
                 _log_pass "Windows: 未启用系统代理（符合预期）"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "Windows: 未启用系统代理检查失败" "Disabled" "$(windows_proxy_server)"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
     esac
@@ -268,19 +268,19 @@ test_restore_on_exit() {
         Darwin)
             if macos_check_proxy_disabled_for_all_services; then
                 _log_pass "macOS: 代理退出后系统代理已恢复"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "macOS: 代理退出后系统代理未恢复" "全部服务 Disabled" "存在 Enabled=Yes"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
         MINGW*|MSYS*|CYGWIN*)
             if ! windows_proxy_enabled; then
                 _log_pass "Windows: 代理退出后系统代理已恢复"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "Windows: 代理退出后系统代理未恢复" "Disabled" "$(windows_proxy_server)"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
     esac
@@ -300,19 +300,19 @@ test_crash_recovery() {
         Darwin)
             if macos_check_proxy_enabled_for_any_service "127.0.0.1" "$PROXY_PORT"; then
                 _log_pass "macOS: 崩溃后系统代理仍保持启用（符合预期）"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "macOS: 崩溃后系统代理未保持启用" "保持启用" "未启用或端口不匹配"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
         MINGW*|MSYS*|CYGWIN*)
             if windows_proxy_enabled && windows_proxy_matches "$(windows_proxy_server)" "127.0.0.1:${PROXY_PORT}"; then
                 _log_pass "Windows: 崩溃后系统代理仍保持启用（符合预期）"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "Windows: 崩溃后系统代理未保持启用" "127.0.0.1:${PROXY_PORT}" "$(windows_proxy_server)"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
     esac
@@ -321,19 +321,19 @@ test_crash_recovery() {
         Darwin)
             if macos_check_proxy_disabled_for_all_services; then
                 _log_pass "macOS: 再次启动未启用系统代理，崩溃恢复生效"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "macOS: 崩溃恢复未生效" "Disabled" "存在 Enabled=Yes"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
         MINGW*|MSYS*|CYGWIN*)
             if ! windows_proxy_enabled; then
                 _log_pass "Windows: 再次启动未启用系统代理，崩溃恢复生效"
-                ((passed++))
+                passed=$((passed + 1))
             else
                 _log_fail "Windows: 崩溃恢复未生效" "Disabled" "$(windows_proxy_server)"
-                ((failed++))
+                failed=$((failed + 1))
             fi
             ;;
     esac

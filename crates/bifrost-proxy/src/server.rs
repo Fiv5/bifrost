@@ -1413,7 +1413,10 @@ async fn handle_request(
         }
     }
 
-    if path.starts_with(ADMIN_PATH_PREFIX) {
+    let is_proxy_request_to_other_server =
+        is_proxy_request_targeting_other(&req, proxy_config.port, &proxy_config.host);
+
+    if path.starts_with(ADMIN_PATH_PREFIX) && !is_proxy_request_to_other_server {
         if let Some(state) = admin_state {
             if let Ok(value) = hyper::header::HeaderValue::from_str(&peer_addr.ip().to_string()) {
                 req.headers_mut().insert(
@@ -1473,7 +1476,7 @@ async fn handle_request(
         }
     }
 
-    if path == "/login.html" {
+    if path == "/login.html" && !is_proxy_request_to_other_server {
         if let Some(state) = admin_state {
             if is_loopback {
                 return Ok(convert_admin_response(
@@ -1485,7 +1488,7 @@ async fn handle_request(
         return Ok(error_response(503, "Admin interface not enabled"));
     }
 
-    if is_admin_virtual_host_request(&req) {
+    if is_admin_virtual_host_request(&req) && !is_proxy_request_to_other_server {
         if let Some(state) = admin_state {
             if is_loopback {
                 debug!(
@@ -1867,6 +1870,45 @@ fn is_admin_virtual_host_request(req: &Request<Incoming>) -> bool {
     }
 
     false
+}
+
+fn is_proxy_request_targeting_other(
+    req: &Request<Incoming>,
+    self_port: u16,
+    self_host: &str,
+) -> bool {
+    let uri = req.uri();
+    if uri.scheme().is_none() && uri.host().is_none() {
+        return false;
+    }
+
+    let target_host = match uri.host() {
+        Some(h) => h,
+        None => return false,
+    };
+    let target_port = uri.port_u16().unwrap_or(80);
+
+    if target_port != self_port {
+        return true;
+    }
+
+    let is_loopback_target =
+        target_host == "127.0.0.1" || target_host == "localhost" || target_host == "[::1]";
+    let self_is_loopback =
+        self_host == "127.0.0.1" || self_host == "localhost" || self_host == "[::1]";
+    let self_is_wildcard = self_host == "0.0.0.0" || self_host == "[::]";
+
+    if target_host == self_host {
+        return false;
+    }
+    if is_loopback_target && (self_is_loopback || self_is_wildcard) {
+        return false;
+    }
+    if self_is_wildcard {
+        return false;
+    }
+
+    true
 }
 
 fn rewrite_virtual_host_request(req: Request<Incoming>) -> Request<Incoming> {

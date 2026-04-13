@@ -491,6 +491,10 @@ export default function TrafficDetail({
       ? record.socket_status?.is_open ?? !record.end_time
       : false;
 
+    const effectiveResponseHeaders = (record.response_headers && record.response_headers.length > 0)
+      ? record.response_headers
+      : record.original_response_headers ?? null;
+
     return [
       {
         key: "Header",
@@ -511,10 +515,10 @@ export default function TrafficDetail({
       {
         key: "Set-Cookie",
         label: "Set-Cookie",
-        enable: hasSetCookies(record.response_headers),
+        enable: hasSetCookies(effectiveResponseHeaders),
         children: (
           <CookieView
-            headers={record.response_headers}
+            headers={effectiveResponseHeaders}
             type="response"
             searchValue={responseSearch}
             onSearch={setResponseSearch}
@@ -597,7 +601,7 @@ export default function TrafficDetail({
             type="response"
             protocol={record.protocol}
             status={record.status}
-            headers={record.response_headers}
+            headers={effectiveResponseHeaders}
             body={responseBody}
             searchValue={responseSearch}
             onSearch={setResponseSearch}

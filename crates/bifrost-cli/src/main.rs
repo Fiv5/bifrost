@@ -39,6 +39,7 @@ fn main() {
     let cli = Cli::parse();
 
     let is_daemon_mode = matches!(&cli.command, Some(Commands::Start { daemon: true, .. }));
+    let is_start_foreground = matches!(&cli.command, Some(Commands::Start { daemon: false, .. }));
 
     let _log_guard = if is_daemon_mode {
         None
@@ -50,7 +51,11 @@ fn main() {
 
         let log_outputs = LogOutput::parse(&cli.log_output);
         let log_outputs = if log_outputs.is_empty() {
-            vec![LogOutput::Console, LogOutput::File]
+            if is_start_foreground {
+                vec![LogOutput::Console, LogOutput::File]
+            } else {
+                vec![LogOutput::Console]
+            }
         } else {
             log_outputs
         };

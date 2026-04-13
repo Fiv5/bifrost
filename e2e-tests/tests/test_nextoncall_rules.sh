@@ -349,21 +349,21 @@ run_tests() {
     echo ""
 
     if test_http_root_forward; then
-        ((passed++)) || true
+        passed= 
     else
-        ((failed++)) || true
+        failed= 
     fi
 
     if test_http_api_path; then
-        ((passed++)) || true
+        passed= 
     else
-        ((failed++)) || true
+        failed= 
     fi
 
     if test_websocket_forward; then
-        ((passed++)) || true
+        passed= 
     else
-        ((failed++)) || true
+        failed= 
     fi
 
     echo ""

@@ -116,6 +116,9 @@ wait_for_mock_servers_ready() {
     start_ts="$(date +%s)"
     while true; do
         if is_ws_echo_ready && is_wss_echo_ready; then
+            # Small extra grace period to ensure background logging doesn't overlap
+            # if multiple shells are polling the same file.
+            sleep 0.5
             return 0
         fi
         local now_ts
@@ -123,7 +126,7 @@ wait_for_mock_servers_ready() {
         if (( now_ts - start_ts >= timeout_secs )); then
             return 1
         fi
-        sleep 0.2
+        sleep 0.5
     done
 }
 
@@ -306,9 +309,18 @@ run_single_test() {
     local data_dir="${RESULTS_DIR}/data_${test_index}"
 
     local timeout="${TIMEOUT:-60}"
-    local fixture_timeout="${BIFROST_E2E_FIXTURE_TIMEOUT:-180}"
+    local fixture_timeout="${BIFROST_E2E_FIXTURE_TIMEOUT:-120}"
 
     mkdir -p "$data_dir"
+
+    if ! port_is_available "$proxy_port" 2>/dev/null; then
+        kill_bifrost_on_port "$proxy_port"
+        local wait_free=0
+        while ! port_is_available "$proxy_port" 2>/dev/null && [[ $wait_free -lt 50 ]]; do
+            sleep_seconds 0.1
+            wait_free=$((wait_free + 1))
+        done
+    fi
 
     local http_retries="${BIFROST_E2E_HTTP_RETRIES:-2}"
 
@@ -504,21 +516,19 @@ aggregate_results() {
         echo -e "${RED}失败的测试套件:${NC}"
         for suite in "${failed_suites[@]}"; do
             echo "  - $suite"
-            if [[ "$VERBOSE" == "true" ]]; then
-                for f in "${RESULTS_DIR}"/result_*.txt; do
-                    if grep -q "TEST_FILE=$suite" "$f" 2>/dev/null; then
-                        local idx="${f##*result_}"
-                        idx="${idx%.txt}"
-                        local log_file="${RESULTS_DIR}/log_${idx}.txt"
-                        if [[ -f "$log_file" ]]; then
-                            print_failure_diagnostics "$log_file"
-                            echo -e "    ${YELLOW}最后 20 行日志:${NC}"
-                            tail -20 "$log_file" | sed 's/^/      /'
-                        fi
-                        break
+            for f in "${RESULTS_DIR}"/result_*.txt; do
+                if grep -q "TEST_FILE=$suite" "$f" 2>/dev/null; then
+                    local idx="${f##*result_}"
+                    idx="${idx%.txt}"
+                    local log_file="${RESULTS_DIR}/log_${idx}.txt"
+                    if [[ -f "$log_file" ]]; then
+                        print_failure_diagnostics "$log_file"
+                        echo -e "    ${YELLOW}最后 30 行日志:${NC}"
+                        tail -30 "$log_file" | sed 's/^/      /'
                     fi
-                done
-            fi
+                    break
+                fi
+            done
         done
         echo ""
     fi
@@ -537,6 +547,7 @@ aggregate_results() {
 }
 
 cleanup() {
+    set +e
     info "清理资源..."
 
     # 确保无论成功/失败/中断，都能回收后台任务，避免残留 bifrost/mock 进程占用端口。
@@ -917,7 +928,10 @@ main() {
 
     info "选择可用端口段..."
     local selected_base_port
-    selected_base_port=$(pick_available_base_port "$BASE_PORT" "$total_suites")
+    if ! selected_base_port=$(pick_available_base_port "$BASE_PORT" "$total_suites"); then
+        echo -e "${RED}✗${NC} 无法找到 $total_suites 个连续可用端口 (起始请求: $BASE_PORT)"
+        exit 1
+    fi
     BASE_PORT="$selected_base_port"
     info "已选择起始端口: $BASE_PORT"
 

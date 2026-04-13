@@ -763,17 +763,34 @@ fn validate_speed_value(
 ) -> Option<ParseError> {
     match value.parse::<u64>() {
         Ok(0) => Some(
-            ParseError::with_range(line_num, start_col, end_col, "Speed limit cannot be 0.".to_string())
-                .with_severity(ParseErrorSeverity::Error)
-                .with_code("E013")
-                .with_suggestion("Speed must be greater than 0 (bytes per second). Example: reqSpeed://1024 (1 KB/s)")
+            ParseError::with_range(
+                line_num,
+                start_col,
+                end_col,
+                "Speed limit cannot be 0.".to_string(),
+            )
+            .with_severity(ParseErrorSeverity::Error)
+            .with_code("E013")
+            .with_suggestion(
+                "Speed must be greater than 0 (KB per second). Example: reqSpeed://1024 (1 MB/s)",
+            ),
         ),
         Ok(_) => None,
         Err(_) => Some(
-            ParseError::with_range(line_num, start_col, end_col, format!("Invalid speed value: '{}'. Expected a number in bytes per second.", value))
-                .with_severity(ParseErrorSeverity::Error)
-                .with_code("E013")
-                .with_suggestion("Speed must be a positive number (bytes per second). Example: resSpeed://10240 (10 KB/s)")
+            ParseError::with_range(
+                line_num,
+                start_col,
+                end_col,
+                format!(
+                    "Invalid speed value: '{}'. Expected a number in KB per second.",
+                    value
+                ),
+            )
+            .with_severity(ParseErrorSeverity::Error)
+            .with_code("E013")
+            .with_suggestion(
+                "Speed must be a positive number (KB per second). Example: resSpeed://10 (10 KB/s)",
+            ),
         ),
     }
 }

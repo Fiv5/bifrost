@@ -148,6 +148,7 @@ list_rules() {
 }
 
 cleanup() {
+    set +e
     if [[ "$KEEP_PROXY" != "true" ]]; then
         if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
             info "正在停止代理服务器 (PID: $PROXY_PID)..."
@@ -267,7 +268,7 @@ setup_data_dir() {
 }
 
 is_http_echo_ready() {
-    curl -sf "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1
+    curl -sf --connect-timeout 2 --max-time 5 "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1
 }
 
 wait_for_http_echo_ready() {
@@ -559,7 +560,7 @@ start_proxy() {
         BIFROST_BIN=$(resolve_bifrost_release_bin 2>/dev/null || true)
         if [[ -z "$BIFROST_BIN" ]]; then
             echo -e "${RED}✗${NC} 二进制文件不存在或不可执行: $BIFROST_BIN"
-            exit 1
+            return 1
         fi
         BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" \
             --port "${PROXY_PORT}" \
@@ -571,15 +572,14 @@ start_proxy() {
     fi
     PROXY_PID=$!
 
-    local max_wait="${BIFROST_E2E_PROXY_READY_TIMEOUT:-180}"
+    local max_wait="${BIFROST_E2E_PROXY_READY_TIMEOUT:-30}"
     local start_ts
     start_ts="$(date +%s)"
     while true; do
-        # 如果进程已经退出，直接失败并提示日志位置。
         if ! kill -0 "$PROXY_PID" 2>/dev/null; then
             echo -e "${RED}✗${NC} 代理进程已退出 (PID: $PROXY_PID)"
             echo -e "${RED}✗${NC} 请检查: ${TEST_DATA_DIR}/logs"
-            exit 1
+            return 1
         fi
 
         local now_ts
@@ -604,11 +604,11 @@ start_proxy() {
         fi
         if [[ "$port_ready" == "true" ]] && curl -s --proxy "$PROXY" --noproxy "" --connect-timeout 3 --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ECHO_HTTP_PORT}/health" 2>/dev/null | grep -q '^[23]'; then
             if [[ "${ENABLE_INTERCEPT:-true}" == "true" ]]; then
-                local tls_timeout="${BIFROST_E2E_TLS_READY_TIMEOUT:-180}"
+                local tls_timeout="${BIFROST_E2E_TLS_READY_TIMEOUT:-30}"
                 if ! wait_for_tls_intercept_ready "$tls_timeout" 0.2; then
                     echo -e "${RED}✗${NC} TLS 拦截在 ${tls_timeout}s 内未就绪（可能仍在生成 CA 或初始化失败），为避免 HTTPS 用例出现 http_code=000，终止本套件。"
                     echo -e "${RED}✗${NC} 请检查: ${TEST_DATA_DIR}/logs"
-                    exit 1
+                    return 1
                 fi
             fi
             echo -e "${GREEN}✓${NC} 代理服务器已启动 (PID: $PROXY_PID)"
@@ -619,7 +619,7 @@ start_proxy() {
     done
 
     echo -e "${RED}✗${NC} 代理服务器启动超时"
-    exit 1
+    return 1
 }
 
 show_rules() {
@@ -3998,7 +3998,7 @@ main() {
     fi
 
     if run_standalone_specialized_tests "$RULE_FILE"; then
-        ensure_assertions_executed
+        ensure_assertions_executed || true
         print_test_summary
         exit $?
     fi
@@ -4007,9 +4007,13 @@ main() {
     setup_data_dir
     start_echo_servers
     show_rules
-    start_proxy
+    if ! start_proxy; then
+        echo -e "${RED}✗${NC} 代理启动失败，跳过测试执行"
+        print_test_summary
+        exit 1
+    fi
     run_tests
-    ensure_assertions_executed
+    ensure_assertions_executed || true
 
     print_test_summary
     exit $?

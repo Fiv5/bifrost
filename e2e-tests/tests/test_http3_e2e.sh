@@ -52,7 +52,7 @@ kill_process_on_port() {
 }
 
 check_httpbin_reachable() {
-    ((HTTPBIN_CHECK_COUNT++)) || true
+    HTTPBIN_CHECK_COUNT= 
     if [[ "$HTTPBIN_CHECK_COUNT" -gt 5 ]]; then
         HTTPBIN_REACHABLE=""
         HTTPBIN_CHECK_COUNT=1
@@ -78,7 +78,7 @@ skip_pass() {
     local message="$1"
     local reason="${2:-httpbin.org unreachable}"
     echo -e "  \033[0;33m⊘\033[0m $message (skipped: $reason)"
-    ((passed++))
+    passed=$((passed + 1))
 }
 
 mark_pass() {
@@ -212,15 +212,15 @@ test_http3_client_direct() {
 
     local output
     output=$(cd "$ROOT_DIR" && \
-        run_with_timeout 60 "$CARGO_BIN" test -p bifrost-proxy --test upstream_http3_e2e --release --all-features test_http_proxy_to_h3_origin_enabled_by_rule -- --exact --nocapture 2>&1) || true
+        run_with_timeout 60 "$CARGO_BIN" test -p bifrost-proxy --test upstream_http3_e2e --release --all-features test_http_proxy_to_h3_origin_enabled_by_rule -- --exact --nocapture 2>&1)
     
     if echo "$output" | grep -q "test test_http_proxy_to_h3_origin_enabled_by_rule ... ok"; then
         _log_pass "HTTP/3 upstream integration test passed"
-        ((passed++))
+        passed=$((passed + 1))
     elif echo "$output" | grep -qE "error\[E|FAILED|panicked"; then
         echo "Output: ${output:(-500)}"
         _log_fail "HTTP/3 upstream integration test" "test ... ok" "test failed or timed out"
-        ((failed++))
+        failed=$((failed + 1))
     else
         echo "[INFO] HTTP/3 upstream integration test could not be verified (QUIC may be unavailable in this environment)"
         echo "Output (last 200 chars): ${output:(-200)}"
@@ -254,15 +254,15 @@ test_http_proxy_basic() {
     http_get "http://httpbin.org/get?test=http3"
     
     if assert_status_2xx "$HTTP_STATUS" "HTTP proxy GET request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if assert_body_contains "\"test\": \"http3\"" "$HTTP_BODY" "Response preserves forwarded query parameter"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -280,15 +280,15 @@ test_https_proxy_basic() {
     https_request "https://httpbin.org/get?test=https-h3"
     
     if assert_status_2xx "$HTTP_STATUS" "HTTPS proxy GET request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if assert_body_contains "https-h3" "$HTTP_BODY" "HTTPS response contains query parameter"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -307,29 +307,29 @@ test_rule_header_modification() {
     https_request "https://httpbin.org/headers"
     
     if assert_status_2xx "$HTTP_STATUS" "Header test request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if [[ "$HTTP_BODY" == *"X-H3-Test"* ]]; then
         mark_pass "Request header X-H3-Test added"
-        ((passed++))
+        passed=$((passed + 1))
     elif assert_proxy_log_contains "protocol=reqHeaders value=X-H3-Test:enabled" "Request header rule matched in proxy logs"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
         mark_fail "Request header X-H3-Test added" "Contains 'X-H3-Test'" "${HTTP_BODY:0:200}..."
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if [[ "$HTTP_BODY" == *"enabled"* ]]; then
         mark_pass "X-H3-Test header value is 'enabled'"
-        ((passed++))
+        passed=$((passed + 1))
     elif assert_proxy_log_contains "protocol=reqHeaders value=X-H3-Test:enabled" "Request header value confirmed by proxy logs"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
         mark_fail "X-H3-Test header value is 'enabled'" "Contains 'enabled'" "${HTTP_BODY:0:200}..."
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -347,19 +347,19 @@ test_rule_user_agent() {
     https_request "https://httpbin.org/user-agent"
     
     if assert_status_2xx "$HTTP_STATUS" "User-Agent test request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if [[ "$HTTP_BODY" == *"BifrostH3Test"* ]]; then
         mark_pass "User-Agent was overridden"
-        ((passed++))
+        passed=$((passed + 1))
     elif assert_proxy_log_contains "protocol=ua value=BifrostH3Test/1.0" "User-Agent override matched in proxy logs"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
         mark_fail "User-Agent was overridden" "Contains 'BifrostH3Test'" "${HTTP_BODY:0:200}..."
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -377,19 +377,19 @@ test_rule_response_header() {
     https_request "https://httpbin.org/get"
     
     if assert_status_2xx "$HTTP_STATUS" "Response header test request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if printf '%s' "$HTTP_HEADERS" | grep -qi '^X-Proxy-Protocol:'; then
         mark_pass "Response header X-Proxy-Protocol added"
-        ((passed++))
+        passed=$((passed + 1))
     elif assert_proxy_log_contains "protocol=resHeaders value=X-Proxy-Protocol:h3-test" "Response header rule matched in proxy logs"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
         mark_fail "Response header X-Proxy-Protocol added" "Header 'X-Proxy-Protocol' present" "Header not found"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -407,15 +407,15 @@ test_rule_host_forwarding() {
     http_get "http://h3-forward-test.local/get?forwarded=true"
     
     if assert_status_2xx "$HTTP_STATUS" "Host forwarding request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if assert_body_contains "forwarded" "$HTTP_BODY" "Request was forwarded to httpbin"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -433,15 +433,15 @@ test_rule_response_body_append() {
     http_get "http://h3-body-test.local/html"
     
     if assert_status_2xx "$HTTP_STATUS" "Body append test request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if assert_body_contains "H3-APPENDED" "$HTTP_BODY" "Response body was appended"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -460,15 +460,15 @@ test_post_request() {
     https_request "https://httpbin.org/post" "POST" "$post_data" "Content-Type: application/json"
     
     if assert_status_2xx "$HTTP_STATUS" "POST request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if assert_body_contains "hello world" "$HTTP_BODY" "POST body was sent correctly"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -486,18 +486,18 @@ test_large_response() {
     https_request "https://httpbin.org/bytes/10000"
     
     if assert_status_2xx "$HTTP_STATUS" "Large response request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     local body_len=${#HTTP_BODY}
     if [ "$body_len" -ge 9000 ]; then
         _log_pass "Large response body received (${body_len} bytes)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Large response body" ">= 9000 bytes" "${body_len} bytes"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -518,17 +518,17 @@ test_streaming_response() {
     local duration=$((end_time - start_time))
     
     if assert_status_2xx "$HTTP_STATUS" "Streaming response request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if [ "$duration" -ge 1 ]; then
         _log_pass "Streaming response took ${duration}s (expected ~2s)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Streaming response duration" ">= 1s" "${duration}s"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -555,10 +555,10 @@ test_websocket_detection() {
     
     if [[ "$ws_response" =~ ^[0-9]+$ ]]; then
         _log_pass "WebSocket upgrade request handled (status: $ws_response)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_pass "WebSocket upgrade detection passed (response: ${ws_response:0:50}...)"
-        ((passed++))
+        passed=$((passed + 1))
     fi
 }
 
@@ -587,13 +587,13 @@ test_sse_detection() {
     
     if [[ "$sse_status" == "timeout" ]]; then
         _log_pass "SSE request was properly streamed (timeout expected for streaming)"
-        ((passed++))
+        passed=$((passed + 1))
     elif [[ "$sse_status" =~ ^2[0-9]{2}$ ]]; then
         _log_pass "SSE request successful (status: $sse_status)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_pass "SSE detection test completed (status: $sse_status)"
-        ((passed++))
+        passed=$((passed + 1))
     fi
 }
 
@@ -616,10 +616,10 @@ test_admin_traffic_recording() {
     
     if echo "$traffic_response" | grep -q "traffic_test"; then
         _log_pass "Traffic was recorded in admin API"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_pass "Traffic recording API responded (may not contain specific test)"
-        ((passed++))
+        passed=$((passed + 1))
     fi
 }
 
@@ -633,18 +633,18 @@ test_admin_metrics() {
     
     if echo "$metrics_response" | jq -e '.total_requests >= 0' > /dev/null 2>&1; then
         _log_pass "Metrics API returned valid data"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Metrics API" "Valid JSON with total_requests" "$metrics_response"
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if echo "$metrics_response" | jq -e '.https.requests >= 0' > /dev/null 2>&1; then
         _log_pass "HTTPS request metrics available"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "HTTPS metrics" "Valid https.requests field" "Field missing"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -682,10 +682,10 @@ test_concurrent_requests() {
     
     if [ "$success_count" -ge 4 ]; then
         _log_pass "Concurrent requests handled ($success_count/5 successful)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Concurrent requests" ">= 4 successful" "$success_count successful"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -698,10 +698,10 @@ test_error_handling() {
     
     if [[ "$HTTP_STATUS" =~ ^[45][0-9]{2}$ ]] || [[ "$HTTP_STATUS" == "000" ]]; then
         _log_pass "Invalid domain handled gracefully (status: $HTTP_STATUS)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_pass "Error handling test completed (status: $HTTP_STATUS)"
-        ((passed++))
+        passed=$((passed + 1))
     fi
 }
 
@@ -719,26 +719,26 @@ test_http_methods() {
     
     https_request "https://httpbin.org/put" "PUT" '{"method":"PUT"}' "Content-Type: application/json"
     if assert_status_2xx "$HTTP_STATUS" "PUT request"; then
-        ((passed++))
+        passed=$((passed + 1))
     elif [[ "$HTTP_STATUS" == "000" ]]; then
         echo "[INFO] PUT request returned 000 in this environment; PATCH/DELETE still validated method tunneling."
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     https_request "https://httpbin.org/patch" "PATCH" '{"method":"PATCH"}' "Content-Type: application/json"
     if assert_status_2xx "$HTTP_STATUS" "PATCH request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     https_request "https://httpbin.org/delete" "DELETE"
     if assert_status_2xx "$HTTP_STATUS" "DELETE request"; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -765,10 +765,10 @@ test_redirect_handling() {
     
     if [[ "$status" == "200" ]]; then
         _log_pass "Redirects followed successfully (final status: $status)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Redirect handling" "200" "$status"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -796,10 +796,10 @@ test_compression() {
     
     if [[ "$status" == "200" ]]; then
         _log_pass "Compressed response handled (status: $status)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Compression handling" "200" "$status"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 

@@ -532,9 +532,9 @@ main() {
         case "$ONLY_TEST" in
             external_google)
                 if test_external_google_https; then
-                    ((TESTS_PASSED++)) || true
+                    TESTS_PASSED=$((TESTS_PASSED + 1))
                 else
-                    ((TESTS_FAILED++)) || true
+                    TESTS_FAILED=$((TESTS_FAILED + 1))
                 fi
                 ;;
             *)
@@ -552,14 +552,14 @@ main() {
         exit 0
     fi
     
-    if test_http_basic; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
-    if test_https_passthrough; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
-    if test_https_with_rule_intercept; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
-    if test_https_with_rule_passthrough; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
-    if test_external_google_https; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
-    if test_intercept_mode_blacklist; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
-    if test_intercept_mode_whitelist; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
-    if test_api_update_tls_config; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_http_basic; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+    if test_https_passthrough; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+    if test_https_with_rule_intercept; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+    if test_https_with_rule_passthrough; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+    if test_external_google_https; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+    if test_intercept_mode_blacklist; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+    if test_intercept_mode_whitelist; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+    if test_api_update_tls_config; then TESTS_PASSED=$((TESTS_PASSED + 1)); else TESTS_FAILED=$((TESTS_FAILED + 1)); fi
     
     show_all_logs
     

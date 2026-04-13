@@ -85,67 +85,67 @@ id: ${randomUUID}
 
 ---
 
-## pathReplace
+## urlReplace（兼容别名 pathReplace）
 
 替换 URL 路径中的内容。
 
 ### 语法
 
 ```
-pattern pathReplace://old=new
-pattern pathReplace://(/regex/=replacement)
+pattern urlReplace://old=new
+pattern urlReplace://(/regex/=replacement)
 ```
 
 ### 基础示例
 
 ```bash
 # 简单替换
-www.example.com pathReplace://v1=v2
+www.example.com urlReplace://v1=v2
 
 # 正则替换
-www.example.com pathReplace://(/v\d+/=v3)
+www.example.com urlReplace://(/v\d+/=v3)
 
 # 删除路径部分
-www.example.com pathReplace://api/=
+www.example.com urlReplace://api/=
 ```
 
 ### 使用场景
 
 ```bash
 # API 版本迁移
-www.example.com pathReplace://v1=v2
+www.example.com urlReplace://v1=v2
 
 # 路径重写
-www.example.com pathReplace://old-service=new-service
+www.example.com urlReplace://old-service=new-service
 
 # 环境切换
-www.example.com pathReplace://prod=staging
+www.example.com urlReplace://prod=staging
 
 # 移除前缀
-www.example.com pathReplace://prefix/=
+www.example.com urlReplace://prefix/=
 ```
 
 ### 正则替换
 
 ```bash
 # 替换所有版本号
-www.example.com pathReplace://(/\/v\d+\//=/v999/)
+www.example.com urlReplace://(/\/v\d+\//=/v999/)
 
 # 捕获组替换
-www.example.com pathReplace://(/\/users\/(\d+)/=/api/user/$1)
+www.example.com urlReplace://(/\/users\/(\d+)/=/api/user/$1)
 
 # 大小写不敏感
-www.example.com pathReplace://(/\/API/i=/api)
+www.example.com urlReplace://(/\/API/i=/api)
 ```
 
 ### 测试用例
 
-| 测试场景 | 规则                                  | 原始路径        | 预期路径         |
-| -------- | ------------------------------------- | --------------- | ---------------- |
-| 简单替换 | `test.com pathReplace://old=new`      | `/old/path`     | `/new/path`      |
-| 版本替换 | `test.com pathReplace://v1=v2`        | `/api/v1/users` | `/api/v2/users`  |
-| 正则替换 | `test.com pathReplace://(/v\d+/=v99)` | `/api/v1/users` | `/api/v99/users` |
-| 删除部分 | `test.com pathReplace://prefix/=`     | `/prefix/api`   | `/api`           |
+| 测试场景 | 规则                                 | 原始路径        | 预期路径         |
+| -------- | ------------------------------------ | --------------- | ---------------- |
+| 简单替换 | `test.com urlReplace://old=new`      | `/old/path`     | `/new/path`      |
+| 版本替换 | `test.com urlReplace://v1=v2`        | `/api/v1/users` | `/api/v2/users`  |
+| 正则替换 | `test.com urlReplace://(/v\d+/=v99)` | `/api/v1/users` | `/api/v99/users` |
+| 删除部分 | `test.com urlReplace://prefix/=`     | `/prefix/api`   | `/api`           |
 
 ---
 
@@ -158,10 +158,10 @@ URL 操作规则可以与其他规则组合：
 www.example.com urlParams://debug=true host://debug-server.local
 
 # 路径替换 + 响应修改
-www.example.com pathReplace://v1=v2 resHeaders://X-Api-Version=v2
+www.example.com urlReplace://v1=v2 resHeaders://X-Api-Version=v2
 
 # 多个 URL 操作
-www.example.com pathReplace://old=new urlParams://migrated=true
+www.example.com urlReplace://old=new urlParams://migrated=true
 
 # 配合过滤器
 www.example.com urlParams://test=1 includeFilter://h:X-Test

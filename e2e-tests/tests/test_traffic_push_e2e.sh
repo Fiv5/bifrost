@@ -116,7 +116,7 @@ start_mock_server() {
             return 0
         fi
         sleep 1
-        ((waited++))
+        waited=$((waited + 1))
     done
     return 1
 }

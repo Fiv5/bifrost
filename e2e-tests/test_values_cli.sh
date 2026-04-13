@@ -53,17 +53,17 @@ error() {
 
 pass() {
     echo -e "  ${GREEN}✓${NC} $1"
-    ((PASSED++))
+    PASSED=$((PASSED + 1))
 }
 
 fail() {
     echo -e "  ${RED}✗${NC} $1"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 }
 
 skip() {
     echo -e "  ${YELLOW}○${NC} $1 (skipped)"
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED + 1))
 }
 
 cleanup() {
@@ -209,9 +209,9 @@ test_cli_value_list() {
     result=$(BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value list 2>&1 || true)
 
     local count=0
-    if echo "$result" | grep -q "key1"; then ((count++)); fi
-    if echo "$result" | grep -q "key2"; then ((count++)); fi
-    if echo "$result" | grep -q "key3"; then ((count++)); fi
+    if echo "$result" | grep -q "key1"; then count=$((count + 1)); fi
+    if echo "$result" | grep -q "key2"; then count=$((count + 1)); fi
+    if echo "$result" | grep -q "key3"; then count=$((count + 1)); fi
 
     if [[ $count -ge 3 ]]; then
         pass "value list 列出了所有值 ($count 个)"

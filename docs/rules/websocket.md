@@ -225,4 +225,3 @@ ws://api.example.com/socket ws://test-server.example.com/socket reqDelay://1000
 
 - [host](./routing.md#host) - HTTP/HTTPS 请求转发
 - [proxy](./routing.md#proxy) - HTTP 代理转发
-- [socks](./routing.md#socks) - SOCKS 代理转发

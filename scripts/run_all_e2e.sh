@@ -612,7 +612,11 @@ run_shell_tests_parallel() {
   if [[ ${#parallel_tests[@]} -gt 0 ]]; then
     header "Running ${#parallel_tests[@]} safe shell tests in parallel (jobs=$max_jobs)"
     local span=$(( (${#parallel_tests[@]} - 1) * port_step + 12 ))
-    shell_base_port="$(pick_available_base_port "$shell_base_port" "$span")"
+    shell_base_port="$(pick_available_base_port "$shell_base_port" "$span")" || true
+    if [[ -z "${shell_base_port:-}" || "${shell_base_port:-0}" -lt 1024 ]]; then
+      shell_base_port=15000
+      log_warn "pick_available_base_port failed for shell parallel tests, falling back to $shell_base_port"
+    fi
     _SHELL_BATCH_LIST=("${parallel_tests[@]}")
     run_shell_batch_parallel "$max_jobs" "$shell_base_port" "$port_step"
   fi
@@ -631,7 +635,11 @@ run_shell_test_isolated() {
 
   # Allocate a small contiguous span and derive service ports from it.
   local base
-  base="$(pick_available_base_port 0 32)"
+  base="$(pick_available_base_port 0 32)" || true
+  if [[ -z "${base:-}" || "${base:-0}" -lt 1024 ]]; then
+    base=16000
+    log_warn "pick_available_base_port failed for shell isolated test, falling back to $base"
+  fi
   local shell_port="$base"
 
   local shell_data_dir
@@ -833,10 +841,12 @@ source "$E2E_DIR/test_utils/process.sh"
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 if [[ -z "${BIFROST_UI_TEST_RUNNER_PORT:-}" ]]; then
-  # bifrost-e2e runner uses `--port` as a *base* and will bind to `base + test_index`.
-  # Allocate a contiguous port span to avoid random mid-run conflicts.
   RUNNER_PORT_SPAN="${BIFROST_E2E_RUNNER_PORT_SPAN:-512}"
-  BIFROST_UI_TEST_RUNNER_PORT="$(pick_available_base_port 0 "$RUNNER_PORT_SPAN")"
+  BIFROST_UI_TEST_RUNNER_PORT="$(pick_available_base_port 0 "$RUNNER_PORT_SPAN")" || true
+  if [[ -z "${BIFROST_UI_TEST_RUNNER_PORT:-}" || "${BIFROST_UI_TEST_RUNNER_PORT:-0}" -lt 1024 ]]; then
+    BIFROST_UI_TEST_RUNNER_PORT=18080
+    log_warn "pick_available_base_port failed or returned privileged port, falling back to $BIFROST_UI_TEST_RUNNER_PORT"
+  fi
   export BIFROST_UI_TEST_RUNNER_PORT
 fi
 
