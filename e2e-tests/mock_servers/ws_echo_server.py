@@ -602,6 +602,8 @@ async def start_server(host, port, use_ssl=False):
     print_banner(unicode_banner, ascii_banner)
 
     log(f"Starting WebSocket Echo Server on {protocol}://{host}:{port}...")
+    print("READY")
+    sys.stdout.flush()
     log("Press Ctrl+C to stop\n")
 
     try:

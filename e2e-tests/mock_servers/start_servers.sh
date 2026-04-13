@@ -43,6 +43,8 @@ start_server_process() {
     if [ "$DETACHED_MODE" = true ]; then
         mkdir -p "$SERVER_LOG_DIR"
         local log_file="$SERVER_LOG_DIR/${log_name}.log"
+        # Truncate log file before starting
+        : > "$log_file"
         PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "$py" -c '
 import os
 import subprocess
@@ -91,6 +93,32 @@ else:
         run_python_server "$@" &
     fi
     PIDS+=($!)
+}
+
+check_ws_health() {
+    local port=$1
+    local log_file="$SERVER_LOG_DIR/ws_echo_server.log"
+    # Basic port check first
+    check_tcp_port 127.0.0.1 "$port" || return 1
+    # If in detached mode and log exists, wait for "READY"
+    if [[ "$DETACHED_MODE" == "true" && -f "$log_file" ]]; then
+        grep -Faq "READY" "$log_file"
+        return $?
+    fi
+    return 0
+}
+
+check_wss_health() {
+    local port=$1
+    local log_file="$SERVER_LOG_DIR/wss_echo_server.log"
+    # Basic port check first
+    check_tcp_port 127.0.0.1 "$port" || return 1
+    # If in detached mode and log exists, wait for "READY"
+    if [[ "$DETACHED_MODE" == "true" && -f "$log_file" ]]; then
+        grep -Faq "READY" "$log_file"
+        return $?
+    fi
+    return 0
 }
 
 check_tcp_port() {
@@ -218,8 +246,8 @@ wait_for_all_servers() {
 
     ! should_start_server http || { wait_for_server "check_http_health $HTTP_PORT" "HTTP Echo Server" 30 || failed=1; }
     ! should_start_server https || { wait_for_server "check_https_health $HTTPS_PORT" "HTTPS Echo Server" 45 || failed=1; }
-    ! should_start_server ws || { wait_for_server "check_tcp_port 127.0.0.1 $WS_PORT" "WebSocket Echo Server" 30 || failed=1; }
-    ! should_start_server wss || { wait_for_server "check_tcp_port 127.0.0.1 $WSS_PORT" "WebSocket Secure Echo Server" 45 || failed=1; }
+    ! should_start_server ws || { wait_for_server "check_ws_health $WS_PORT" "WebSocket Echo Server" 30 || failed=1; }
+    ! should_start_server wss || { wait_for_server "check_wss_health $WSS_PORT" "WebSocket Secure Echo Server" 45 || failed=1; }
     ! should_start_server sse || { wait_for_server "check_http_health $SSE_PORT" "SSE Echo Server" 30 || failed=1; }
     ! should_start_server proxy || { wait_for_server "check_http_health $PROXY_PORT" "HTTP Proxy Echo Server" 30 || failed=1; }
 
@@ -242,13 +270,13 @@ status() {
         echo "HTTPS  (port $HTTPS_PORT): ❌ Not running"
     fi
 
-    if check_tcp_port 127.0.0.1 "$WS_PORT"; then
+    if check_ws_health "$WS_PORT"; then
         echo "WS     (port $WS_PORT): ✅ Running"
     else
         echo "WS     (port $WS_PORT): ❌ Not running"
     fi
-
-    if check_tcp_port 127.0.0.1 "$WSS_PORT"; then
+ 
+    if check_wss_health "$WSS_PORT"; then
         echo "WSS    (port $WSS_PORT): ✅ Running"
     else
         echo "WSS    (port $WSS_PORT): ❌ Not running"

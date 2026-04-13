@@ -987,7 +987,8 @@ def main():
         print(f"NOTE: Requested port {port} was busy; bound to {actual_port} instead", flush=True)
     with httpd:
         print(f"Starting HTTP Echo Server on {host}:{actual_port}...")
-        print("READY", flush=True)
+        print("READY")
+        sys.stdout.flush()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

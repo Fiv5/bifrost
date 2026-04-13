@@ -559,6 +559,8 @@ def main():
     with ThreadedHTTPServer((host, port), EchoHandler) as httpd:
         httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
         print(f"Starting HTTPS Echo Server on {host}:{port}...")
+        print("READY")
+        sys.stdout.flush()
         print("Press Ctrl+C to stop\n")
         try:
             httpd.serve_forever()

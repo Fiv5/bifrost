@@ -406,7 +406,8 @@ def run_server(port=3003, host="127.0.0.1"):
     print(f"[SSE]   GET  /sse/json         - JSON payload events")
     print(f"[SSE]   POST /sse/trigger      - Manual trigger")
     print(f"[SSE]   GET  /health           - Health check")
-    print("READY", flush=True)
+    print("READY")
+    sys.stdout.flush()
 
     try:
         httpd.serve_forever()

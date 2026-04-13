@@ -116,6 +116,9 @@ wait_for_mock_servers_ready() {
     start_ts="$(date +%s)"
     while true; do
         if is_ws_echo_ready && is_wss_echo_ready; then
+            # Small extra grace period to ensure background logging doesn't overlap
+            # if multiple shells are polling the same file.
+            sleep 0.5
             return 0
         fi
         local now_ts
@@ -123,7 +126,7 @@ wait_for_mock_servers_ready() {
         if (( now_ts - start_ts >= timeout_secs )); then
             return 1
         fi
-        sleep 0.2
+        sleep 0.5
     done
 }
 
