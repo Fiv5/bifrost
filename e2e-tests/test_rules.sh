@@ -159,7 +159,13 @@ cleanup() {
     fi
 
     if [[ "$SKIP_MOCK_SERVERS" != "true" ]]; then
-        "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+        HTTP_PORT="$ECHO_HTTP_PORT" \
+        HTTPS_PORT="$ECHO_HTTPS_PORT" \
+        WS_PORT="$ECHO_WS_PORT" \
+        WSS_PORT="$ECHO_WSS_PORT" \
+        SSE_PORT="$ECHO_SSE_PORT" \
+        MOCK_ECHO_PROXY_PORT="$ECHO_PROXY_PORT" \
+            "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
     fi
 }
 
@@ -174,11 +180,12 @@ check_dependencies() {
     fi
     echo -e "${GREEN}✓${NC} curl 已安装"
 
-    if ! command -v python3 &> /dev/null; then
-        echo -e "${RED}✗${NC} python3 未安装"
+    PYTHON_BIN="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${PYTHON_BIN:-}" ]]; then
+        echo -e "${RED}✗${NC} python3 (或 python>=3) 未安装"
         exit 1
     fi
-    echo -e "${GREEN}✓${NC} python3 已安装"
+    echo -e "${GREEN}✓${NC} ${PYTHON_BIN} 已安装"
 
     if ! command -v jq &> /dev/null; then
         echo -e "${YELLOW}⚠${NC} jq 未安装 (JSON 断言将被跳过)"
@@ -218,7 +225,7 @@ check_rule_syntax() {
 
     info "检查规则文件语法..."
 
-    if python3 "$check_script" --errors-only "$RULE_FILE"; then
+    if "$PYTHON_BIN" "$check_script" --errors-only "$RULE_FILE"; then
         echo -e "${GREEN}✓${NC} 规则语法检查通过"
         return 0
     else
@@ -267,17 +274,51 @@ is_http_echo_ready() {
 
 wait_for_http_echo_ready() {
     local timeout="${1:-15}"
-    local waited=0
+    local interval="${2:-0.2}"
 
-    while [[ $waited -lt $timeout ]]; do
+    local start_ts
+    start_ts="$(date +%s)"
+
+    while true; do
         if is_http_echo_ready; then
             return 0
         fi
-        sleep 1
-        waited=$((waited + 1))
-    done
 
-    return 1
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= timeout )); then
+            return 1
+        fi
+
+        sleep "$interval"
+    done
+}
+
+wait_for_tls_intercept_ready() {
+    local timeout="${1:-30}"
+    local interval="${2:-0.2}"
+    # NOTE: The probe host must NOT collide with fixture patterns.
+    # Some fixtures intentionally use `*.local/health passthrough://` (ignore tests).
+    # If the probe uses `.local/health`, it can be bypassed and trigger DNS failures in CI.
+    # `.invalid` is reserved and should never resolve via system DNS.
+    local probe_url="${3:-https://__bifrost_tls_probe.invalid/health}"
+
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
+        local code
+        code=$(curl -sk --proxy "$PROXY" --noproxy "" --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "$probe_url" 2>/dev/null) || code="000"
+        if [[ "$code" =~ ^[23] ]]; then
+            return 0
+        fi
+
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= timeout )); then
+            return 1
+        fi
+        sleep "$interval"
+    done
 }
 
 start_echo_servers() {
@@ -298,22 +339,27 @@ start_echo_servers() {
     fi
 
     # 端口可能被上一次异常退出遗留的 mock 进程占用；先清理再启动。
-    "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
+    WS_PORT="$ECHO_WS_PORT" \
+    WSS_PORT="$ECHO_WSS_PORT" \
+    SSE_PORT="$ECHO_SSE_PORT" \
+    MOCK_ECHO_PROXY_PORT="$ECHO_PROXY_PORT" \
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 
     HTTP_PORT="$ECHO_HTTP_PORT" \
     HTTPS_PORT="$ECHO_HTTPS_PORT" \
     WS_PORT="$ECHO_WS_PORT" \
     WSS_PORT="$ECHO_WSS_PORT" \
     SSE_PORT="$ECHO_SSE_PORT" \
-    PROXY_PORT="$ECHO_PROXY_PORT" \
+    MOCK_ECHO_PROXY_PORT="$ECHO_PROXY_PORT" \
         "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
 
-    sleep 2
-
-    if is_http_echo_ready; then
+    if wait_for_http_echo_ready 20 0.2; then
         echo -e "${GREEN}✓${NC} HTTP Echo 服务器已启动 (端口: ${ECHO_HTTP_PORT})"
     else
         echo -e "${RED}✗${NC} HTTP Echo 服务器启动失败"
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" status 2>/dev/null || true
         exit 1
     fi
 }
@@ -355,6 +401,10 @@ preprocess_rules_file() {
         "$original_file" > "$replaced_file"
 
     {
+        # A dedicated probe rule used by infra to verify TLS interception readiness.
+        # It is intentionally unique to avoid interfering with any fixture logic.
+        echo "__bifrost_tls_probe.invalid host://127.0.0.1:${ECHO_HTTP_PORT}"
+        echo
         httpbin_mock_rules "$ECHO_HTTP_PORT" "$ECHO_HTTPS_PORT"
         echo
         cat "$replaced_file"
@@ -513,20 +563,31 @@ start_proxy() {
             echo -e "${RED}✗${NC} 二进制文件不存在或不可执行: $BIFROST_BIN"
             exit 1
         fi
-        BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" \
+            --port "${PROXY_PORT}" \
+            start -y --access-mode allow_all --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
     else
-        BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- \
+            --port "${PROXY_PORT}" \
+            start -y --access-mode allow_all --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
     fi
     PROXY_PID=$!
 
-    local max_wait=180
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
+    local max_wait="${BIFROST_E2E_PROXY_READY_TIMEOUT:-180}"
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
         # 如果进程已经退出，直接失败并提示日志位置。
         if ! kill -0 "$PROXY_PID" 2>/dev/null; then
             echo -e "${RED}✗${NC} 代理进程已退出 (PID: $PROXY_PID)"
             echo -e "${RED}✗${NC} 请检查: ${TEST_DATA_DIR}/logs"
             exit 1
+        fi
+
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= max_wait )); then
+            break
         fi
 
         local port_ready="true"
@@ -543,13 +604,20 @@ start_proxy() {
                 port_ready="false"
             fi
         fi
-        if [[ "$port_ready" == "true" ]] && curl -s --proxy "$PROXY" --connect-timeout 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:3000/health" 2>/dev/null | grep -q '^[23]'; then
+        if [[ "$port_ready" == "true" ]] && curl -s --proxy "$PROXY" --noproxy "" --connect-timeout 3 --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ECHO_HTTP_PORT}/health" 2>/dev/null | grep -q '^[23]'; then
+            if [[ "${ENABLE_INTERCEPT:-true}" == "true" ]]; then
+                local tls_timeout="${BIFROST_E2E_TLS_READY_TIMEOUT:-180}"
+                if ! wait_for_tls_intercept_ready "$tls_timeout" 0.2; then
+                    echo -e "${RED}✗${NC} TLS 拦截在 ${tls_timeout}s 内未就绪（可能仍在生成 CA 或初始化失败），为避免 HTTPS 用例出现 http_code=000，终止本套件。"
+                    echo -e "${RED}✗${NC} 请检查: ${TEST_DATA_DIR}/logs"
+                    exit 1
+                fi
+            fi
             echo -e "${GREEN}✓${NC} 代理服务器已启动 (PID: $PROXY_PID)"
             echo -e "${GREEN}✓${NC} 规则已从文件加载: ${RULE_FILE}"
             return 0
         fi
-        sleep 1
-        waited=$((waited + 1))
+        sleep 0.2
     done
 
     echo -e "${RED}✗${NC} 代理服务器启动超时"
@@ -716,6 +784,7 @@ test_redirect_rule() {
 
     HTTP_STATUS=$(curl -s -w '%{http_code}' \
         --proxy "$PROXY" \
+        --noproxy "" \
         -k \
         -D "$_temp_headers_file" \
         -o "$_temp_body_file" \
@@ -936,9 +1005,9 @@ test_delay() {
     echo "    请求: $test_url"
     echo "    期望延迟: ${delay_ms}ms"
 
-    local start_time=$(python3 -c "import time; print(int(time.time() * 1000))")
+    local start_time=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
     https_request "$test_url"
-    local end_time=$(python3 -c "import time; print(int(time.time() * 1000))")
+    local end_time=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
 
     local elapsed=$((end_time - start_time))
     local min_expected=$((delay_ms - 100))
@@ -965,6 +1034,7 @@ test_cors() {
 
     HTTP_STATUS=$(curl -s -w '%{http_code}' \
         --proxy "$PROXY" \
+        --noproxy "" \
         -k \
         -H "Origin: https://example.com" \
         -D "$_temp_headers_file" \
@@ -1353,6 +1423,7 @@ test_html_inject() {
 
     HTTP_STATUS=$(curl -s -w '%{http_code}' \
         --proxy "$PROXY" \
+        --noproxy "" \
         -k \
         -H "Accept: text/html" \
         -D "$_temp_headers_file" \
@@ -1393,6 +1464,7 @@ test_js_inject() {
 
     HTTP_STATUS=$(curl -s -w '%{http_code}' \
         --proxy "$PROXY" \
+        --noproxy "" \
         -k \
         -H "Accept: application/javascript" \
         -D "$_temp_headers_file" \
@@ -1433,6 +1505,7 @@ test_css_inject() {
 
     HTTP_STATUS=$(curl -s -w '%{http_code}' \
         --proxy "$PROXY" \
+        --noproxy "" \
         -k \
         -H "Accept: text/css" \
         -D "$_temp_headers_file" \
@@ -2167,7 +2240,7 @@ test_req_speed_rule() {
 
     local payload_file
     payload_file=$(mktemp)
-    python3 -c "import sys; sys.stdout.buffer.write(b'A' * $payload_size)" > "$payload_file"
+    $PYTHON_BIN -c "import sys; sys.stdout.buffer.write(b'A' * $payload_size)" > "$payload_file"
 
     if (( base_timeout > request_timeout )); then
         request_timeout=$base_timeout
@@ -2186,9 +2259,9 @@ test_req_speed_rule() {
     local end_ms=0
     local attempt=1
     while [[ "$attempt" -le "$max_attempts" ]]; do
-        start_ms=$(python3 -c "import time; print(int(time.time() * 1000))")
+        start_ms=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
         TIMEOUT="$request_timeout" http_post_file "$test_url" "$payload_file" $'Content-Type: text/plain\nExpect:'
-        end_ms=$(python3 -c "import time; print(int(time.time() * 1000))")
+        end_ms=$($PYTHON_BIN -c "import time; print(int(time.time() * 1000))")
 
         if [[ "$HTTP_STATUS" =~ ^2[0-9]{2}$ ]]; then
             break
@@ -2251,13 +2324,13 @@ test_res_speed_rule() {
     local end_ms=0
     local attempt=1
     while [[ "$attempt" -le "$max_attempts" ]]; do
-        start_ms=$(python3 - <<'PY'
+        start_ms=$($PYTHON_BIN - <<'PY'
 import time
 print(int(time.time() * 1000))
 PY
 )
         TIMEOUT="$request_timeout" http_get "$test_url"
-        end_ms=$(python3 - <<'PY'
+        end_ms=$($PYTHON_BIN - <<'PY'
 import time
 print(int(time.time() * 1000))
 PY
@@ -2713,8 +2786,14 @@ test_res_headers_template() {
             _log_fail "转义语法应该输出字面量 \${...}" "\${notVar}" "${actual_value:-空值}"
         fi
     elif [[ "$header_template" == *'${'* ]]; then
-        if [[ -n "$actual_value" ]] && [[ "$actual_value" != *'${'* ]]; then
-            _log_pass "模板变量已替换: $actual_value"
+        # 模板变量可能合法展开为“空串”（例如 env.USER 在 CI 环境里可能未设置）。
+        # 这里主要验证占位符已被替换（不再包含 ${...}），而不是强制非空。
+        if [[ "$actual_value" != *'${'* ]]; then
+            if [[ -n "$actual_value" ]]; then
+                _log_pass "模板变量已替换: $actual_value"
+            else
+                _log_pass "模板变量已替换 (结果为空，可能是环境变量未设置)"
+            fi
         else
             _log_fail "模板变量应该被替换" "不包含 \${}" "${actual_value:-空值}"
         fi
@@ -3174,7 +3253,7 @@ wait_for_admin_ready() {
             fi
         fi
         if [[ "$port_ready" == "true" ]]; then
-            if curl -s --proxy "$PROXY" --connect-timeout 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:3000/health" 2>/dev/null | grep -q '^[23]'; then
+            if curl -s --proxy "$PROXY" --noproxy "" --connect-timeout 3 --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ECHO_HTTP_PORT:-3000}/health" 2>/dev/null | grep -q '^[23]'; then
                 return 0
             fi
         fi
@@ -3233,14 +3312,14 @@ start_specialized_proxy() {
             XDG_DATA_HOME="${xdg_data_home}" \
             BIFROST_DATA_DIR="${TEST_DATA_DIR}" \
             RUST_LOG="${rust_log_value}" \
-            "$bifrost_bin" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
+            "$bifrost_bin" --port "${PROXY_PORT}" start -y --no-intercept --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
     else
         env \
             HOME="${home_dir}" \
             XDG_CONFIG_HOME="${xdg_config_home}" \
             XDG_DATA_HOME="${xdg_data_home}" \
             BIFROST_DATA_DIR="${TEST_DATA_DIR}" \
-            "$bifrost_bin" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
+            "$bifrost_bin" --port "${PROXY_PORT}" start -y --no-intercept --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
     fi
     PROXY_PID=$!
 
@@ -3268,7 +3347,8 @@ run_tunnel_specialized_tests() {
     local work_dir="${TEST_DATA_DIR}/special-tunnel"
     mkdir -p "$work_dir"
 
-    local tls_port=19443
+    local tls_port
+    tls_port="$(allocate_free_port)"
     local tls_key="${work_dir}/upstream.key"
     local tls_cert="${work_dir}/upstream.crt"
     local tls_log="${work_dir}/upstream.log"
@@ -3292,8 +3372,8 @@ EOF
 
     start_specialized_proxy "$rules_file" "$proxy_log" "bifrost_proxy::proxy::http::tunnel=debug,bifrost_proxy::rules=info"
 
-    curl -sk --proxy "$PROXY" "https://origin-tunnel.local/" --max-time 10 >/dev/null 2>&1 || true
-    curl -sk --proxy "$PROXY" "https://origin-default.local:8080/" --max-time 5 >/dev/null 2>&1 || true
+    curl -sk --proxy "$PROXY" --noproxy "" "https://origin-tunnel.local/" --max-time 10 >/dev/null 2>&1 || true
+    curl -sk --proxy "$PROXY" --noproxy "" "https://origin-default.local:8080/" --max-time 5 >/dev/null 2>&1 || true
 
     if wait_for_log_contains "$proxy_log" "CONNECT tunnel target redirected: origin-tunnel.local:443 -> 127.0.0.1:${tls_port}" 10; then
         _log_pass "tunnel 显式端口重定向生效"
@@ -3319,9 +3399,9 @@ run_tls_options_specialized_tests() {
 
     start_specialized_proxy "$RULE_FILE" "$proxy_log" "bifrost_proxy::proxy::http::tunnel=info,bifrost_proxy::rules=info"
 
-    curl -sk --proxy "$PROXY" "https://tls-cipher.local/" --max-time 5 >/dev/null 2>&1 || true
-    curl -sk --proxy "$PROXY" "https://tls-cert.local/" --max-time 5 >/dev/null 2>&1 || true
-    curl -sk --proxy "$PROXY" "https://tls-ref.local/" --max-time 5 >/dev/null 2>&1 || true
+    curl -sk --proxy "$PROXY" --noproxy "" "https://tls-cipher.local/" --max-time 5 >/dev/null 2>&1 || true
+    curl -sk --proxy "$PROXY" --noproxy "" "https://tls-cert.local/" --max-time 5 >/dev/null 2>&1 || true
+    curl -sk --proxy "$PROXY" --noproxy "" "https://tls-ref.local/" --max-time 5 >/dev/null 2>&1 || true
     sleep 1
 
     if grep -F "CONNECT TLS options matched for tls-cipher.local:443 => ciphers=ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256" "$proxy_log" >/dev/null 2>&1; then
@@ -3353,8 +3433,8 @@ run_sni_callback_specialized_tests() {
 
     start_specialized_proxy "$RULE_FILE" "$proxy_log" "bifrost_proxy::proxy::http::tunnel=info,bifrost_proxy::rules=info"
 
-    curl -sk --proxy "$PROXY" "https://sni-basic.local/" --max-time 5 >/dev/null 2>&1 || true
-    curl -sk --proxy "$PROXY" "https://sni-arg.local/" --max-time 5 >/dev/null 2>&1 || true
+    curl -sk --proxy "$PROXY" --noproxy "" "https://sni-basic.local/" --max-time 5 >/dev/null 2>&1 || true
+    curl -sk --proxy "$PROXY" --noproxy "" "https://sni-arg.local/" --max-time 5 >/dev/null 2>&1 || true
     sleep 1
 
     if grep -F "CONNECT SNI callback matched for sni-basic.local:443 => plugin=test-plugin, sniValue=<none>" "$proxy_log" >/dev/null 2>&1; then

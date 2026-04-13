@@ -126,3 +126,173 @@ pub fn is_process_running(pid: u32) -> bool {
 pub fn is_process_running(_pid: u32) -> bool {
     false
 }
+
+#[derive(Debug)]
+pub struct PortProcessInfo {
+    pub pid: u32,
+    pub name: String,
+}
+
+#[cfg(unix)]
+pub fn find_process_on_port(port: u16) -> Option<PortProcessInfo> {
+    let output = std::process::Command::new("lsof")
+        .args(["-i", &format!("TCP:{}", port), "-sTCP:LISTEN", "-n", "-P"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let name = parts[0].to_string();
+            if let Ok(pid) = parts[1].parse::<u32>() {
+                return Some(PortProcessInfo { pid, name });
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+pub fn find_process_on_port(port: u16) -> Option<PortProcessInfo> {
+    let output = std::process::Command::new("netstat")
+        .args(["-ano"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let port_str = format!(":{}", port);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("LISTENING") {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 5 {
+            let local_addr = parts[1];
+            if local_addr.ends_with(&port_str) {
+                if let Ok(pid) = parts[4].parse::<u32>() {
+                    let name = get_process_name_windows(pid).unwrap_or_default();
+                    return Some(PortProcessInfo { pid, name });
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn get_process_name_windows(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().next()?;
+    let name = line.split(',').next()?.trim_matches('"').to_string();
+    if name.is_empty() || name.contains("INFO:") {
+        return None;
+    }
+    Some(name)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+pub fn find_process_on_port(_port: u16) -> Option<PortProcessInfo> {
+    None
+}
+
+#[cfg(unix)]
+pub fn kill_process_by_pid(pid: u32) -> bool {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+
+    let p = Pid::from_raw(pid as i32);
+    if kill(p, Signal::SIGTERM).is_err() {
+        return false;
+    }
+
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if !is_process_running(pid) {
+            return true;
+        }
+    }
+
+    let _ = kill(p, Signal::SIGKILL);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    !is_process_running(pid)
+}
+
+#[cfg(windows)]
+pub fn kill_process_by_pid(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
+
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+
+    let terminated = unsafe { TerminateProcess(handle, 1) };
+    if terminated != 0 {
+        unsafe {
+            WaitForSingleObject(handle, 5000);
+        }
+    }
+    unsafe {
+        CloseHandle(handle);
+    }
+
+    terminated != 0
+}
+
+#[cfg(all(not(unix), not(windows)))]
+pub fn kill_process_by_pid(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_process_on_port_returns_some_for_listening_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let result = find_process_on_port(port);
+        assert!(
+            result.is_some(),
+            "should find the current process listening on port {}",
+            port
+        );
+
+        let info = result.unwrap();
+        assert_eq!(info.pid, std::process::id());
+        assert!(!info.name.is_empty());
+
+        drop(listener);
+    }
+
+    #[test]
+    fn test_find_process_on_port_returns_none_for_free_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let result = find_process_on_port(port);
+        assert!(
+            result.is_none(),
+            "should not find any process on a freed port {}",
+            port
+        );
+    }
+}

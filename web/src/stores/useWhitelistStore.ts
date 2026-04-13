@@ -16,6 +16,8 @@ interface WhitelistState {
   setUserPassConfig: (enabled: boolean, accounts: UserPassAccountUpdate[], loopback_requires_auth: boolean) => Promise<boolean>;
   addTemporary: (ip: string) => Promise<boolean>;
   removeTemporary: (ip: string) => Promise<boolean>;
+  removeSessionDenied: (ip: string) => Promise<boolean>;
+  clearSessionDenied: () => Promise<boolean>;
   clearError: () => void;
 }
 
@@ -155,6 +157,45 @@ export const useWhitelistStore = create<WhitelistState>((set) => ({
                 (item) => item !== ip,
               ),
             }
+          : state.status,
+        loading: false,
+      }));
+      return true;
+    } catch (e) {
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      return false;
+    }
+  },
+
+  removeSessionDenied: async (ip: string) => {
+    set({ loading: true, error: null });
+    try {
+      await api.removeSessionDenied(ip);
+      set((state) => ({
+        status: state.status
+          ? {
+              ...state.status,
+              session_denied: state.status.session_denied.filter(
+                (item) => item !== ip,
+              ),
+            }
+          : state.status,
+        loading: false,
+      }));
+      return true;
+    } catch (e) {
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      return false;
+    }
+  },
+
+  clearSessionDenied: async () => {
+    set({ loading: true, error: null });
+    try {
+      await api.clearSessionDenied();
+      set((state) => ({
+        status: state.status
+          ? { ...state.status, session_denied: [] }
           : state.status,
         loading: false,
       }));

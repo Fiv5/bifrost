@@ -214,6 +214,33 @@ const columns: ColumnDef[] = [
     ),
   },
   {
+    key: "rules",
+    title: "Rules",
+    width: 60,
+    align: "center",
+    render: (record, textSecondary) =>
+      record.has_rule_hit ? (
+        <Tooltip
+          title={
+            <div>
+              <div>{record.matched_rule_count} rule(s) matched</div>
+              {record.matched_protocols.length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  {record.matched_protocols.join(", ")}
+                </div>
+              )}
+            </div>
+          }
+        >
+          <Badge count={record.matched_rule_count} size="small" color="blue">
+            <ThunderboltOutlined style={{ fontSize: 14, color: "#1890ff" }} />
+          </Badge>
+        </Tooltip>
+      ) : (
+        <span style={{ color: textSecondary }}>-</span>
+      ),
+  },
+  {
     key: "host",
     title: "Host",
     width: 160,
@@ -304,33 +331,6 @@ const columns: ColumnDef[] = [
         {record.end_time || "-"}
       </span>
     ),
-  },
-  {
-    key: "rules",
-    title: "Rules",
-    width: 60,
-    align: "center",
-    render: (record, textSecondary) =>
-      record.has_rule_hit ? (
-        <Tooltip
-          title={
-            <div>
-              <div>{record.matched_rule_count} rule(s) matched</div>
-              {record.matched_protocols.length > 0 && (
-                <div style={{ marginTop: 4 }}>
-                  {record.matched_protocols.join(", ")}
-                </div>
-              )}
-            </div>
-          }
-        >
-          <Badge count={record.matched_rule_count} size="small" color="blue">
-            <ThunderboltOutlined style={{ fontSize: 14, color: "#1890ff" }} />
-          </Badge>
-        </Tooltip>
-      ) : (
-        <span style={{ color: textSecondary }}>-</span>
-      ),
   },
 ];
 

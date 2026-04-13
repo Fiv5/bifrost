@@ -1,0 +1,507 @@
+# Sync API 测试用例
+
+## 功能模块说明
+
+Bifrost Sync API 提供云端同步管理功能，包括同步状态查询、配置更新、登录/登出、手动触发同步、会话管理、远程配置采样等。此外，`/api/env/*`、`/api/room/*`、`/api/user/*` 作为同步代理转发端点，需要在已登录状态下将请求代理到远程服务的 `/v4/` 对应路径。
+
+## 前置条件
+
+1. 启动 Bifrost 服务（使用临时数据目录避免污染正式环境）：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl
+   ```
+2. 确保端口 8800 可用且未被其他服务占用
+3. 部分用例需要有效的远程同步服务地址（默认配置即可）
+
+---
+
+## 测试用例
+
+### TC-ASN-01：获取初始同步状态
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/sync/status | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应为 JSON 对象，包含以下字段：
+  - `enabled`：布尔值（初始为 `false`）
+  - `auto_sync`：布尔值
+  - `remote_base_url`：字符串（远程服务地址）
+  - `has_session`：`false`（未登录）
+  - `reachable`：布尔值
+  - `authorized`：`false`
+  - `syncing`：`false`
+  - `reason`：`"disabled"`（因 enabled 为 false）
+  - `last_sync_at`：`null`
+  - `last_sync_action`：`null`
+  - `last_error`：`null` 或字符串
+  - `user`：`null`（未登录）
+
+---
+
+### TC-ASN-02：使用错误 HTTP 方法访问同步状态
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8800/_bifrost/api/sync/status
+   ```
+
+**预期结果**：
+- 返回 HTTP 405（Method Not Allowed）
+
+---
+
+### TC-ASN-03：更新同步配置 — 开启同步
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X PUT http://127.0.0.1:8800/_bifrost/api/sync/config \
+     -H "Content-Type: application/json" \
+     -d '{"enabled": true}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应中 `enabled` 为 `true`
+- `reason` 不再是 `"disabled"`（可能为 `"reachable"`、`"unreachable"` 或 `"unauthorized"` 等，取决于远程服务可达性）
+
+---
+
+### TC-ASN-04：更新同步配置 — 修改多个字段
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X PUT http://127.0.0.1:8800/_bifrost/api/sync/config \
+     -H "Content-Type: application/json" \
+     -d '{"auto_sync": true, "probe_interval_secs": 30, "connect_timeout_ms": 5000}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应中 `auto_sync` 为 `true`
+
+---
+
+### TC-ASN-05：更新同步配置 — remote_base_url 为空字符串被拒绝
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X PUT http://127.0.0.1:8800/_bifrost/api/sync/config \
+     -H "Content-Type: application/json" \
+     -d '{"remote_base_url": ""}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 400
+- 响应包含错误信息 `"remote_base_url cannot be empty"`
+
+---
+
+### TC-ASN-06：更新同步配置 — remote_base_url 非法 URL 被拒绝
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X PUT http://127.0.0.1:8800/_bifrost/api/sync/config \
+     -H "Content-Type: application/json" \
+     -d '{"remote_base_url": "not-a-valid-url"}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 400
+- 响应包含错误信息 `"remote_base_url must be a valid URL"`
+
+---
+
+### TC-ASN-07：更新同步配置 — 无效 JSON 请求体
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X PUT http://127.0.0.1:8800/_bifrost/api/sync/config \
+     -H "Content-Type: application/json" \
+     -d 'invalid-json' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 400
+- 响应包含 `"Invalid JSON"` 错误信息
+
+---
+
+### TC-ASN-08：使用错误 HTTP 方法更新同步配置
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8800/_bifrost/api/sync/config
+   ```
+
+**预期结果**：
+- 返回 HTTP 405（Method Not Allowed）
+
+---
+
+### TC-ASN-09：触发手动同步
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/sync/run | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应为最新的 sync status JSON 对象
+- `syncing` 字段可能短暂为 `true`（取决于同步执行速度）
+
+---
+
+### TC-ASN-10：使用错误 HTTP 方法触发手动同步
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" -X GET http://127.0.0.1:8800/_bifrost/api/sync/run
+   ```
+
+**预期结果**：
+- 返回 HTTP 405（Method Not Allowed）
+
+---
+
+### TC-ASN-11：保存会话 token
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/sync/session \
+     -H "Content-Type: application/json" \
+     -d '{"token": "test-session-token-abc123"}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200 或 HTTP 500（取决于 token 是否能被远程服务验证）
+- 如果 token 有效，响应为 sync status，其中 `has_session` 为 `true`
+- 如果 token 无效，返回错误信息
+
+---
+
+### TC-ASN-12：保存会话 token — 空 token 被拒绝
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/sync/session \
+     -H "Content-Type: application/json" \
+     -d '{"token": ""}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 400
+- 响应包含错误信息 `"token is required"`
+
+---
+
+### TC-ASN-13：保存会话 token — 仅空格 token 被拒绝
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/sync/session \
+     -H "Content-Type: application/json" \
+     -d '{"token": "   "}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 400
+- 响应包含错误信息 `"token is required"`
+
+---
+
+### TC-ASN-14：获取登录 URL
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s "http://127.0.0.1:8800/_bifrost/api/sync/login-url?callback_url=http://127.0.0.1:8800/_bifrost/public/sync-login" | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应为 JSON 对象，包含 `login_url` 字段
+- `login_url` 为一个有效的 URL 字符串，指向远程登录页面
+
+---
+
+### TC-ASN-15：获取登录 URL — 缺少 callback_url 参数
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/sync/login-url | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 400
+- 响应包含 `"Invalid query"` 错误信息
+
+---
+
+### TC-ASN-16：获取远程配置采样
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s "http://127.0.0.1:8800/_bifrost/api/sync/remote-sample?limit=5" | jq .
+   ```
+
+**预期结果**：
+- 如果已登录远程服务：返回 HTTP 200，响应为 JSON 数组，最多包含 5 条远程配置采样数据
+- 如果未登录远程服务：返回 HTTP 500，响应包含错误信息
+
+---
+
+### TC-ASN-17：获取远程配置采样 — 不带 limit 参数使用默认值
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/sync/remote-sample | jq .
+   ```
+
+**预期结果**：
+- 与 TC-ASN-16 类似，但使用默认 limit 值 10
+- 响应格式一致
+
+---
+
+### TC-ASN-18：请求同步登录（打开浏览器）
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/sync/login | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200（即使浏览器无法打开，API 本身应返回当前同步状态）
+- 响应为 sync status JSON 对象
+- 如果无法打开浏览器，返回 HTTP 500 和 `"Failed to open sync login page"` 相关错误信息
+
+---
+
+### TC-ASN-19：执行登出
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/sync/logout | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应为 sync status JSON 对象
+- `has_session` 变为 `false`
+- `user` 变为 `null`
+- `authorized` 变为 `false`
+
+---
+
+### TC-ASN-20：登出后再次查询同步状态确认已清除
+
+**操作步骤**：
+1. 先执行登出：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/sync/logout > /dev/null
+   ```
+2. 查询状态：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/sync/status | jq .
+   ```
+
+**预期结果**：
+- `has_session` 为 `false`
+- `user` 为 `null`
+- `authorized` 为 `false`
+
+---
+
+### TC-ASN-21：访问不存在的 sync 子路径
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8800/_bifrost/api/sync/nonexistent
+   ```
+
+**预期结果**：
+- 返回 HTTP 404
+
+---
+
+### TC-ASN-22：env 代理转发 — 未登录时请求失败
+
+**前置条件**：未进行同步登录（`has_session` 为 `false`）
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/env/list | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 502（Bad Gateway）
+- 响应包含 `"Failed to proxy env request"` 相关错误信息
+- 表明因未登录远程服务，代理转发失败
+
+---
+
+### TC-ASN-23：room 代理转发 — 未登录时请求失败
+
+**前置条件**：未进行同步登录
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/room/list | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 502（Bad Gateway）
+- 响应包含 `"Failed to proxy room request"` 相关错误信息
+
+---
+
+### TC-ASN-24：user 代理转发 — 未登录时请求失败
+
+**前置条件**：未进行同步登录
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/user/me | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 502（Bad Gateway）
+- 响应包含 `"Failed to proxy user request"` 相关错误信息
+
+---
+
+### TC-ASN-25：room 代理转发 — POST /api/room 适配为 POST /v4/group/invite
+
+**前置条件**：未进行同步登录（此用例验证请求体适配逻辑，即使远程不可达也能验证请求体校验）
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/room \
+     -H "Content-Type: application/json" \
+     -d '{"group_id": "g123", "user_id": "u456", "level": 1}' | jq .
+   ```
+
+**预期结果**：
+- 如果远程服务不可达，返回 HTTP 502 和 `"Failed to proxy room request"` 相关错误
+- 请求不会返回 400（说明请求体适配逻辑 `adapt_create_room_to_invite` 正常工作）
+
+---
+
+### TC-ASN-26：room 代理转发 — POST /api/room 缺少必要字段被拒绝
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8800/_bifrost/api/room \
+     -H "Content-Type: application/json" \
+     -d '{"invalid_field": "value"}' | jq .
+   ```
+
+**预期结果**：
+- 返回 HTTP 400
+- 响应包含 `"Invalid create room request body"` 错误信息
+- 因为缺少 `group_id` 和 `user_id` 必要字段
+
+---
+
+### TC-ASN-27：env/room/user 代理转发 — 不支持的 HTTP 方法
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" -X OPTIONS http://127.0.0.1:8800/_bifrost/api/env/list
+   ```
+
+**预期结果**：
+- 返回 HTTP 200（因为 OPTIONS 请求在路由层被 CORS preflight 处理）
+
+---
+
+### TC-ASN-28：公开端点 — sync-login 回调页面（无 token）
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/public/sync-login
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应为 HTML 页面
+- 页面标题包含 `"Bifrost Remote Sign-In"`
+- 页面内容包含 `"Missing login token from remote callback."`
+- 页面显示错误状态（`Remote Sign-In Failed`）
+
+---
+
+### TC-ASN-29：公开端点 — sync-login 回调页面（带无效 token）
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s "http://127.0.0.1:8800/_bifrost/public/sync-login?token=invalid-token-xyz"
+   ```
+
+**预期结果**：
+- 返回 HTTP 200
+- 响应为 HTML 页面
+- 如果 token 保存失败，页面显示 `"Remote Sign-In Failed"` 和 `"Failed to save sync session"` 相关信息
+- 如果 token 保存成功（格式被接受），页面显示 `"Login completed. You can close this window now."` 并包含自动重定向脚本
+
+---
+
+### TC-ASN-30：更新同步配置 — 设置有效的 remote_base_url
+
+**操作步骤**：
+1. 执行：
+   ```bash
+   curl -s -X PUT http://127.0.0.1:8800/_bifrost/api/sync/config \
+     -H "Content-Type: application/json" \
+     -d '{"remote_base_url": "https://example.com/api"}' | jq .
+   ```
+2. 验证配置已更新：
+   ```bash
+   curl -s http://127.0.0.1:8800/_bifrost/api/sync/status | jq .remote_base_url
+   ```
+
+**预期结果**：
+- 第一步返回 HTTP 200
+- 第二步返回 `"https://example.com/api"`
+- remote_base_url 已成功更新
+
+---
+
+## 清理
+
+测试完成后清理临时数据：
+```bash
+rm -rf .bifrost-test
+```

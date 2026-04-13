@@ -144,6 +144,7 @@ http_request() {
         else
             curl_args+=(--proxy "http://${proxy_host}:${proxy_port}")
         fi
+        curl_args+=(--noproxy "")
     fi
 
     local _temp_data_file=""
@@ -165,7 +166,8 @@ http_request() {
 
     curl_args+=("$url")
 
-    perform_curl_with_retries "${curl_args[@]}"
+    # Ensure no environment proxy interference
+    NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" perform_curl_with_retries "${curl_args[@]}"
 
     [ -n "$_temp_data_file" ] && rm -f "$_temp_data_file"
     _cleanup_temp
@@ -218,6 +220,9 @@ http_post_file() {
         else
             curl_args+=(--proxy "http://${proxy_host}:${proxy_port}")
         fi
+
+        # Force curl to always use the proxy even if NO_PROXY/no_proxy is set.
+        curl_args+=(--noproxy "")
     fi
 
     if [ -n "$extra_headers" ]; then
@@ -228,7 +233,8 @@ http_post_file() {
 
     curl_args+=("$url")
 
-    perform_curl_with_retries "${curl_args[@]}"
+    # Ensure no environment proxy interference for proxy traffic
+    NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" perform_curl_with_retries "${curl_args[@]}"
 
     _cleanup_temp
 }
@@ -298,7 +304,8 @@ http_request_no_proxy() {
 
     curl_args+=("$url")
 
-    perform_curl_with_retries "${curl_args[@]}"
+    # Ensure no environment proxy interference for proxy traffic
+    NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" perform_curl_with_retries "${curl_args[@]}"
 
     [ -n "$_temp_data_file" ] && rm -f "$_temp_data_file"
     _cleanup_temp
@@ -360,7 +367,8 @@ https_request() {
 
     curl_args+=("$url")
 
-    perform_curl_with_retries "${curl_args[@]}"
+    # Ensure no environment proxy interference for proxy traffic
+    NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" perform_curl_with_retries "${curl_args[@]}"
 
     [ -n "$_temp_data_file" ] && rm -f "$_temp_data_file"
     _cleanup_temp
@@ -440,6 +448,7 @@ http_post_large_body() {
         else
             curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
         fi
+        curl_args+=(--noproxy "")
     fi
     
     if [ -n "$extra_headers" ]; then
@@ -450,7 +459,8 @@ http_post_large_body() {
     
     curl_args+=("$url")
     
-    HTTP_STATUS=$(curl "${curl_args[@]}")
+    HTTP_STATUS=$(env NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" \
+        curl "${curl_args[@]}")
     HTTP_HEADERS=$(cat "$_temp_headers_file")
     HTTP_BODY=$(cat "$_temp_body_file")
     
@@ -497,6 +507,7 @@ https_post_large_body() {
         else
             curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
         fi
+        curl_args+=(--noproxy "")
     fi
     
     if [ -n "$extra_headers" ]; then
@@ -507,7 +518,8 @@ https_post_large_body() {
     
     curl_args+=("$url")
     
-    HTTP_STATUS=$(curl "${curl_args[@]}")
+    HTTP_STATUS=$(env NO_PROXY="" no_proxy="" HTTP_PROXY="" http_proxy="" HTTPS_PROXY="" https_proxy="" \
+        curl "${curl_args[@]}")
     HTTP_HEADERS=$(cat "$_temp_headers_file")
     HTTP_BODY=$(cat "$_temp_body_file")
     

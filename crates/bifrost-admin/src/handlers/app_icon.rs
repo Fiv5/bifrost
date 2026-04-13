@@ -50,7 +50,6 @@ pub async fn handle_app_icon<B>(
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "image/png")
                 .header(header::CACHE_CONTROL, "public, max-age=86400")
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                 .body(BoxBody::new(body))
                 .unwrap()
         }
@@ -216,12 +215,9 @@ mod tests {
         let response = handle_app_icon(request, state, "/api/app-icon/Test%20App").await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                .and_then(|value| value.to_str().ok()),
-            Some("*")
-        );
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none(),);
     }
 }

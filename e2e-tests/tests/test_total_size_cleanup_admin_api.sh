@@ -6,32 +6,59 @@ source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
 
-HTTP_PORT="${HTTP_PORT:-3196}"
-PROXY_PORT="${PROXY_PORT:-9900}"
-ADMIN_PORT="${ADMIN_PORT:-9900}"
+ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
+ADMIN_PORT="${ADMIN_PORT:-}"
+if [[ -z "${ADMIN_PORT}" ]]; then
+    ADMIN_PORT="$(allocate_free_port)"
+fi
+PROXY_PORT="${PROXY_PORT:-$ADMIN_PORT}"
+HTTP_PORT="${HTTP_PORT:-}"
+if [[ -z "${HTTP_PORT}" ]]; then
+    HTTP_PORT="$(allocate_free_port)"
+fi
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
-export ADMIN_PORT ADMIN_PATH_PREFIX
+export ADMIN_PORT ADMIN_PATH_PREFIX PROXY_PORT
 TEST_ID=""
+server_pid=""
+MOCK_LOG=""
 
-trap 'admin_cleanup_bifrost; kill "$server_pid" 2>/dev/null || true' EXIT
+trap 'admin_cleanup_bifrost; kill "$server_pid" 2>/dev/null || true; rm -f "$MOCK_LOG" 2>/dev/null || true' EXIT
 
 admin_ensure_bifrost || { echo "ERROR: Could not start Bifrost" >&2; exit 1; }
 
-python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$HTTP_PORT" &
+MOCK_LOG="$(mktemp)"
+python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" --port "$HTTP_PORT" --retries 5 >"$MOCK_LOG" 2>&1 &
 server_pid=$!
 
 waited=0
-while [ $waited -lt 15 ]; do
-  if curl -sf --connect-timeout 2 --max-time 3 "http://127.0.0.1:${HTTP_PORT}/health" >/dev/null 2>&1; then
+mock_ready=0
+while [ $waited -lt 20 ]; do
+  if grep -q "READY" "$MOCK_LOG" 2>/dev/null; then
+    mock_ready=1
     break
   fi
-  sleep 1
+  if ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "ERROR: Mock server process exited unexpectedly" >&2
+    cat "$MOCK_LOG" >&2
+    exit 1
+  fi
+  sleep 0.5
   waited=$((waited + 1))
 done
-if [ $waited -ge 15 ]; then
-  echo "ERROR: Mock server on port $HTTP_PORT not ready after 15s" >&2
+if [ "$mock_ready" -eq 0 ]; then
+  echo "ERROR: Mock server on port $HTTP_PORT not ready after 10s" >&2
+  cat "$MOCK_LOG" >&2
   exit 1
 fi
+
+actual_mock_port="$HTTP_PORT"
+bound_line=$(grep -o "bound to [0-9]*" "$MOCK_LOG" 2>/dev/null | head -1 || true)
+if [[ -n "$bound_line" ]]; then
+  actual_mock_port="${bound_line##*bound to }"
+  echo "NOTE: Mock server bound to port $actual_mock_port (requested $HTTP_PORT)" >&2
+  HTTP_PORT="$actual_mock_port"
+fi
+rm -f "$MOCK_LOG"
 
 warmup_ok=0
 for warmup_try in 1 2 3; do
@@ -48,7 +75,7 @@ print("a" * 32768)
 PY
 )
 
-config_response=$(curl -s -X PUT -H "Content-Type: application/json" \
+config_response=$(env NO_PROXY="*" no_proxy="*" curl -s -X PUT -H "Content-Type: application/json" \
   -d '{"max_db_size_bytes":262144,"max_body_memory_size":1024}' \
   "http://127.0.0.1:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/config/performance")
 if echo "$config_response" | jq -e '.error' >/dev/null 2>&1; then

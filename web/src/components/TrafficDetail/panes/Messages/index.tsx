@@ -704,8 +704,9 @@ export const Messages = ({
       sseEventSourceRef.current &&
       sseSessionKeyRef.current === sessionKey
     ) {
-      // 一旦 live SSE 详情订阅已经建立，不要因为 summary 先收到 closed
-      // 就立刻把 EventSource 关掉；否则尾部事件会在 close 边界被前端自己截断。
+      // Once the live SSE detail subscription is established, don't close the EventSource
+      // just because the summary received 'closed' first; otherwise tail events would be
+      // truncated by the frontend at the close boundary.
       return;
     }
 

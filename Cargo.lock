@@ -210,10 +210,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "bifrost-admin"
-version = "0.0.47-beta"
+name = "bcrypt"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abaf6da45c74385272ddf00e1ac074c7d8a6c1a1dda376902bd6a427522a8b2c"
 dependencies = [
  "base64",
+ "blowfish",
+ "getrandom 0.3.4",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "bifrost-admin"
+version = "0.0.48-beta"
+dependencies = [
+ "base64",
+ "bcrypt",
  "bifrost-core",
  "bifrost-script",
  "bifrost-storage",
@@ -232,6 +246,7 @@ dependencies = [
  "icns",
  "ico",
  "image",
+ "jsonwebtoken",
  "local-ip-address",
  "lru 0.16.3",
  "mime_guess",
@@ -244,6 +259,7 @@ dependencies = [
  "pelite",
  "plist",
  "qrcode",
+ "rand 0.8.5",
  "regex 1.12.3",
  "reqwest",
  "rusqlite",
@@ -271,8 +287,9 @@ dependencies = [
 
 [[package]]
 name = "bifrost-cli"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
+ "bcrypt",
  "bifrost-admin",
  "bifrost-core",
  "bifrost-proxy",
@@ -310,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-core"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -339,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-e2e"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "base64",
  "bifrost-admin",
@@ -373,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-proxy"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "async-compression",
  "base64",
@@ -411,6 +428,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
@@ -428,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-script"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "bifrost-core",
  "bifrost-storage",
@@ -445,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-storage"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "bifrost-core",
  "chrono",
@@ -465,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-sync"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "bifrost-core",
  "bifrost-storage",
@@ -483,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-tests"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "async-trait",
  "bifrost-admin",
@@ -505,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-tls"
-version = "0.0.47-beta"
+version = "0.0.48-beta"
 dependencies = [
  "bifrost-core",
  "chrono",
@@ -604,6 +622,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
  "objc2",
+]
+
+[[package]]
+name = "blowfish"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e412e2cd0f2b2d93e02543ceae7917b3c70331573df19ee046bcbc35e45e87d7"
+dependencies = [
+ "byteorder",
+ "cipher",
 ]
 
 [[package]]
@@ -744,6 +772,16 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common",
+ "inout",
 ]
 
 [[package]]
@@ -2091,6 +2129,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
 name = "instability"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2230,6 +2277,21 @@ checksum = "b49715b7073f385ba4bc528e5747d02e66cb39c6146efb66b781f131f0fb399c"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64",
+ "js-sys",
+ "pem",
+ "ring",
+ "serde",
+ "serde_json",
+ "simple_asn1",
 ]
 
 [[package]]
@@ -3925,6 +3987,18 @@ name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.18",
+ "time",
+]
 
 [[package]]
 name = "slab"

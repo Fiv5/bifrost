@@ -2,7 +2,8 @@ import axios, { AxiosError } from 'axios';
 import type { AxiosRequestConfig } from 'axios';
 import { message } from 'antd';
 import { getClientId } from '../services/clientId';
-import { buildApiUrl } from '../runtime';
+import { buildApiUrl, buildAppRouteUrl } from '../runtime';
+import { clearAdminToken, getAdminToken } from '../services/adminAuth';
 import {
   isDesktopCoreTransitionActive,
   useDesktopCoreStore,
@@ -110,6 +111,11 @@ client.interceptors.request.use((config) => {
   config.baseURL = buildApiUrl();
   config.headers = config.headers ?? {};
   config.headers['X-Client-Id'] = getClientId();
+
+  const token = getAdminToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
   return config;
 });
 
@@ -121,6 +127,23 @@ client.interceptors.response.use(
   },
   (error: AxiosError) => {
     const payload = getApiErrorPayload(error);
+
+    if (error.response?.status === 401) {
+      const url = String(error.config?.url ?? '');
+      const isAuthEndpoint = url.includes('/auth/login') || url.includes('/auth/status');
+      const isOnLoginPage =
+        window.location.pathname.includes('/login') || window.location.hash.includes('/login');
+      if (!isAuthEndpoint && !isOnLoginPage) {
+        clearAdminToken();
+        const next = window.location.hash
+          ? window.location.hash.replace(/^#/, '')
+          : `${window.location.pathname}${window.location.search}`;
+        window.location.assign(
+          buildAppRouteUrl(`/login?next=${encodeURIComponent(next || '/traffic')}`),
+        );
+      }
+      return Promise.reject(error);
+    }
 
     if (payload.kind === 'connection') {
       useDesktopCoreStore.getState().showBooting(payload.message);

@@ -140,6 +140,34 @@ export default function TrafficTable({
       },
     },
     {
+      title: "Rules",
+      dataIndex: "has_rule_hit",
+      key: "rules",
+      width: 60,
+      align: "center",
+      render: (_: boolean, record: TrafficSummary) =>
+        record.has_rule_hit ? (
+          <Tooltip
+            title={
+              <div>
+                <div>{record.matched_rule_count} rule(s) matched</div>
+                {record.matched_protocols.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    {record.matched_protocols.join(", ")}
+                  </div>
+                )}
+              </div>
+            }
+          >
+            <Badge count={record.matched_rule_count} size="small" color="blue">
+              <ThunderboltOutlined style={{ fontSize: 14, color: "#1890ff" }} />
+            </Badge>
+          </Tooltip>
+        ) : (
+          <Text type="secondary">-</Text>
+        ),
+    },
+    {
       title: "Host",
       dataIndex: "host",
       key: "host",
@@ -241,34 +269,6 @@ export default function TrafficTable({
           </Text>
         </Tooltip>
       ),
-    },
-    {
-      title: "Rules",
-      dataIndex: "has_rule_hit",
-      key: "rules",
-      width: 60,
-      align: "center",
-      render: (_: boolean, record: TrafficSummary) =>
-        record.has_rule_hit ? (
-          <Tooltip
-            title={
-              <div>
-                <div>{record.matched_rule_count} rule(s) matched</div>
-                {record.matched_protocols.length > 0 && (
-                  <div style={{ marginTop: 4 }}>
-                    {record.matched_protocols.join(", ")}
-                  </div>
-                )}
-              </div>
-            }
-          >
-            <Badge count={record.matched_rule_count} size="small" color="blue">
-              <ThunderboltOutlined style={{ fontSize: 14, color: "#1890ff" }} />
-            </Badge>
-          </Tooltip>
-        ) : (
-          <Text type="secondary">-</Text>
-        ),
     },
   ];
 

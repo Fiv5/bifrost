@@ -5,6 +5,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_cmd_helper.sh"
 
+python3_cmd() {
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    if python -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+      echo "python"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 if real_cmd="$(find_real_cmd timeout)"; then
   exec "$real_cmd" "$@"
 fi
@@ -17,7 +31,13 @@ fi
 seconds="$1"
 shift
 
-python3 - "$seconds" "$@" <<'PY'
+py="$(python3_cmd 2>/dev/null || true)"
+if [[ -z "${py:-}" ]]; then
+  echo "ERROR: python3 (or python>=3) is required for timeout wrapper" >&2
+  exit 1
+fi
+
+"$py" - "$seconds" "$@" <<'PY'
 import subprocess
 import sys
 

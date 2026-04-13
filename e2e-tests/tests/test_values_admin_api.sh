@@ -4,7 +4,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
-ADMIN_PORT="${ADMIN_PORT:-9900}"
+ADMIN_PORT="${ADMIN_PORT:-}"
+if [[ -z "${ADMIN_PORT}" ]]; then
+    ADMIN_PORT="$(allocate_free_port)"
+fi
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 export ADMIN_PATH_PREFIX
 

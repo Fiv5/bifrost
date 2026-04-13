@@ -6,6 +6,8 @@ use std::sync::Arc;
 use bifrost_core::{ClientAccessControl, SystemProxyManager};
 use bifrost_storage::{ConfigManager, RulesStorage, SharedConfigManager, ValuesStorage};
 use bifrost_sync::SharedSyncManager;
+
+use crate::admin_auth_db::{AuthDb, SharedAuthDb};
 use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
 
@@ -88,6 +90,7 @@ pub struct AdminState {
     pub metrics_collector: SharedMetricsCollector,
     pub rules_storage: RulesStorage,
     pub values_storage: Option<SharedValuesStorage>,
+    pub auth_db: Option<SharedAuthDb>,
     pub access_control: Option<SharedAccessControl>,
     pub body_store: Option<SharedBodyStore>,
     pub frame_store: Option<SharedFrameStore>,
@@ -128,6 +131,7 @@ impl AdminState {
             metrics_collector: Arc::new(MetricsCollector::default()),
             rules_storage: RulesStorage::default(),
             values_storage: None,
+            auth_db: None,
             access_control: None,
             body_store: None,
             frame_store: None,
@@ -635,6 +639,11 @@ impl AdminState {
 
     pub fn with_values_storage(mut self, storage: ValuesStorage) -> Self {
         self.values_storage = Some(Arc::new(ParkingRwLock::new(storage)));
+        self
+    }
+
+    pub fn with_auth_db(mut self, db: AuthDb) -> Self {
+        self.auth_db = Some(Arc::new(db));
         self
     }
 

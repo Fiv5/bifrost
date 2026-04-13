@@ -31,6 +31,8 @@ use tokio::sync::{RwLock, Semaphore};
 use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
 use tracing::{debug, error, info, warn};
 
+use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
+
 use crate::dns::DnsResolver;
 use crate::proxy::http::{
     handle_connect, handle_http_request, requires_client_app_for_tls_decision, SingleCertResolver,
@@ -666,8 +668,41 @@ impl ProxyServer {
             )));
         }
 
-        TcpListener::bind(addr)
-            .await
+        // IMPORTANT:
+        // We want the proxy to be restart-friendly (especially for E2E retries).
+        // Binding without SO_REUSEADDR can fail on Linux when the previous process
+        // recently had many connections and the port is stuck in TIME_WAIT.
+        let domain = match addr {
+            SocketAddr::V4(_) => Domain::IPV4,
+            SocketAddr::V6(_) => Domain::IPV6,
+        };
+        let socket = Socket::new(domain, Type::STREAM, Some(SocketProtocol::TCP))
+            .map_err(|e| BifrostError::Network(format!("Failed to create listen socket: {}", e)))?;
+        // NOTE:
+        // - On Unix, SO_REUSEADDR is needed to make quick restarts reliable (E2E retries)
+        //   when the port is stuck behind TIME_WAIT.
+        // - On Windows, SO_REUSEADDR can enable port hijacking semantics; keep the default
+        //   exclusive bind behavior for safety.
+        #[cfg(unix)]
+        socket
+            .set_reuse_address(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set SO_REUSEADDR: {}", e)))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set nonblocking: {}", e)))?;
+        socket
+            .bind(&addr.into())
+            .map_err(|e| BifrostError::Network(format!("Failed to bind to {}: {}", addr, e)))?;
+        // Backlog doesn't need to be huge here; we also cap active connections separately.
+        socket
+            .listen(1024)
+            .map_err(|e| BifrostError::Network(format!("Failed to listen on {}: {}", addr, e)))?;
+
+        let std_listener: std::net::TcpListener = socket.into();
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set nonblocking: {}", e)))?;
+        TcpListener::from_std(std_listener)
             .map_err(|e| BifrostError::Network(format!("Failed to bind to {}: {}", addr, e)))
     }
 
@@ -835,13 +870,21 @@ impl ProxyServer {
                 (decision, should_defer_userpass)
             };
 
+            let allow_remote_admin_bypass = self
+                .admin_state
+                .as_ref()
+                .map(|s| bifrost_admin::is_remote_access_enabled(s))
+                .unwrap_or(false);
+
             match decision {
                 AccessDecision::Allow => {}
                 AccessDecision::Deny => {
-                    if should_defer_userpass {
+                    if should_defer_userpass || allow_remote_admin_bypass {
                         debug!(
-                            "Deferring access denial for {} to protocol-level userpass auth",
-                            peer_addr.ip()
+                            "Deferring access denial for {} (userpass={}, remote_admin={})",
+                            peer_addr.ip(),
+                            should_defer_userpass,
+                            allow_remote_admin_bypass
                         );
                     } else {
                         warn!(
@@ -852,10 +895,12 @@ impl ProxyServer {
                     }
                 }
                 AccessDecision::Prompt(ip) => {
-                    if should_defer_userpass {
+                    if should_defer_userpass || allow_remote_admin_bypass {
                         debug!(
-                            "Deferring interactive authorization for {} to protocol-level userpass auth",
-                            ip
+                            "Deferring interactive authorization for {} (userpass={}, remote_admin={})",
+                            ip,
+                            should_defer_userpass,
+                            allow_remote_admin_bypass
                         );
                     } else {
                         {
@@ -1311,10 +1356,29 @@ async fn handle_request(
             let decision = ac.check_access(&peer_addr.ip());
             let should_defer_userpass = ac.should_defer_userpass(&decision);
             drop(ac);
+
+            let allow_remote_admin_bypass = admin_state
+                .as_ref()
+                .map(|s| bifrost_admin::is_remote_access_enabled(s))
+                .unwrap_or(false);
+
             match decision {
                 AccessDecision::Allow => {}
-                AccessDecision::Deny | AccessDecision::Prompt(_) => {
-                    if should_defer_userpass {
+                AccessDecision::Prompt(_) => {
+                    if !should_defer_userpass && !allow_remote_admin_bypass {
+                        warn!(
+                        "[{}] Access denied for {} on existing connection (access control changed)",
+                        ctx.id_str(),
+                        peer_addr.ip()
+                    );
+                        return Ok(error_response(
+                            403,
+                            "Access denied - access control policy changed",
+                        ));
+                    }
+                }
+                AccessDecision::Deny => {
+                    if should_defer_userpass || allow_remote_admin_bypass {
                         debug!(
                             "[{}] Deferring access policy re-check for {} to HTTP userpass auth",
                             ctx.id_str(),
@@ -1338,13 +1402,20 @@ async fn handle_request(
 
     if path.starts_with(ADMIN_PATH_PREFIX) {
         if let Some(state) = admin_state {
+            if let Ok(value) = hyper::header::HeaderValue::from_str(&peer_addr.ip().to_string()) {
+                req.headers_mut().insert(
+                    hyper::header::HeaderName::from_static("x-bifrost-peer-ip"),
+                    value,
+                );
+            }
+            let allow_remote_admin = bifrost_admin::is_remote_access_enabled(&state);
             if is_loopback && !req.uri().path().is_empty() {
                 debug!(
                     "Loopback admin request from {}: {} {}",
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             } else if path.starts_with(CERT_PUBLIC_PATH_PREFIX) && is_cert_public_request(&req) {
                 debug!(
@@ -1352,23 +1423,30 @@ async fn handle_request(
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
-            } else if path.starts_with(&format!("{ADMIN_PATH_PREFIX}/public/")) && is_loopback {
+            } else if path.starts_with(&format!("{ADMIN_PATH_PREFIX}/public/"))
+                && (is_loopback || allow_remote_admin)
+            {
                 debug!(
                     "Public admin request from {}: {} {}",
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
-            } else if is_valid_admin_request(&req, peer_addr, &admin_security_config) {
+            } else if is_valid_admin_request(
+                &req,
+                peer_addr,
+                &admin_security_config,
+                allow_remote_admin,
+            ) {
                 debug!(
                     "Valid admin request from {}: {} {}",
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             } else {
                 warn!(
@@ -1403,7 +1481,7 @@ async fn handle_request(
                 );
                 let req = rewrite_virtual_host_request(req);
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state, push_manager).await,
+                    AdminRouter::handle(req, state, push_manager, Some(peer_addr)).await,
                 ));
             }
             return Ok(error_response(403, "Forbidden"));
@@ -1411,7 +1489,12 @@ async fn handle_request(
         return Ok(error_response(503, "Admin interface not enabled"));
     }
 
-    if is_direct_browser_access(&req, &proxy_config) && admin_state.is_some() {
+    let allow_remote_admin = admin_state
+        .as_ref()
+        .map(|s| bifrost_admin::is_remote_access_enabled(s))
+        .unwrap_or(false);
+
+    if is_direct_browser_access(&req, &proxy_config, allow_remote_admin) && admin_state.is_some() {
         debug!(
             "Redirecting direct browser access from {} to admin UI",
             peer_addr
@@ -1757,7 +1840,11 @@ fn rewrite_virtual_host_request(req: Request<Incoming>) -> Request<Incoming> {
     Request::from_parts(parts, body)
 }
 
-fn is_direct_browser_access(req: &Request<Incoming>, config: &ProxyConfig) -> bool {
+fn is_direct_browser_access(
+    req: &Request<Incoming>,
+    config: &ProxyConfig,
+    allow_remote: bool,
+) -> bool {
     let uri = req.uri();
     let path = uri.path();
 
@@ -1780,7 +1867,7 @@ fn is_direct_browser_access(req: &Request<Incoming>, config: &ProxyConfig) -> bo
         || host_without_port == "127.0.0.1"
         || host_without_port == config.host;
 
-    if !is_local {
+    if !is_local && !allow_remote {
         return false;
     }
 

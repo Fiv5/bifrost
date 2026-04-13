@@ -96,7 +96,7 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
       const bifrostFiles = files.filter((f) => f.name.endsWith(".bifrost"));
 
       if (bifrostFiles.length === 0) {
-        message.warning("请拖入 .bifrost 格式的文件");
+        message.warning("Please drop a .bifrost file");
         return;
       }
 
@@ -109,10 +109,10 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
 
           if (result.warnings && result.warnings.length > 0) {
             message.warning(
-              `导入 ${file.name} 完成，但有 ${result.warnings.length} 条警告`,
+              `Imported ${file.name} with ${result.warnings.length} warning(s)`,
             );
           } else {
-            message.success(`导入 ${file.name} 成功`);
+            message.success(`Imported ${file.name} successfully`);
           }
 
           await refreshStoreByType(result.file_type);
@@ -124,7 +124,7 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
           }
         }
       } catch (error) {
-        message.error(`导入失败: ${error}`);
+        message.error(`Import failed: ${error}`);
       } finally {
         setIsImporting(false);
       }
@@ -152,7 +152,7 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
         <div className="bifrost-drop-overlay">
           <div className="bifrost-drop-content">
             <UploadOutlined style={{ fontSize: 48 }} />
-            <span>释放以导入 .bifrost 文件</span>
+            <span>Drop to import .bifrost file</span>
           </div>
         </div>
       )}
@@ -166,7 +166,7 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
       >
         <div style={{ textAlign: "center", padding: 20 }}>
           <Spin size="large" />
-          <p style={{ marginTop: 16, marginBottom: 0 }}>正在导入...</p>
+          <p style={{ marginTop: 16, marginBottom: 0 }}>Importing...</p>
         </div>
       </Modal>
     </>

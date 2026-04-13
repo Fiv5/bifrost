@@ -1548,7 +1548,7 @@ async fn handle_intercepted_request_with_protocol(
     if original_host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
         if let Some(state) = admin_state.clone() {
             let req = rewrite_intercepted_virtual_host_request(req);
-            let resp = AdminRouter::handle(req, state, push_manager.clone()).await;
+            let resp = AdminRouter::handle(req, state, push_manager.clone(), None).await;
             return Ok(convert_intercepted_admin_response(resp));
         }
     }
@@ -3055,7 +3055,7 @@ async fn handle_intercepted_websocket(
     if original_host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
         if let Some(state) = admin_state.clone() {
             let req = rewrite_intercepted_virtual_host_request(req);
-            let resp = AdminRouter::handle(req, state, push_manager).await;
+            let resp = AdminRouter::handle(req, state, push_manager, None).await;
             return Ok(convert_intercepted_admin_response(resp));
         }
     }

@@ -130,3 +130,96 @@ mark.mark-current {
   overflow-y: auto;
   overflow-x: hidden;
 }
+
+/* --- Admin login (tech style) --- */
+.bifrost-login {
+  position: relative;
+  height: 100vh;
+  width: 100vw;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.bifrost-login__bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1200px 600px at 20% 10%, rgba(56, 189, 248, 0.18), transparent 60%),
+    radial-gradient(900px 520px at 80% 20%, rgba(167, 139, 250, 0.16), transparent 55%),
+    radial-gradient(1000px 680px at 50% 110%, rgba(34, 211, 238, 0.12), transparent 60%),
+    linear-gradient(180deg, rgba(2, 6, 23, 0.96), rgba(3, 7, 18, 0.98));
+  filter: saturate(1.08);
+}
+
+[data-theme="light"] .bifrost-login__bg {
+  background:
+    radial-gradient(1200px 600px at 20% 10%, rgba(56, 189, 248, 0.18), transparent 60%),
+    radial-gradient(900px 520px at 80% 20%, rgba(167, 139, 250, 0.16), transparent 55%),
+    radial-gradient(1000px 680px at 50% 110%, rgba(34, 211, 238, 0.10), transparent 60%),
+    linear-gradient(180deg, rgba(240, 249, 255, 0.92), rgba(236, 240, 255, 0.92));
+}
+
+.bifrost-login__bg::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.10) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(circle at 50% 50%, black 0%, transparent 70%);
+}
+
+.bifrost-login__card {
+  position: relative;
+  width: min(520px, calc(100vw - 48px));
+  padding: 26px 26px 22px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.64);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow:
+    0 26px 96px rgba(0, 0, 0, 0.50),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(22px) saturate(1.10);
+  z-index: 1;
+}
+
+[data-theme="light"] .bifrost-login__card {
+  background: rgba(255, 255, 255, 0.70);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  box-shadow:
+    0 26px 92px rgba(15, 23, 42, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.bifrost-login__card::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 16px;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.55), rgba(167, 139, 250, 0.50));
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.bifrost-login__brand {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.bifrost-login__logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(56, 189, 248, 0.95), rgba(167, 139, 250, 0.90)),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.2), rgba(0, 0, 0, 0.2));
+  box-shadow:
+    0 14px 36px rgba(56, 189, 248, 0.18),
+    0 10px 26px rgba(167, 139, 250, 0.14);
+}

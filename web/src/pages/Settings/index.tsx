@@ -11,6 +11,7 @@ import {
   DashboardOutlined,
   CloudOutlined,
   GlobalOutlined,
+  KeyOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
   SafetyOutlined,
@@ -59,6 +60,7 @@ import MetricsTab from "./tabs/MetricsTab";
 import AccessControlTab from "./tabs/AccessControlTab";
 import PerformanceTab from "./tabs/PerformanceTab";
 import SyncTab from "./tabs/SyncTab";
+import RemoteAccessTab from "./tabs/RemoteAccessTab";
 import { updateDesktopProxyPort } from "../../desktop/tauri";
 import {
   getDesktopPlatform,
@@ -80,6 +82,7 @@ const VALID_TABS = [
   "access",
   "performance",
   "sync",
+  "remote",
 ];
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -1172,6 +1175,15 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
           onRunSync={handleSyncRunNow}
         />
       ),
+    },
+    {
+      key: "remote",
+      label: (
+        <span>
+          <KeyOutlined /> Remote Access
+        </span>
+      ),
+      children: <RemoteAccessTab />,
     },
   ];
 

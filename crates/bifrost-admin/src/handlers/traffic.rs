@@ -188,7 +188,6 @@ async fn subscribe_sse_stream(
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .header("Access-Control-Allow-Origin", "*")
         .body(BoxBody::new(body_stream))
         .unwrap()
 }
@@ -1415,7 +1414,6 @@ async fn get_body_bytes_async(
             .status(StatusCode::OK)
             .header("Content-Type", content_type)
             .header("Cache-Control", "no-store")
-            .header("Access-Control-Allow-Origin", "*")
             .body(full_body(bytes))
             .unwrap(),
         None => error_response(StatusCode::NOT_FOUND, "Body content not found"),

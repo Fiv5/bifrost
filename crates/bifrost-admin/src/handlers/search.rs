@@ -252,7 +252,6 @@ async fn execute_search_stream(
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .header("Access-Control-Allow-Origin", "*")
         .body(BoxBody::new(body_stream))
         .unwrap()
 }

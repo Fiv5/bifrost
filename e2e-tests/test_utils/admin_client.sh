@@ -33,6 +33,8 @@ ADMIN_CLIENT_BIFROST_LOG_FILE=""
 ADMIN_CLIENT_HOME_DIR=""
 ADMIN_CLIENT_XDG_CONFIG_HOME=""
 ADMIN_CLIENT_XDG_DATA_HOME=""
+ADMIN_CLIENT_ALLOCATED_ADMIN_PORT=""
+ADMIN_CLIENT_AUTH_TOKEN=""
 
 admin_log_info() { echo "[INFO] $*"; }
 admin_log_fail() { echo "[FAIL] $*"; }
@@ -42,7 +44,19 @@ admin_host() {
 }
 
 admin_port() {
-    echo "${ADMIN_PORT:-9900}"
+    if [[ -n "${ADMIN_PORT:-}" ]]; then
+        echo "${ADMIN_PORT}"
+        return 0
+    fi
+    if [[ -n "${ADMIN_CLIENT_ALLOCATED_ADMIN_PORT:-}" ]]; then
+        echo "${ADMIN_CLIENT_ALLOCATED_ADMIN_PORT}"
+        return 0
+    fi
+
+    # CI/并发环境下禁止使用固定端口（特别是 9900）；默认动态分配并缓存。
+    ADMIN_CLIENT_ALLOCATED_ADMIN_PORT="$(allocate_free_port)"
+    export ADMIN_PORT="$ADMIN_CLIENT_ALLOCATED_ADMIN_PORT"
+    echo "${ADMIN_CLIENT_ALLOCATED_ADMIN_PORT}"
 }
 
 admin_path_prefix() {
@@ -58,14 +72,16 @@ admin_base_url() {
 }
 
 admin_wait_for_admin_ready() {
-    local timeout="${1:-60}"
-    local waited=0
+    local timeout_secs="${1:-60}"
     local admin_url
     admin_url="$(admin_base_url)"
 
-    while [[ $waited -lt $timeout ]]; do
-        if curl -s "${admin_url}/api/system" >/dev/null 2>&1 || \
-           curl -s "${admin_url}/api/system/status" >/dev/null 2>&1; then
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
+        local code
+        code=$(env NO_PROXY="*" no_proxy="*" curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 5 "${admin_url}/api/auth/status" 2>/dev/null) || code="000"
+        if [[ "$code" =~ ^2 ]]; then
             return 0
         fi
 
@@ -73,11 +89,14 @@ admin_wait_for_admin_ready() {
             return 2
         fi
 
-        sleep 1
-        waited=$((waited + 1))
-    done
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= timeout_secs )); then
+            return 1
+        fi
 
-    return 1
+        sleep 0.2
+    done
 }
 
 admin_wait_for_proxy_ready() {
@@ -145,7 +164,7 @@ admin_start_bifrost() {
             XDG_CONFIG_HOME="$ADMIN_CLIENT_XDG_CONFIG_HOME" \
             XDG_DATA_HOME="$ADMIN_CLIENT_XDG_DATA_HOME" \
             BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-            "$bifrost_bin" -H "$host" -p "$port" start --skip-cert-check --unsafe-ssl \
+            "$bifrost_bin" -H "$host" -p "$port" start -y --access-mode allow_all --skip-cert-check --unsafe-ssl \
             >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
     else
         (cd "$ADMIN_CLIENT_REPO_DIR" && \
@@ -154,13 +173,15 @@ admin_start_bifrost() {
             XDG_CONFIG_HOME="$ADMIN_CLIENT_XDG_CONFIG_HOME" \
             XDG_DATA_HOME="$ADMIN_CLIENT_XDG_DATA_HOME" \
             BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-            cargo run --release --bin bifrost -- -H "$host" -p "$port" start --skip-cert-check --unsafe-ssl \
+            cargo run --release --bin bifrost -- -H "$host" -p "$port" start -y --access-mode allow_all --skip-cert-check --unsafe-ssl \
         ) >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
     fi
 
     ADMIN_CLIENT_BIFROST_PID=$!
 
     local rc
+    local admin_url
+    admin_url="$(admin_base_url)"
     admin_wait_for_admin_ready 90
     rc=$?
     if [[ $rc -eq 0 ]]; then
@@ -174,6 +195,10 @@ admin_start_bifrost() {
 
     if [[ $rc -eq 2 ]]; then
         admin_log_fail "Bifrost process exited early (PID: $ADMIN_CLIENT_BIFROST_PID)"
+        if command -v lsof &>/dev/null; then
+            echo "Port $port listeners:" >&2
+            lsof -i :"$port" 2>/dev/null >&2 || true
+        fi
     else
         admin_log_fail "Timeout waiting for admin server at ${admin_url}"
     fi
@@ -218,12 +243,25 @@ admin_ensure_bifrost() {
     local admin_url
     admin_url="$(admin_base_url)"
 
-    # If admin is already reachable, do nothing.
-    if curl -s "${admin_url}/api/system/status" >/dev/null 2>&1 || \
-       curl -s "${admin_url}/api/system" >/dev/null 2>&1; then
+    if env NO_PROXY="*" no_proxy="*" curl -s "${admin_url}/api/system/status" >/dev/null 2>&1 || \
+       env NO_PROXY="*" no_proxy="*" curl -s "${admin_url}/api/system" >/dev/null 2>&1; then
         return 0
     fi
-    admin_start_bifrost
+
+    local max_retries="${ADMIN_ENSURE_RETRIES:-2}"
+    local attempt=1
+    while [[ $attempt -le $max_retries ]]; do
+        if [[ $attempt -gt 1 ]]; then
+            admin_log_info "Retrying Bifrost startup (attempt $attempt/$max_retries)..."
+            admin_stop_bifrost
+            sleep 1
+        fi
+        if admin_start_bifrost; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
 }
 
 admin_cleanup_bifrost() {
@@ -232,20 +270,162 @@ admin_cleanup_bifrost() {
     fi
 }
 
+admin_auth_status_json() {
+    env NO_PROXY="*" no_proxy="*" curl -s "$(admin_base_url)/api/auth/login/status" 2>/dev/null || \
+    env NO_PROXY="*" no_proxy="*" curl -s "$(admin_base_url)/api/auth/status" 2>/dev/null || true
+}
+
+admin_auth_required() {
+    local body
+    body="$(admin_auth_status_json)"
+    if [[ -z "$body" ]]; then
+        echo "0"
+        return 0
+    fi
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        echo "0"
+        return 0
+    fi
+    "$py" - <<'PY' 2>/dev/null <<<"$body" || echo "0"
+import json,sys
+try:
+  data=json.load(sys.stdin)
+  print("1" if bool(data.get("auth_required", False)) else "0")
+except Exception:
+  print("0")
+PY
+}
+
+admin_login_if_needed() {
+    if [[ "$(admin_auth_required)" != "1" ]]; then
+        return 0
+    fi
+    if [[ -n "${ADMIN_CLIENT_AUTH_TOKEN:-}" ]]; then
+        return 0
+    fi
+
+    local user="${ADMIN_AUTH_USERNAME:-admin}"
+    local pass="${ADMIN_AUTH_PASSWORD:-${BIFROST_ADMIN_PASSWORD:-}}"
+    if [[ -z "$pass" ]]; then
+        admin_log_fail "Admin API requires auth but ADMIN_AUTH_PASSWORD/BIFROST_ADMIN_PASSWORD is not set"
+        return 1
+    fi
+
+    local payload
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        admin_log_fail "Admin auth requires python3 (or python>=3)"
+        return 1
+    fi
+    payload=$("$py" - <<'PY' "$user" "$pass"
+import json,sys
+print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))
+PY
+)
+
+    local url
+    url="$(admin_base_url)/api/auth/login"
+    local resp
+    resp=$(env NO_PROXY="*" no_proxy="*" curl -sS --connect-timeout 2 --max-time 15 \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "$url" 2>/dev/null || true)
+
+    local token
+    token=$("$py" - <<'PY' 2>/dev/null <<<"$resp" || true
+import json,sys
+try:
+  data=json.load(sys.stdin)
+  print(data.get("token",""))
+except Exception:
+  print("")
+PY
+)
+    if [[ -z "${token:-}" ]]; then
+        admin_log_fail "Failed to login to admin API (token missing)"
+        return 1
+    fi
+    ADMIN_CLIENT_AUTH_TOKEN="$token"
+    return 0
+}
+
+admin_request() {
+    local method="$1"; shift
+    local path="$1"; shift
+    local data="${1:-}"; shift || true
+
+    local url
+    url="$(admin_base_url)${path}"
+
+    local args=(
+        -sS
+        -X "$method"
+        --connect-timeout 2
+        --max-time 30
+        -H "Accept: application/json"
+    )
+
+    # 关键修复：显式强制 curl 针对回环地址（127.0.0.1/localhost）不走环境变量中的外部代理
+    # 在一些沙箱/CI环境下，127.0.0.1 可能会被 no_proxy 逻辑搞错，或者 curl 版本对 no_proxy 处理有差异。
+    # 我们确保请求 Admin API 时不走代理。
+    local extra_env=( "NO_PROXY=*" "no_proxy=*" )
+
+    if [[ -n "$data" ]]; then
+        args+=( -H "Content-Type: application/json" --data-binary "$data" )
+    fi
+    if [[ -n "${ADMIN_CLIENT_AUTH_TOKEN:-}" ]]; then
+        args+=( -H "Authorization: Bearer ${ADMIN_CLIENT_AUTH_TOKEN}" )
+    fi
+
+    local body_file headers_file
+    body_file="$(mktemp)"; headers_file="$(mktemp)"
+    local code
+    code=$(env "${extra_env[@]}" curl "${args[@]}" -D "$headers_file" -o "$body_file" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+    local body
+    body="$(cat "$body_file" 2>/dev/null || true)"
+
+    if [[ "$code" == "401" || "$code" == "403" ]]; then
+        # 远程管理端开启后：尝试登录并重试一次。
+        if admin_login_if_needed; then
+            rm -f "$body_file" "$headers_file" 2>/dev/null || true
+            body_file="$(mktemp)"; headers_file="$(mktemp)"
+            args=(
+                -sS
+                -X "$method"
+                --connect-timeout 2
+                --max-time 30
+                -H "Accept: application/json"
+                -H "Authorization: Bearer ${ADMIN_CLIENT_AUTH_TOKEN}"
+            )
+            if [[ -n "$data" ]]; then
+                args+=( -H "Content-Type: application/json" --data-binary "$data" )
+            fi
+            code=$(env "${extra_env[@]}" curl "${args[@]}" -D "$headers_file" -o "$body_file" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+            body="$(cat "$body_file" 2>/dev/null || true)"
+        fi
+    fi
+
+    rm -f "$body_file" "$headers_file" 2>/dev/null || true
+    printf '%s' "$body"
+}
+
 admin_get() {
     local path="$1"
-    curl -s "$(admin_base_url)${path}"
+    admin_request "GET" "$path"
 }
 
 admin_post() {
     local path="$1"
     local data="$2"
-    curl -s -X POST -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
+    admin_request "POST" "$path" "$data"
 }
 
 admin_delete() {
     local path="$1"
-    curl -s -X DELETE "$(admin_base_url)${path}"
+    admin_request "DELETE" "$path"
 }
 
 get_traffic_list() {
@@ -257,7 +437,7 @@ get_traffic_list() {
         local host="$arg1"
         local port="$arg2"
         local limit="$arg3"
-        curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic?limit=${limit}"
+        env NO_PROXY="*" no_proxy="*" curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic?limit=${limit}"
     else
         local limit="${arg1:-100}"
         admin_get "/api/traffic?limit=${limit}"
@@ -292,7 +472,7 @@ find_traffic_id_by_url() {
         limit="${port:-50}"
         get_traffic_list "$limit" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
     else
-        curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic?limit=${limit}" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
+        env NO_PROXY="*" no_proxy="*" curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic?limit=${limit}" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
     fi
 }
 
@@ -309,7 +489,7 @@ get_frames() {
         local traffic_id="$arg3"
         local after="$arg4"
         local limit="$arg5"
-        curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic/${traffic_id}/frames?after=${after}&limit=${limit}"
+        env NO_PROXY="*" no_proxy="*" curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic/${traffic_id}/frames?after=${after}&limit=${limit}"
     else
         local traffic_id="$arg1"
         local after="${arg2:-0}"
@@ -354,14 +534,14 @@ subscribe_frames() {
     local traffic_id="$1"
     local timeout="${2:-10}"
 
-    timeout "$timeout" curl -sN "$(admin_base_url)/api/traffic/${traffic_id}/frames/stream" 2>/dev/null
+    env NO_PROXY="*" no_proxy="*" timeout "$timeout" curl -sN "$(admin_base_url)/api/traffic/${traffic_id}/frames/stream" 2>/dev/null
 }
 
 subscribe_frames_bg() {
     local traffic_id="$1"
     local output_file="$2"
 
-    curl -sN "$(admin_base_url)/api/traffic/${traffic_id}/frames/stream" > "$output_file" 2>/dev/null &
+    env NO_PROXY="*" no_proxy="*" curl -sN "$(admin_base_url)/api/traffic/${traffic_id}/frames/stream" > "$output_file" 2>/dev/null &
     echo $!
 }
 
@@ -394,7 +574,7 @@ wait_for_admin() {
     admin_url="$(admin_base_url)"
 
     while [[ $waited -lt $timeout ]]; do
-        if curl -s "${admin_url}/api/system/status" >/dev/null 2>&1; then
+        if env NO_PROXY="*" no_proxy="*" curl -s "${admin_url}/api/system/status" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -432,13 +612,13 @@ clear_traffic() {
 admin_put() {
     local path="$1"
     local data="$2"
-    curl -s -X PUT -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
+    env NO_PROXY="*" no_proxy="*" curl -s -X PUT -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
 }
 
 admin_delete_with_body() {
     local path="$1"
     local data="$2"
-    curl -s -X DELETE -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
+    env NO_PROXY="*" no_proxy="*" curl -s -X DELETE -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
 }
 
 list_rules() {
@@ -583,20 +763,20 @@ get_cert_info() {
 download_cert() {
     local base_url
     base_url="$(admin_base_url)"
-    curl -s "${base_url%$(admin_path_prefix)}$(admin_path_prefix)/public/cert"
+    env NO_PROXY="*" no_proxy="*" curl -s "${base_url%$(admin_path_prefix)}$(admin_path_prefix)/public/cert"
 }
 
 download_cert_absolute_form() {
     local base_url
     base_url="$(admin_base_url)"
     base_url="${base_url%$(admin_path_prefix)}"
-    curl -s --proxy "${base_url}" "${base_url}$(admin_path_prefix)/public/cert"
+    env NO_PROXY="*" no_proxy="*" curl -s --proxy "${base_url}" "${base_url}$(admin_path_prefix)/public/cert"
 }
 
 get_cert_qrcode() {
     local base_url
     base_url="$(admin_base_url)"
-    curl -s "${base_url%$(admin_path_prefix)}$(admin_path_prefix)/public/cert/qrcode"
+    env NO_PROXY="*" no_proxy="*" curl -s "${base_url%$(admin_path_prefix)}$(admin_path_prefix)/public/cert/qrcode"
 }
 
 get_system_proxy() {

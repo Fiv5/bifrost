@@ -226,7 +226,7 @@ start_proxy() {
             cat /tmp/proxy_server.log
             exit 1
         fi
-        if curl -s "${CURL_COMMON_ARGS[@]}" "http://127.0.0.1:$PROXY_PORT/_bifrost/api/system" > /dev/null 2>&1; then
+        if env NO_PROXY="*" no_proxy="*" curl -s "${CURL_COMMON_ARGS[@]}" "http://127.0.0.1:$PROXY_PORT/_bifrost/api/system" > /dev/null 2>&1; then
             log_info "Proxy started (PID: $PROXY_PID)"
             return 0
         fi
@@ -275,7 +275,7 @@ test_http_basic() {
     log_section "Test 1: Basic HTTP Proxy"
     
     log_info "Sending HTTP request through proxy..."
-    local response=$(curl -s "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
+    local response=$(env NO_PROXY="" no_proxy="" curl -s "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
         "http://127.0.0.1:$MOCK_HTTP_PORT/test/http" 2>&1)
     
     echo "Response: $response"
@@ -294,7 +294,7 @@ test_https_passthrough() {
     
     log_info "Sending HTTPS CONNECT request through proxy (passthrough mode)..."
     
-    local response=$(curl -s -k "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
+    local response=$(env NO_PROXY="" no_proxy="" curl -s -k "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
         "https://127.0.0.1:$MOCK_HTTPS_PORT/test/passthrough" 2>&1)
     
     echo "Response: $response"
@@ -321,7 +321,7 @@ test_https_with_rule_intercept() {
     
     log_info "Sending HTTPS request (should be intercepted by rule)..."
     
-    local response=$(curl -s -k "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
+    local response=$(env NO_PROXY="" no_proxy="" curl -s -k "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
         "https://127.0.0.1:$MOCK_HTTPS_PORT/test/intercept-rule" 2>&1)
     
     echo "Response: $response"
@@ -350,7 +350,7 @@ test_https_with_rule_passthrough() {
     
     log_info "Sending HTTPS request (should passthrough by rule)..."
     
-    local response=$(curl -s -k "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
+    local response=$(env NO_PROXY="" no_proxy="" curl -s -k "${CURL_COMMON_ARGS[@]}" -x "http://127.0.0.1:$PROXY_PORT" \
         "https://127.0.0.1:$MOCK_HTTPS_PORT/test/passthrough-rule" 2>&1)
     
     echo "Response: $response"
@@ -382,7 +382,7 @@ test_external_google_https() {
 
     log_info "Sending external HTTPS request through proxy (http2 enabled): $EXTERNAL_TEST_URL"
     local headers
-    headers=$(curl -sS -k "${CURL_COMMON_ARGS[@]}" --http2 -D - -o /dev/null -x "http://127.0.0.1:$PROXY_PORT" "$EXTERNAL_TEST_URL" 2>&1)
+    headers=$(env NO_PROXY="" no_proxy="" curl -sS -k "${CURL_COMMON_ARGS[@]}" --http2 -D - -o /dev/null -x "http://127.0.0.1:$PROXY_PORT" "$EXTERNAL_TEST_URL" 2>&1)
 
     echo -e "Response headers:\n$headers"
 
@@ -420,13 +420,13 @@ test_intercept_mode_blacklist() {
     start_proxy "" ""
 
     log_info "Updating intercept exclude configuration via API..."
-    curl -s "${CURL_COMMON_ARGS[@]}" -X PUT \
+    env NO_PROXY="*" no_proxy="*" curl -s "${CURL_COMMON_ARGS[@]}" -X PUT \
         -H "Content-Type: application/json" \
         -d '{"enable_tls_interception":true,"intercept_exclude":["*.excluded.test"]}' \
         "http://127.0.0.1:$ADMIN_PORT/_bifrost/api/config/tls" >/dev/null
 
     local config
-    config=$(curl -s "${CURL_COMMON_ARGS[@]}" "http://127.0.0.1:$ADMIN_PORT/_bifrost/api/config/tls" 2>&1)
+    config=$(env NO_PROXY="*" no_proxy="*" curl -s "${CURL_COMMON_ARGS[@]}" "http://127.0.0.1:$ADMIN_PORT/_bifrost/api/config/tls" 2>&1)
     echo "TLS Config: $config"
     
     if echo "$config" | jq -e '.enable_tls_interception == true and (.intercept_exclude | index("*.excluded.test") != null)' >/dev/null 2>&1; then
@@ -451,13 +451,13 @@ test_intercept_mode_whitelist() {
     start_proxy "" ""
 
     log_info "Updating intercept include configuration via API..."
-    curl -s "${CURL_COMMON_ARGS[@]}" -X PUT \
+    env NO_PROXY="*" no_proxy="*" curl -s "${CURL_COMMON_ARGS[@]}" -X PUT \
         -H "Content-Type: application/json" \
         -d '{"enable_tls_interception":false,"intercept_include":["*.included.test"]}' \
         "http://127.0.0.1:$ADMIN_PORT/_bifrost/api/config/tls" >/dev/null
 
     local config
-    config=$(curl -s "${CURL_COMMON_ARGS[@]}" "http://127.0.0.1:$ADMIN_PORT/_bifrost/api/config/tls" 2>&1)
+    config=$(env NO_PROXY="*" no_proxy="*" curl -s "${CURL_COMMON_ARGS[@]}" "http://127.0.0.1:$ADMIN_PORT/_bifrost/api/config/tls" 2>&1)
     echo "TLS Config: $config"
     
     if echo "$config" | jq -e '.enable_tls_interception == false and (.intercept_include | index("*.included.test") != null)' >/dev/null 2>&1; then
@@ -479,7 +479,7 @@ test_api_update_tls_config() {
     
     log_info "Updating TLS config via API..."
     
-    local update_response=$(curl -s "${CURL_COMMON_ARGS[@]}" -X PUT \
+    local update_response=$(env NO_PROXY="*" no_proxy="*" curl -s "${CURL_COMMON_ARGS[@]}" -X PUT \
         -H "Content-Type: application/json" \
         -d '{"enable_tls_interception": true, "intercept_include": ["*.api.test", "secure.local"]}' \
         "http://127.0.0.1:$ADMIN_PORT/_bifrost/api/config/tls" 2>&1)

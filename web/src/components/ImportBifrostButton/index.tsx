@@ -20,7 +20,7 @@ interface ImportBifrostButtonProps {
 export const ImportBifrostButton: React.FC<ImportBifrostButtonProps> = ({
   expectedType,
   onImportSuccess,
-  buttonText = '导入',
+  buttonText = 'Import',
   buttonType = 'default',
   size = 'middle',
   icon = <ImportOutlined />,
@@ -29,7 +29,7 @@ export const ImportBifrostButton: React.FC<ImportBifrostButtonProps> = ({
   const handleBeforeUpload: UploadProps['beforeUpload'] = useCallback(
     async (file: RcFile) => {
       if (!file.name.endsWith('.bifrost')) {
-        message.error('请选择 .bifrost 格式的文件');
+        message.error('Please select a .bifrost file');
         return Upload.LIST_IGNORE;
       }
 
@@ -40,7 +40,7 @@ export const ImportBifrostButton: React.FC<ImportBifrostButtonProps> = ({
           const detected = await detectType(content);
           if (detected.file_type !== expectedType) {
             message.error(
-              `文件类型不匹配: 期望 ${expectedType}，实际为 ${detected.file_type}`
+              `File type mismatch: expected ${expectedType}, got ${detected.file_type}`
             );
             return Upload.LIST_IGNORE;
           }
@@ -49,9 +49,9 @@ export const ImportBifrostButton: React.FC<ImportBifrostButtonProps> = ({
         const result = await importFile(content);
 
         if (result.warnings && result.warnings.length > 0) {
-          message.warning(`导入完成，有 ${result.warnings.length} 条警告`);
+          message.warning(`Import completed with ${result.warnings.length} warning(s)`);
         } else {
-          message.success('导入成功');
+          message.success('Import successful');
         }
 
         if (result.file_type === 'network') {
@@ -64,7 +64,7 @@ export const ImportBifrostButton: React.FC<ImportBifrostButtonProps> = ({
 
         onImportSuccess?.(result);
       } catch (error) {
-        message.error(`导入失败: ${error}`);
+        message.error(`Import failed: ${error}`);
       }
 
       return Upload.LIST_IGNORE;

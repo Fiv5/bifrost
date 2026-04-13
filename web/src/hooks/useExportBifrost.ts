@@ -68,9 +68,9 @@ export function useExportBifrost() {
 
         const filename = customFilename || formatExportFilename(fileType, count);
         downloadFile(content, filename);
-        message.success(`已导出为 ${filename}`);
+        message.success(`Exported as ${filename}`);
       } catch (error) {
-        message.error(`导出失败: ${error}`);
+        message.error(`Export failed: ${error}`);
       }
     },
     []

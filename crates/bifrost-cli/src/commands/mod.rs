@@ -1,3 +1,4 @@
+mod admin;
 mod bifrost_file;
 mod ca;
 mod completions;
@@ -20,6 +21,7 @@ mod upgrade;
 mod value;
 mod whitelist;
 
+pub use admin::*;
 pub use ca::*;
 pub use config::handle_config_command;
 pub use group::handle_group_command;

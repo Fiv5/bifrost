@@ -61,6 +61,8 @@ start [OPTIONS]                   Start the proxy server (default)
   --app-intercept-exclude <APPS>      Exclude apps from TLS interception (supports wildcards)
   --app-intercept-include <APPS>      Force intercept apps (highest priority)
   --unsafe-ssl                        Skip upstream TLS verification (dangerous)
+  --enable-badge-injection            Enable injecting Bifrost badge into HTML pages
+  --disable-badge-injection           Disable injecting Bifrost badge into HTML pages
   --no-disconnect-on-config-change    Disable auto-disconnect when TLS config changes
   --rules <RULE>                      Proxy rule, e.g. host:// or http3:// (can be repeated)
   --rules-file <PATH>                 Path to rules file
@@ -68,6 +70,7 @@ start [OPTIONS]                   Start the proxy server (default)
   --proxy-bypass <LIST>               System proxy bypass list
   --cli-proxy                         Enable CLI proxy env vars while proxy is running
   --cli-proxy-no-proxy <LIST>         CLI proxy no-proxy list
+  -y, --yes                           Automatically answer yes to prompts
 
   TLS Interception Priority (highest to lowest):
     1. Rule-based (tlsIntercept://, tlsPassthrough://)
@@ -82,12 +85,14 @@ status (alias: st)                Show proxy status
 
 rule <ACTION>                     Manage rules
   list                              List all rules
+  active                            Show active (enabled) rules summary from running server
   add <name> [-c content|-f file]   Add a new rule
   update <name> [-c content|-f file] Update an existing rule
   enable <name>                     Enable a rule
   disable <name>                    Disable a rule
   show <name>                       Show rule content
   delete <name>                     Delete a rule
+  sync                              Sync rules with remote server
   rename <name> <new_name>          Rename a rule
   reorder <name1> <name2> ...       Reorder rules priority
 
@@ -133,6 +138,7 @@ value <ACTION> (alias: val)       Manage values for variable expansion
   list                              List all values
   show|get <name>                   Show a value
   add|set <name> <value>            Add a value
+  update <name> <value>             Update a value
   delete <name>                     Delete a value
   import <file>                     Import from file (.txt/.kv/.json)
 
@@ -183,8 +189,11 @@ search [keyword] [OPTIONS]         Search traffic records with advanced filterin
   --method <METHOD>                   HTTP method filter
   --host <TEXT>                       Host contains filter
   --path <TEXT>                       Path contains filter
-  --protocol <PROTO>                 Protocol: HTTP|HTTPS|WS|WSS
-  --domain <PATTERN>                 Domain pattern filter
+  --protocol <PROTO>                  Protocol: HTTP|HTTPS|WS|WSS
+  --content-type <TYPE>               Content-Type filter (json/xml/html/form/text...)
+  --domain <PATTERN>                  Domain pattern filter
+  --max-scan <N>                      Maximum records to scan (default: 10000)
+  --max-results <N>                   Maximum matching results to return (default: 100)
   --no-color                          Disable colored output
 
 completions <SHELL> (alias: comp)  Generate shell completion scripts
@@ -520,6 +529,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ConfigCommands>,
     },
+    #[command(about = "Manage admin remote access and authentication")]
+    Admin {
+        #[command(subcommand)]
+        action: AdminCommands,
+    },
     #[command(about = "Inspect and query traffic records")]
     Traffic {
         #[command(subcommand)]
@@ -642,6 +656,43 @@ pub enum Commands {
     },
     #[command(about = "Check for new version without upgrading")]
     VersionCheck,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum AdminCommands {
+    #[command(about = "Toggle remote admin access (enable/disable/status)")]
+    Remote {
+        #[command(subcommand)]
+        action: AdminRemoteCommands,
+    },
+    #[command(about = "Set or change admin password (hidden input)")]
+    Passwd {
+        #[arg(long, default_value = "admin", help = "Admin username")]
+        username: String,
+        #[arg(long, help = "Read password from stdin (non-interactive)")]
+        password_stdin: bool,
+    },
+    #[command(about = "Revoke all existing admin sessions")]
+    RevokeAll,
+    #[command(about = "Read admin login audit logs")]
+    Audit {
+        #[arg(long, default_value = "50", help = "Maximum records to return")]
+        limit: usize,
+        #[arg(long, default_value = "0", help = "Offset for pagination")]
+        offset: usize,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum AdminRemoteCommands {
+    #[command(about = "Enable remote access")]
+    Enable,
+    #[command(about = "Disable remote access")]
+    Disable,
+    #[command(about = "Show current remote access status")]
+    Status,
 }
 
 #[derive(Subcommand, Clone)]

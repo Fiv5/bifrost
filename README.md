@@ -74,6 +74,12 @@ bifrost status
 # 停止服务
 bifrost stop
 
+# 管理端远程访问与鉴权（Web UI）
+bifrost admin remote status
+bifrost admin remote enable
+bifrost admin passwd
+bifrost admin revoke-all
+
 # 查看流量
 bifrost traffic list
 bifrost traffic search "keyword" --method POST --host api.openai.com --path /v1/responses

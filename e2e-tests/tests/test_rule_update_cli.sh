@@ -48,7 +48,7 @@ main() {
     TEST_DATA_DIR="$(mktemp -d)"
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
 
-    "${BIFROST_BIN}" rule add demo --content "example.com host://127.0.0.1:3000"
+    "${BIFROST_BIN}" rule add demo --content "example.com host://127.0.0.1:${ECHO_HTTP_PORT:-3000}"
 
     local updated
     updated="$("${BIFROST_BIN}" rule update demo --content "example.com statusCode://201" 2>&1)"

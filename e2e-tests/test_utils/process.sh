@@ -15,14 +15,17 @@ is_windows() {
 
 _win_stop_process() {
     local pid=$1
-    taskkill.exe //F //PID "$pid" >/dev/null 2>&1 || true
+    # Use canonical taskkill flags; `//F` can be rejected in some environments.
+    taskkill.exe /F /PID "$pid" >/dev/null 2>&1 || true
 }
 
 _win_find_pid_on_port() {
     local port=$1
+    # Best-effort: avoid aborting the whole suite under `set -e -o pipefail`.
     netstat.exe -ano 2>/dev/null \
         | awk -v p=":${port}" '$1 == "TCP" && $2 ~ p"$" && $4 == "LISTENING" { print $5; exit }' \
-        | tr -d '\r'
+        | tr -d '\r' \
+        || true
 }
 
 kill_pid() {
@@ -55,7 +58,7 @@ kill_process_tree() {
         return 0
     fi
     if is_windows; then
-        taskkill.exe //F //T //PID "$pid" >/dev/null 2>&1 || true
+        taskkill.exe /F /T /PID "$pid" >/dev/null 2>&1 || true
     else
         kill -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
     fi
@@ -68,12 +71,12 @@ kill_bifrost_on_port() {
     fi
     if is_windows; then
         local win_pid
-        win_pid=$(_win_find_pid_on_port "$port")
+        win_pid="$(_win_find_pid_on_port "$port" || true)"
         if [ -n "$win_pid" ]; then
             _win_stop_process "$win_pid"
             local wait_count=0
             while [[ $wait_count -lt 30 ]]; do
-                win_pid=$(_win_find_pid_on_port "$port")
+                win_pid="$(_win_find_pid_on_port "$port" || true)"
                 if [[ -z "$win_pid" ]]; then
                     break
                 fi
@@ -87,9 +90,13 @@ kill_bifrost_on_port() {
     else
         local target_pid=""
         if command -v lsof &>/dev/null; then
-            target_pid=$(lsof -ti :"$port" 2>/dev/null | head -n 1)
+            # NOTE: `lsof -ti` returns exit code 1 when no process is found.
+            # Under `set -e -o pipefail` this would abort the whole test suite,
+            # so make it best-effort.
+            target_pid="$(lsof -ti :"$port" 2>/dev/null | head -n 1 || true)"
         elif command -v fuser &>/dev/null; then
-            target_pid=$(fuser "$port"/tcp 2>/dev/null | awk '{print $1}')
+            # `fuser` also returns non-zero when no process is found.
+            target_pid="$(fuser "$port"/tcp 2>/dev/null | awk '{print $1}' || true)"
         fi
         if [ -n "$target_pid" ]; then
             kill -9 "$target_pid" 2>/dev/null || true
@@ -103,7 +110,7 @@ win_wait_port_free() {
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
         local pid
-        pid=$(_win_find_pid_on_port "$port")
+        pid="$(_win_find_pid_on_port "$port" || true)"
         if [[ -z "$pid" ]]; then
             return 0
         fi
@@ -119,7 +126,7 @@ win_find_pid_on_port() {
 
 kill_all_bifrost() {
     if is_windows; then
-        taskkill.exe //F //IM bifrost.exe >/dev/null 2>&1 || true
+        taskkill.exe /F /IM bifrost.exe >/dev/null 2>&1 || true
         sleep 2
     else
         pkill -f bifrost 2>/dev/null || killall bifrost 2>/dev/null || true
@@ -148,11 +155,168 @@ wait_pid() {
 }
 
 python_cmd() {
-    if command -v python3 &>/dev/null; then
-        echo "python3"
-    else
-        echo "python"
+    # Backwards-compatible alias.
+    python3_cmd
+}
+
+python3_cmd() {
+    # Prefer python3, but also allow `python` if it is Python 3.
+    # Cache the resolved command in BIFROST_E2E_PYTHON_BIN to keep logs stable.
+    if [[ -n "${BIFROST_E2E_PYTHON_BIN:-}" ]]; then
+        echo "$BIFROST_E2E_PYTHON_BIN"
+        return 0
     fi
+
+    if command -v python3 &>/dev/null; then
+        if python3 -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+            export BIFROST_E2E_PYTHON_BIN="python3"
+            echo "$BIFROST_E2E_PYTHON_BIN"
+            return 0
+        fi
+    fi
+
+    if command -v python &>/dev/null; then
+        if python -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+            export BIFROST_E2E_PYTHON_BIN="python"
+            echo "$BIFROST_E2E_PYTHON_BIN"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# E2E infra helpers (ports / polling)
+# ---------------------------------------------------------------------------
+
+_require_python_for_port_alloc() {
+    local py
+    py="$(python3_cmd 2>/dev/null || true)"
+    if [[ -z "${py:-}" ]]; then
+        echo "ERROR: python3 (or python>=3) is required for E2E infrastructure" >&2
+        return 1
+    fi
+    export BIFROST_E2E_PYTHON_BIN="$py"
+    return 0
+}
+
+allocate_free_port() {
+    _require_python_for_port_alloc || return 1
+    "$BIFROST_E2E_PYTHON_BIN" - <<'PY'
+import socket
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+port_is_available() {
+    local port="$1"
+    _require_python_for_port_alloc || return 1
+    "$BIFROST_E2E_PYTHON_BIN" - "$port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    try:
+        s.close()
+    except Exception:
+        pass
+sys.exit(0)
+PY
+}
+
+# Pick a base port such that [base, base+span-1] are all available.
+# - requested_base_port: 0 means pick a randomized starting point.
+# - span: number of consecutive ports needed.
+pick_available_base_port() {
+    local requested_base_port="${1:-0}"
+    local span="${2:-1}"
+
+    _require_python_for_port_alloc || return 1
+
+    "$BIFROST_E2E_PYTHON_BIN" - "$requested_base_port" "$span" <<'PY'
+import random
+import socket
+import sys
+
+requested = int(sys.argv[1])
+span = int(sys.argv[2])
+
+def range_ok(base: int, span: int) -> bool:
+    sockets = []
+    try:
+        for p in range(base, base + span):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", p))
+            sockets.append(s)
+        return True
+    except OSError:
+        return False
+    finally:
+        for s in sockets:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+def candidate_bases():
+    # Prefer ephemeral-ish high ports to reduce collisions.
+    low, high = 20000, 59000
+    # Leave room for span.
+    high = max(low, high - max(span, 1) - 1)
+    if requested > 0:
+        yield requested
+        for i in range(1, 50):
+            yield requested + i * 100
+    # Randomized fallback (helps when multiple jobs start concurrently).
+    for _ in range(200):
+        yield random.randint(low, high)
+
+for base in candidate_bases():
+    if base <= 0:
+        continue
+    if base + span >= 65535:
+        continue
+    if range_ok(base, span):
+        print(base)
+        sys.exit(0)
+
+print(0)
+sys.exit(1)
+PY
+}
+
+wait_for_http_ready() {
+    local url="$1"
+    local timeout_secs="${2:-30}"
+    local interval_secs="${3:-0.2}"
+
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
+        if curl -fsS --connect-timeout 2 --max-time 5 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= timeout_secs )); then
+            return 1
+        fi
+        sleep "$interval_secs"
+    done
 }
 
 start_echo_server() {
@@ -162,7 +326,9 @@ start_echo_server() {
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     local server_script="${script_dir}/mock_servers/http_echo_server.py"
 
-    python3 "${server_script}" "${port}" > >(tee "${log_file}") 2>&1 &
+    _require_python_for_port_alloc || return 1
+
+    "$BIFROST_E2E_PYTHON_BIN" "${server_script}" "${port}" > >(tee "${log_file}") 2>&1 &
     local pid=$!
     echo "$pid"
 

@@ -1188,7 +1188,7 @@ export const useReplayStore = create<ReplayState>()(
         }
         proxyUrl.searchParams.set('rule_config', JSON.stringify(ruleConfig));
 
-        // 替换为 WebSocket 协议
+        // Replace with WebSocket protocol
         const wsProxyUrl = buildWsUrl(
           '/api/replay/execute/ws',
           proxyUrl.searchParams,

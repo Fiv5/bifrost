@@ -11,6 +11,7 @@ import TrafficDetailPage from "./pages/TrafficDetailPage";
 import Replay from "./pages/Replay";
 import Settings from "./pages/Settings";
 import SyncLogin from "./pages/SyncLogin";
+import Login from "./pages/Login";
 import Values from "./pages/Values";
 import Scripts from "./pages/Scripts";
 import Groups from "./pages/Groups";
@@ -24,6 +25,7 @@ import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 import { useEditorCompletion } from "./hooks/useEditorCompletion";
 import { useForceRefreshStore } from "./stores/useForceRefreshStore";
 import { useDesktopCoreStore } from "./stores/useDesktopCoreStore";
+import AdminAuthGate from "./components/AdminAuthGate";
 import {
   getDesktopPlatform,
   getAdminPrefix,
@@ -231,26 +233,26 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
       </Modal>
       <Modal
         open={forceRefreshVisible}
-        title="页面已被断开"
+        title="Page Disconnected"
         closable={false}
         maskClosable={false}
         keyboard={false}
-        okText="刷新页面"
+        okText="Refresh Page"
         cancelButtonProps={{ style: { display: "none" } }}
         onOk={() => {
           window.location.reload();
         }}
       >
         <Typography.Paragraph>
-          由于打开页面过多，当前页面的连接已被服务端关闭。
+          The connection has been closed by the server due to too many open pages.
         </Typography.Paragraph>
         {forceRefreshReason ? (
           <Typography.Paragraph type="secondary">
-            原因：{forceRefreshReason}
+            Reason: {forceRefreshReason}
           </Typography.Paragraph>
         ) : null}
         <Typography.Paragraph type="secondary">
-          请刷新页面后继续使用。
+          Please refresh the page to continue.
         </Typography.Paragraph>
       </Modal>
       {isDesktopShell() ? (
@@ -259,9 +261,17 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
             <PendingAuthModal />
             <PendingIpTlsModal />
             <Routes>
+              <Route path="/login" element={<Login />} />
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />
-              <Route path="/" element={<AppLayout />}>
+              <Route
+                path="/"
+                element={
+                  <AdminAuthGate>
+                    <AppLayout />
+                  </AdminAuthGate>
+                }
+              >
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />
                 <Route path="replay" element={<Replay />} />
@@ -281,9 +291,17 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
             <PendingAuthModal />
             <PendingIpTlsModal />
             <Routes>
+              <Route path="/login" element={<Login />} />
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />
-              <Route path="/" element={<AppLayout />}>
+              <Route
+                path="/"
+                element={
+                  <AdminAuthGate>
+                    <AppLayout />
+                  </AdminAuthGate>
+                }
+              >
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />
                 <Route path="replay" element={<Replay />} />

@@ -8,12 +8,34 @@ source "$SCRIPT_DIR/../test_utils/http_client.sh"
 source "$SCRIPT_DIR/../test_utils/process.sh"
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
-ADMIN_PORT="${ADMIN_PORT:-9900}"
-PROXY_PORT="${PROXY_PORT:-9900}"
+ADMIN_PORT="${ADMIN_PORT:-}"
+PROXY_PORT="${PROXY_PORT:-}"
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
-ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
-MOCK_HTTP_PORT="${MOCK_HTTP_PORT:-3197}"
+MOCK_HTTP_PORT="${MOCK_HTTP_PORT:-}"
 MOCK_PID=""
+
+# 并发/CI 环境下禁止固定端口；未显式指定时自动分配。
+if [[ -z "${ADMIN_PORT}" ]]; then
+    ADMIN_PORT="$(allocate_free_port)"
+fi
+if [[ -z "${PROXY_PORT}" ]]; then
+    PROXY_PORT="$ADMIN_PORT"
+fi
+if [[ -z "${MOCK_HTTP_PORT}" ]]; then
+    MOCK_HTTP_PORT="$(allocate_free_port)"
+fi
+
+ADMIN_BASE_URL="$(admin_base_url)"
+export ADMIN_BASE_URL
+
+admin_curl() {
+    admin_login_if_needed >/dev/null 2>&1 || true
+    local args=( -sS )
+    if [[ -n "${ADMIN_CLIENT_AUTH_TOKEN:-}" ]]; then
+        args+=( -H "Authorization: Bearer ${ADMIN_CLIENT_AUTH_TOKEN}" )
+    fi
+    curl "${args[@]}" "$@"
+}
 
 export ADMIN_HOST ADMIN_PORT ADMIN_PATH_PREFIX
 
@@ -119,13 +141,22 @@ run_test() {
 start_mock_server() {
     python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$MOCK_HTTP_PORT" >/dev/null 2>&1 &
     MOCK_PID=$!
-    local waited=0
-    while [[ $waited -lt 10 ]]; do
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
         if curl -sS -o /dev/null -w "" "http://127.0.0.1:${MOCK_HTTP_PORT}/get" 2>/dev/null; then
             return 0
         fi
-        sleep 1
-        ((waited++))
+
+        if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+            return 1
+        fi
+        local now_ts
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= 20 )); then
+            break
+        fi
+        sleep 0.2
     done
     return 1
 }
@@ -163,7 +194,7 @@ test_traffic_query_api() {
     generate_traffic 3
     
     local response
-    response=$(curl -sS -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
+    response=$(admin_curl -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
         -H "Content-Type: application/json" \
         -d '{"limit": 10}')
     
@@ -187,7 +218,7 @@ test_traffic_updates_api() {
     log_info "Testing traffic updates API..."
     
     local initial_response
-    initial_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=50")
+    initial_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?limit=50")
     
     assert_not_empty "$initial_response" "Initial updates response should not be empty" || return 1
     
@@ -199,7 +230,7 @@ test_traffic_updates_api() {
     sleep 1
     
     local new_response
-    new_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?after_seq=${initial_seq}&limit=50")
+    new_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?after_seq=${initial_seq}&limit=50")
     
     local new_records_count
     new_records_count=$(echo "$new_response" | jq -r '.new_records | length')
@@ -224,7 +255,7 @@ test_traffic_pending_updates() {
     log_info "Testing pending records update tracking..."
     
     local response
-    response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=100")
+    response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?limit=100")
     
     local records_json
     records_json=$(echo "$response" | jq -r '.new_records')
@@ -235,7 +266,7 @@ test_traffic_pending_updates() {
     if [[ -z "$first_record_id" ]]; then
         generate_traffic 1
         sleep 1
-        response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=100")
+        response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?limit=100")
         first_record_id=$(echo "$response" | jq -r '.new_records[0].id // empty')
     fi
     
@@ -247,7 +278,7 @@ test_traffic_pending_updates() {
     log_info "Using record ID for pending test: $first_record_id"
     
     local pending_response
-    pending_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?pending_ids=${first_record_id}&limit=10")
+    pending_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?pending_ids=${first_record_id}&limit=10")
     
     assert_not_empty "$pending_response" "Pending updates response should not be empty" || return 1
     
@@ -264,7 +295,7 @@ test_traffic_detail_api() {
     generate_traffic 1
     
     local list_response
-    list_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic?limit=5")
+    list_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic?limit=5")
     
     local first_id
     first_id=$(echo "$list_response" | jq -r '.records[0].id // empty')
@@ -277,7 +308,7 @@ test_traffic_detail_api() {
     log_info "Fetching detail for record: $first_id"
     
     local detail_response
-    detail_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/${first_id}")
+    detail_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/${first_id}")
     
     assert_not_empty "$detail_response" "Detail response should not be empty" || return 1
     
@@ -301,7 +332,7 @@ test_compact_format() {
     log_info "Testing compact format conversion..."
     
     local response
-    response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=10")
+    response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?limit=10")
     
     local first_record
     first_record=$(echo "$response" | jq -r '.new_records[0] // empty')
@@ -309,7 +340,7 @@ test_compact_format() {
     if [[ -z "$first_record" || "$first_record" == "null" ]]; then
         generate_traffic 1
         sleep 1
-        response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=10")
+        response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?limit=10")
         first_record=$(echo "$response" | jq '.new_records[0] // empty')
     fi
     
@@ -366,7 +397,7 @@ PY
     fi
 
     local initial_response
-    initial_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic?limit=5")
+    initial_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic?limit=5")
     
     local initial_count
     initial_count=$(echo "$initial_response" | jq -r '.total // 0')
@@ -375,20 +406,20 @@ PY
     if [[ "$initial_count" -eq 0 ]]; then
         generate_traffic 3
         sleep 1
-        initial_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic?limit=5")
+        initial_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic?limit=5")
         initial_count=$(echo "$initial_response" | jq -r '.total // 0')
         log_info "After generating traffic, count: $initial_count"
     fi
     
     log_info "Clearing traffic..."
     local clear_response
-    clear_response=$(curl -sS -X DELETE "${ADMIN_BASE_URL}/api/traffic")
+    clear_response=$(admin_curl -X DELETE "${ADMIN_BASE_URL}/api/traffic")
     log_debug "Clear response: $clear_response"
     
     sleep 1
     
     local after_clear
-    after_clear=$(curl -sS "${ADMIN_BASE_URL}/api/traffic?limit=5")
+    after_clear=$(admin_curl "${ADMIN_BASE_URL}/api/traffic?limit=5")
     local after_count
     after_count=$(echo "$after_clear" | jq -r '.total // 0')
     log_info "After clear, record count: $after_count"
@@ -414,7 +445,7 @@ test_sequence_persistence() {
     log_info "Testing sequence persistence across queries..."
     
     local response1
-    response1=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=50")
+    response1=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?limit=50")
     local seq1
     seq1=$(echo "$response1" | jq -r '.server_sequence // 0')
     log_info "Initial sequence: $seq1"
@@ -423,7 +454,7 @@ test_sequence_persistence() {
     sleep 1
     
     local response2
-    response2=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=50")
+    response2=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?limit=50")
     local seq2
     seq2=$(echo "$response2" | jq -r '.server_sequence // 0')
     log_info "After traffic sequence: $seq2"
@@ -431,7 +462,7 @@ test_sequence_persistence() {
     assert_greater_than "$seq2" "$seq1" "Sequence should increase after new traffic" || return 1
     
     local incremental_response
-    incremental_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?after_seq=${seq1}&limit=50")
+    incremental_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/updates?after_seq=${seq1}&limit=50")
     local new_count
     new_count=$(echo "$incremental_response" | jq -r '.new_records | length')
     
@@ -448,7 +479,7 @@ test_pagination() {
     sleep 1
     
     local page1
-    page1=$(curl -sS -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
+    page1=$(admin_curl -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
         -H "Content-Type: application/json" \
         -d '{"limit": 5, "direction": "backward"}')
     
@@ -465,7 +496,7 @@ test_pagination() {
         log_info "Page 1 first seq: $first_seq"
         
         local page2
-        page2=$(curl -sS -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
+        page2=$(admin_curl -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
             -H "Content-Type: application/json" \
             -d "{\"cursor\": $first_seq, \"limit\": 5, \"direction\": \"backward\"}")
         
@@ -500,7 +531,7 @@ test_filter_by_method() {
     sleep 1
     
     local response
-    response=$(curl -sS -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
+    response=$(admin_curl -X POST "${ADMIN_BASE_URL}/api/traffic/query" \
         -H "Content-Type: application/json" \
         -d '{"method": "GET", "limit": 50}')
     
@@ -527,7 +558,7 @@ test_body_retrieval() {
     sleep 1
     
     local list_response
-    list_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic?limit=5")
+    list_response=$(admin_curl "${ADMIN_BASE_URL}/api/traffic?limit=5")
     
     local record_id
     record_id=$(echo "$list_response" | jq -r '.records[0].id // empty')
@@ -540,7 +571,7 @@ test_body_retrieval() {
     log_info "Testing body retrieval for record: $record_id"
     
     local response_body
-    response_body=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/${record_id}/response-body" 2>/dev/null)
+    response_body=$(admin_curl "${ADMIN_BASE_URL}/api/traffic/${record_id}/response-body" 2>/dev/null)
     
     if [[ -n "$response_body" && "$response_body" != "null" ]]; then
         log_info "Response body retrieved successfully (length: ${#response_body})"
@@ -555,11 +586,11 @@ main() {
     echo "=========================================="
     echo "  Traffic DB E2E Tests"
     echo "=========================================="
-    echo "Admin URL: ${ADMIN_BASE_URL}"
+    echo "Admin URL: $(admin_base_url)"
     echo "Proxy Port: ${PROXY_PORT}"
     echo "=========================================="
 
-    trap 'stop_mock_server; admin_cleanup_bifrost; if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi' EXIT
+    trap 'kill $(jobs -p) 2>/dev/null || true; stop_mock_server; admin_cleanup_bifrost; if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi' EXIT
 
     admin_ensure_bifrost || { log_fail "Could not start Bifrost"; exit 1; }
 

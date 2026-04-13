@@ -678,7 +678,6 @@ async fn handle_export_rules(req: Request<Incoming>, state: SharedAdminState) ->
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(output))
         .unwrap()
 }
@@ -726,7 +725,6 @@ async fn handle_export_network(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(output))
         .unwrap()
 }
@@ -872,7 +870,6 @@ async fn handle_export_scripts(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(output))
         .unwrap()
 }
@@ -941,7 +938,6 @@ async fn handle_export_values(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(output))
         .unwrap()
 }
@@ -1056,7 +1052,6 @@ async fn handle_export_templates(
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(output))
         .unwrap()
 }

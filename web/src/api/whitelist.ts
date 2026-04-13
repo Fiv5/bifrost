@@ -45,6 +45,14 @@ export async function removeTemporary(ip: string): Promise<{ success: boolean; m
   return del('/whitelist/temporary', { ip });
 }
 
+export async function removeSessionDenied(ip: string): Promise<{ success: boolean; message: string }> {
+  return del('/whitelist/session-denied', { ip });
+}
+
+export async function clearSessionDenied(): Promise<{ success: boolean; message: string }> {
+  return del('/whitelist/session-denied', {});
+}
+
 export async function getPendingAuthorizations(): Promise<PendingAuth[]> {
   return get<PendingAuth[]>('/whitelist/pending');
 }

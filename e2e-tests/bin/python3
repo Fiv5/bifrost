@@ -10,8 +10,10 @@ if real_cmd="$(find_real_cmd python3)"; then
 fi
 
 if real_cmd="$(find_real_cmd python)"; then
-  exec "$real_cmd" "$@"
+  if "$real_cmd" -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+    exec "$real_cmd" "$@"
+  fi
 fi
 
-echo "python3 shim: neither python3 nor python found in PATH" >&2
+echo "python3 shim: neither python3 nor python>=3 found in PATH" >&2
 exit 127

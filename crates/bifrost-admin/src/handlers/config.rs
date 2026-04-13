@@ -1485,7 +1485,6 @@ async fn ip_tls_pending_stream(state: SharedAdminState) -> Response<BoxBody> {
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .header("Access-Control-Allow-Origin", "*")
         .body(BoxBody::new(body_stream))
         .unwrap()
 }

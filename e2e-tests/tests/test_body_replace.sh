@@ -76,6 +76,7 @@ cleanup() {
 
     safe_cleanup_proxy "$PROXY_PID"
 
+    MOCK_SERVERS=http HTTP_PORT="$ECHO_HTTP_PORT" \
     "$E2E_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 
     log_info "清理完成"
@@ -104,6 +105,7 @@ start_mock_servers() {
     
     mkdir -p "$TEST_DATA_DIR"
     
+    MOCK_SERVERS=http HTTP_PORT="$ECHO_HTTP_PORT" \
     "$E2E_DIR/mock_servers/start_servers.sh" start > "$MOCK_LOG_FILE" 2>&1 &
     
     local count=0

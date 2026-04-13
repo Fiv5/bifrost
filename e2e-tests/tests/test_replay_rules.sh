@@ -29,6 +29,8 @@ MOCK_WS_PID=""
 passed=0
 failed=0
 RULES_DIR="$SCRIPT_DIR/../rules/replay"
+MOCK_LOG_DIR="${BIFROST_DATA_DIR:-/tmp}/mock-logs"
+mkdir -p "$MOCK_LOG_DIR"
 
 cleanup() {
     echo ""
@@ -78,7 +80,7 @@ trap cleanup EXIT
 
 start_mock_server() {
     echo "Starting Mock HTTP Echo Server on port $MOCK_HTTP_PORT..."
-    python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$MOCK_HTTP_PORT" > /dev/null 2>&1 &
+    python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$MOCK_HTTP_PORT" > "$MOCK_LOG_DIR/http_echo.log" 2>&1 &
     MOCK_HTTP_PID=$!
     
     local timeout=10
@@ -94,6 +96,8 @@ start_mock_server() {
     
     if ! kill -0 "$MOCK_HTTP_PID" 2>/dev/null; then
         echo "Failed to start Mock HTTP server"
+        echo "--- Mock HTTP server log ---"
+        cat "$MOCK_LOG_DIR/http_echo.log" 2>/dev/null || echo "(empty)"
         exit 1
     fi
     echo "  Mock HTTP server started (PID: $MOCK_HTTP_PID)"
@@ -101,12 +105,18 @@ start_mock_server() {
 
 start_sse_server() {
     echo "Starting Mock SSE Echo Server on port $MOCK_SSE_PORT..."
-    python3 "$SCRIPT_DIR/../mock_servers/sse_echo_server.py" --port "$MOCK_SSE_PORT" > /dev/null 2>&1 &
+    python3 "$SCRIPT_DIR/../mock_servers/sse_echo_server.py" --port "$MOCK_SSE_PORT" > "$MOCK_LOG_DIR/sse_echo.log" 2>&1 &
     MOCK_SSE_PID=$!
 
     local timeout=10
     local waited=0
     while [ $waited -lt $timeout ]; do
+        if ! kill -0 "$MOCK_SSE_PID" 2>/dev/null; then
+            echo "Failed to start Mock SSE server (process exited early)"
+            echo "--- Mock SSE server log ---"
+            cat "$MOCK_LOG_DIR/sse_echo.log" 2>/dev/null || echo "(empty)"
+            exit 1
+        fi
         if curl -s "http://127.0.0.1:${MOCK_SSE_PORT}/health" >/dev/null 2>&1; then
             echo "  Mock SSE server started (PID: $MOCK_SSE_PID)"
             return 0
@@ -115,16 +125,16 @@ start_sse_server() {
         waited=$((waited + 1))
     done
 
-    if ! kill -0 "$MOCK_SSE_PID" 2>/dev/null; then
-        echo "Failed to start Mock SSE server"
-        exit 1
-    fi
-    echo "  Mock SSE server started (PID: $MOCK_SSE_PID)"
+    echo "Failed to start Mock SSE server (health check timeout after ${timeout}s)"
+    echo "--- Mock SSE server log ---"
+    cat "$MOCK_LOG_DIR/sse_echo.log" 2>/dev/null || echo "(empty)"
+    kill_pid "$MOCK_SSE_PID" 2>/dev/null || true
+    exit 1
 }
 
 start_ws_server() {
     echo "Starting Mock HTTP+WS Echo Server on port $MOCK_WS_PORT..."
-    python3 "$SCRIPT_DIR/../mock_servers/http_ws_echo_server.py" "$MOCK_WS_PORT" > /dev/null 2>&1 &
+    python3 "$SCRIPT_DIR/../mock_servers/http_ws_echo_server.py" "$MOCK_WS_PORT" > "$MOCK_LOG_DIR/ws_echo.log" 2>&1 &
     MOCK_WS_PID=$!
 
     local timeout=10
@@ -140,6 +150,8 @@ start_ws_server() {
 
     if ! kill -0 "$MOCK_WS_PID" 2>/dev/null; then
         echo "Failed to start Mock WS server"
+        echo "--- Mock WS server log ---"
+        cat "$MOCK_LOG_DIR/ws_echo.log" 2>/dev/null || echo "(empty)"
         exit 1
     fi
     echo "  Mock WS server started (PID: $MOCK_WS_PID)"

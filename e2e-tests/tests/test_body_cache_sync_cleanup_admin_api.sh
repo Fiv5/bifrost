@@ -6,18 +6,56 @@ source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
 
-HTTP_PORT="${HTTP_PORT:-3000}"
-PROXY_PORT="${PROXY_PORT:-9910}"
-ADMIN_PORT="${ADMIN_PORT:-9910}"
+ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
+ADMIN_PORT="${ADMIN_PORT:-}"
+if [[ -z "${ADMIN_PORT}" ]]; then
+    ADMIN_PORT="$(allocate_free_port)"
+fi
+PROXY_PORT="${PROXY_PORT:-$ADMIN_PORT}"
+HTTP_PORT="${HTTP_PORT:-}"
+if [[ -z "${HTTP_PORT}" ]]; then
+    HTTP_PORT="$(allocate_free_port)"
+fi
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_PROXY_READY_URL="${ADMIN_PROXY_READY_URL:-http://127.0.0.1:${HTTP_PORT}/health}"
-export ADMIN_PATH_PREFIX
+export ADMIN_PORT ADMIN_PATH_PREFIX PROXY_PORT
 export ADMIN_PROXY_READY_URL
 TEST_ID=""
+server_pid=""
+MOCK_LOG=""
 
-python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$HTTP_PORT" >/tmp/bifrost_echo.log 2>&1 &
+MOCK_LOG="$(mktemp)"
+python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" --port "$HTTP_PORT" --retries 5 >"$MOCK_LOG" 2>&1 &
 server_pid=$!
-trap 'kill "$server_pid" 2>/dev/null || true; admin_cleanup_bifrost' EXIT
+trap 'kill "$server_pid" 2>/dev/null || true; admin_cleanup_bifrost; rm -f "$MOCK_LOG" 2>/dev/null || true' EXIT
+
+waited=0
+mock_ready=0
+while [ $waited -lt 20 ]; do
+  if grep -q "READY" "$MOCK_LOG" 2>/dev/null; then
+    mock_ready=1
+    break
+  fi
+  if ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "ERROR: Mock server process exited unexpectedly" >&2
+    cat "$MOCK_LOG" >&2
+    exit 1
+  fi
+  sleep 0.5
+  waited=$((waited + 1))
+done
+if [ "$mock_ready" -eq 0 ]; then
+  echo "ERROR: Mock server on port $HTTP_PORT not ready after 10s" >&2
+  cat "$MOCK_LOG" >&2
+  exit 1
+fi
+
+bound_line=$(grep -o "bound to [0-9]*" "$MOCK_LOG" 2>/dev/null | head -1 || true)
+if [[ -n "$bound_line" ]]; then
+  HTTP_PORT="${bound_line##*bound to }"
+  echo "NOTE: Mock server bound to port $HTTP_PORT" >&2
+fi
+rm -f "$MOCK_LOG"
 
 if ! admin_ensure_bifrost; then
   echo "Failed to start admin server"

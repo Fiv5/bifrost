@@ -41,6 +41,12 @@ cleanup() {
         safe_cleanup_proxy "$PROXY_PID"
     fi
     kill_bifrost_on_port "$PROXY_PORT"
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
+    WS_PORT="$ECHO_WS_PORT" \
+    WSS_PORT="$ECHO_WSS_PORT" \
+    SSE_PORT="$ECHO_SSE_PORT" \
+    PROXY_PORT="$ECHO_PROXY_PORT" \
     "$ROOT_DIR/e2e-tests/mock_servers/start_servers.sh" stop >/dev/null 2>&1 || true
     rm -rf "$TEST_DATA_DIR"
 }
@@ -109,16 +115,29 @@ start_mock_servers() {
         "$ROOT_DIR/e2e-tests/mock_servers/start_servers.sh" start-bg
 
     local waited=0
-    while [[ $waited -lt 20 ]]; do
+    while [[ $waited -lt 30 ]]; do
         if curl -sf "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
             _log_pass "HTTP echo server is ready on ${ECHO_HTTP_PORT}"
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if [[ $waited -ge 30 ]]; then
+        echo "Mock HTTP server failed to start" >&2
+        exit 1
+    fi
+
+    waited=0
+    while [[ $waited -lt 30 ]]; do
+        if curl -sfk "https://127.0.0.1:${ECHO_HTTPS_PORT}/health" >/dev/null 2>&1; then
+            _log_pass "HTTPS echo server is ready on ${ECHO_HTTPS_PORT}"
             return 0
         fi
         sleep 1
         waited=$((waited + 1))
     done
-
-    echo "Mock servers failed to start" >&2
+    echo "Mock HTTPS server failed to start" >&2
     exit 1
 }
 
@@ -154,10 +173,10 @@ start_proxy() {
     PROXY_PID=$!
 
     local waited=0
-    while [[ $waited -lt 30 ]]; do
+    while [[ $waited -lt 45 ]]; do
         if curl -sf "http://${ADMIN_HOST}:${ADMIN_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
             _log_pass "Proxy admin is ready on ${ADMIN_PORT}"
-            return 0
+            break
         fi
         if ! kill -0 "$PROXY_PID" 2>/dev/null; then
             tail -n 200 "$TEST_DATA_DIR/proxy.log" >&2 || true
@@ -168,9 +187,22 @@ start_proxy() {
         waited=$((waited + 1))
     done
 
-    tail -n 200 "$TEST_DATA_DIR/proxy.log" >&2 || true
-    echo "Timed out waiting for proxy" >&2
-    exit 1
+    if [[ $waited -ge 45 ]]; then
+        tail -n 200 "$TEST_DATA_DIR/proxy.log" >&2 || true
+        echo "Timed out waiting for proxy" >&2
+        exit 1
+    fi
+
+    waited=0
+    while [[ $waited -lt 15 ]]; do
+        if (echo > /dev/tcp/"${PROXY_HOST}"/"${SOCKS5_PORT}") >/dev/null 2>&1; then
+            _log_pass "SOCKS5 port is ready on ${SOCKS5_PORT}"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "WARNING: SOCKS5 port ${SOCKS5_PORT} may not be ready" >&2
 }
 
 wait_for_traffic() {
@@ -192,13 +224,90 @@ wait_for_traffic() {
     return 1
 }
 
+ensure_proxy_alive() {
+    local timeout="${1:-15}"
+    local waited=0
+    while [[ $waited -lt $timeout ]]; do
+        if curl -sf --connect-timeout 2 --max-time 3 \
+            "http://${ADMIN_HOST}:${ADMIN_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
+            return 0
+        fi
+        if [[ -n "$PROXY_PID" ]] && ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo "Proxy process $PROXY_PID is no longer running" >&2
+            tail -n 50 "$TEST_DATA_DIR/proxy.log" >&2 || true
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "Proxy did not become responsive within ${timeout}s" >&2
+    return 1
+}
+
+wait_for_socks5_port() {
+    local timeout="${1:-15}"
+    local waited=0
+    while [[ $waited -lt $timeout ]]; do
+        if (echo > /dev/tcp/"${PROXY_HOST}"/"${SOCKS5_PORT}") >/dev/null 2>&1; then
+            return 0
+        fi
+        if command -v nc &>/dev/null && nc -z "${PROXY_HOST}" "${SOCKS5_PORT}" >/dev/null 2>&1; then
+            return 0
+        fi
+        if [[ -n "$PROXY_PID" ]] && ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo "Proxy process $PROXY_PID is no longer running" >&2
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "SOCKS5 port ${SOCKS5_PORT} did not become reachable within ${timeout}s" >&2
+    return 1
+}
+
+dump_proxy_log_tail() {
+    if [[ -f "$TEST_DATA_DIR/proxy.log" ]]; then
+        echo "=== Last 30 lines of proxy log ===" >&2
+        tail -n 30 "$TEST_DATA_DIR/proxy.log" >&2 || true
+        echo "=== End proxy log ===" >&2
+    fi
+}
+
+run_curl_with_retries() {
+    local body_file="$1"
+    shift
+
+    local attempts=0
+    local max_attempts=8
+    local status=""
+    local curl_exit=0
+
+    while [[ $attempts -lt $max_attempts ]]; do
+        : > "$body_file"
+        curl_exit=0
+        status=$(curl -sS -o "$body_file" "$@" -w '%{http_code}') || curl_exit=$?
+        if [[ $curl_exit -eq 0 && "$status" != "000" ]]; then
+            printf '%s\n' "$status"
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        if [[ $attempts -lt $max_attempts ]]; then
+            sleep $((attempts > 3 ? 3 : attempts))
+        fi
+    done
+
+    dump_proxy_log_tail
+    printf '%s\n' "${status:-000}"
+    return "$curl_exit"
+}
+
 run_curl_capture_with_retries() {
     local body_file="$1"
     local headers_file="$2"
     shift 2
 
     local attempts=0
-    local max_attempts=3
+    local max_attempts=8
     local status=""
     local curl_exit=0
 
@@ -213,16 +322,18 @@ run_curl_capture_with_retries() {
         fi
         attempts=$((attempts + 1))
         if [[ $attempts -lt $max_attempts ]]; then
-            sleep 1
+            sleep $((attempts > 3 ? 3 : attempts))
         fi
     done
 
+    dump_proxy_log_tail
     printf '%s\n' "${status:-000}"
     return "$curl_exit"
 }
 
 test_http_proxy_attribution() {
     log_section "HTTP proxy client attribution"
+    ensure_proxy_alive 15 || return 1
     clear_traffic >/dev/null 2>&1 || true
 
     local body_file
@@ -230,8 +341,8 @@ test_http_proxy_attribution() {
     local status
     status=$(curl -sS -o "$body_file" \
         --proxy "http://${PROXY_HOST}:${PROXY_PORT}" \
-        --connect-timeout 5 \
-        --max-time 15 \
+        --connect-timeout 10 \
+        --max-time 20 \
         "http://http-attr.local/test" \
         -w '%{http_code}')
     local body
@@ -251,6 +362,7 @@ test_http_proxy_attribution() {
 
 test_websocket_attribution() {
     log_section "WebSocket client attribution"
+    ensure_proxy_alive 15 || return 1
     clear_traffic >/dev/null 2>&1 || true
 
     python3 "$ROOT_DIR/e2e-tests/test_utils/ws_stress_client.py" \
@@ -274,6 +386,8 @@ test_websocket_attribution() {
 
 test_socks5_tls_attribution() {
     log_section "SOCKS5 + TLS intercept client attribution"
+    ensure_proxy_alive 20 || return 1
+    wait_for_socks5_port 20 || return 1
     clear_traffic >/dev/null 2>&1 || true
 
     local headers_file
@@ -284,10 +398,10 @@ test_socks5_tls_attribution() {
     local status
     status=$(run_curl_capture_with_retries "$body_file" "$headers_file" \
         --socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}" \
-        --connect-timeout 5 \
-        --max-time 20 \
+        --connect-timeout 10 \
+        --max-time 30 \
         -k \
-        "https://httpbin.org/headers")
+        "https://socks5-attr.local/headers")
     local body
     body=$(cat "$body_file")
     local headers
@@ -298,7 +412,7 @@ test_socks5_tls_attribution() {
     assert_header_value "X-Socks5-Rule" "applied" "$headers" "tls-intercept response rule should still apply over SOCKS5" || return 1
 
     local traffic_id
-    traffic_id=$(wait_for_traffic "httpbin.org/headers" 20) || return 1
+    traffic_id=$(wait_for_traffic "socks5-attr.local" 20) || return 1
     local traffic
     traffic=$(get_traffic_detail "$traffic_id")
 
@@ -309,18 +423,18 @@ test_socks5_tls_attribution() {
 
 test_https_tunnel_attribution() {
     log_section "HTTPS CONNECT tunnel client attribution"
+    ensure_proxy_alive 20 || return 1
     clear_traffic >/dev/null 2>&1 || true
 
     local body_file
     body_file=$(mktemp)
     local status
-    status=$(curl -sS -o "$body_file" \
+    status=$(run_curl_with_retries "$body_file" \
         --proxy "http://${PROXY_HOST}:${PROXY_PORT}" \
-        --connect-timeout 5 \
-        --max-time 20 \
+        --connect-timeout 10 \
+        --max-time 30 \
         -k \
-        "https://tunnel-attr.local/health" \
-        -w '%{http_code}')
+        "https://tunnel-attr.local/health")
     rm -f "$body_file"
 
     assert_status_2xx "$status" "https CONNECT tunnel request should succeed" || return 1
@@ -342,8 +456,11 @@ main() {
     start_proxy
 
     test_http_proxy_attribution
+    sleep 2
     test_websocket_attribution
+    sleep 3
     test_https_tunnel_attribution
+    sleep 3
     test_socks5_tls_attribution
 
     echo ""

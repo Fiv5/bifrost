@@ -33,9 +33,13 @@ export PROXY_HOST PROXY_PORT HTML_PORT
 export TEST_ID="${TEST_ID:-}"
 
 
-BIFROST_TARGET_DIR="${PROJECT_DIR}/.bifrost-e2e-target"
 BIFROST_DATA_DIR_BASE="${PROJECT_DIR}/.bifrost-e2e-badge"
 HTML_DIR="${PROJECT_DIR}/e2e-tests/test_data/badge_injection"
+
+BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_PID=""
 HTML_PID=""
@@ -53,10 +57,15 @@ cleanup() {
 trap cleanup EXIT
 
 build_bifrost() {
-  echo "[INFO] Building bifrost binary..." >&2
-  CARGO_TARGET_DIR="$BIFROST_TARGET_DIR" cargo build --bin bifrost >/dev/null
+  if [[ -f "$BIFROST_BIN" ]] && [[ "${SKIP_BUILD:-false}" == "true" ]]; then
+    echo "[INFO] Skipping build (SKIP_BUILD=true), using existing binary: $BIFROST_BIN" >&2
+    echo "$BIFROST_BIN"
+    return 0
+  fi
 
-  BIFROST_BIN="$BIFROST_TARGET_DIR/debug/bifrost"
+  echo "[INFO] Building bifrost binary..." >&2
+  cargo build --release --bin bifrost >/dev/null
+
   if [[ ! -x "$BIFROST_BIN" ]]; then
     echo "[FAIL] bifrost binary not found at $BIFROST_BIN" >&2
     exit 1
@@ -71,7 +80,7 @@ start_html_server() {
   HTML_PID=$!
 
   for _ in $(seq 1 30); do
-    if curl -sS "http://127.0.0.1:${HTML_PORT}/index.html" >/dev/null 2>&1; then
+    if env NO_PROXY="*" no_proxy="*" curl -sS "http://127.0.0.1:${HTML_PORT}/index.html" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.2
@@ -95,7 +104,7 @@ start_proxy() {
   PROXY_PID=$!
 
   for _ in $(seq 1 120); do
-    if curl -sS "http://${PROXY_HOST}:${PROXY_PORT}/_bifrost/api/proxy/address" >/dev/null 2>&1; then
+    if env NO_PROXY="*" no_proxy="*" curl -sS "http://${PROXY_HOST}:${PROXY_PORT}/_bifrost/api/proxy/address" >/dev/null 2>&1; then
       return 0
     fi
     if ! kill -0 "$PROXY_PID" >/dev/null 2>&1; then

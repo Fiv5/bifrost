@@ -1,8 +1,12 @@
+pub mod admin_audit;
+mod admin_auth;
+pub mod admin_auth_db;
 mod app_icon;
 mod async_traffic;
 mod body_store;
 pub mod connection_monitor;
 pub mod connection_registry;
+pub mod cors;
 mod frame_store;
 mod handlers;
 pub mod ip_tls_pending;
@@ -29,6 +33,12 @@ mod ws_payload_store;
 #[cfg(test)]
 mod tests;
 
+pub use admin_auth::{
+    get_admin_username, get_failed_login_count, has_admin_password, is_remote_access_enabled,
+    record_failed_login, reset_failed_login_count, revoke_all_admin_sessions,
+    set_admin_password_hash, set_admin_username, set_remote_access_enabled, validate_admin_jwt,
+    validate_password_strength, AdminJwtClaims, MAX_LOGIN_ATTEMPTS, MIN_PASSWORD_LENGTH,
+};
 pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
 pub use async_traffic::{
     start_async_traffic_processor, AsyncTrafficWriter, SharedAsyncTrafficWriter, TrafficCommand,
