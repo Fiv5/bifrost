@@ -13,7 +13,8 @@ pub mod system_proxy;
 
 pub use access_control::{
     AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl, PendingAuth,
-    UserPassAccountConfig, UserPassAccountStatus, UserPassAuthConfig, UserPassAuthStatus,
+    ProxyAuthRateLimiter, UserPassAccountConfig, UserPassAccountStatus, UserPassAuthConfig,
+    UserPassAuthStatus,
 };
 pub use error::{BifrostError, Result};
 pub use http_client::{

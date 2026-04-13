@@ -84,6 +84,7 @@ export interface StorageConfig {
 export interface ServerConfig {
   port: number;
   host: string;
+  trust_forwarded_for?: boolean;
 }
 
 export interface SyncServerConfig {

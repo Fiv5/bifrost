@@ -136,15 +136,20 @@ export function validatePassword(password: string): string | null {
   return null;
 }
 
-export function getClientIp(req: { headers: Record<string, string | string[] | undefined>; socket?: { remoteAddress?: string } }): string {
-  const xff = req.headers['x-forwarded-for'];
-  if (xff) {
-    const first = (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
-    if (first) return first;
-  }
-  const xRealIp = req.headers['x-real-ip'];
-  if (xRealIp) {
-    return Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
+export function getClientIp(
+  req: { headers: Record<string, string | string[] | undefined>; socket?: { remoteAddress?: string } },
+  trustForwardedFor: boolean = false,
+): string {
+  if (trustForwardedFor) {
+    const xff = req.headers['x-forwarded-for'];
+    if (xff) {
+      const first = (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
+      if (first) return first;
+    }
+    const xRealIp = req.headers['x-real-ip'];
+    if (xRealIp) {
+      return Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
+    }
   }
   return req.socket?.remoteAddress ?? 'unknown';
 }

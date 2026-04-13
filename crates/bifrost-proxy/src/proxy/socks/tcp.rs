@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, ConnectionInfo, FrameDirection, TrafficRecord, TrafficType};
-use bifrost_core::{BifrostError, Result};
+use bifrost_core::{BifrostError, ProxyAuthRateLimiter, Result};
 
 use futures_util::FutureExt;
 use hyper::body::Incoming;
@@ -273,6 +273,7 @@ pub struct SocksServer {
     verbose_logging: bool,
     unsafe_ssl: bool,
     inject_bifrost_badge: bool,
+    proxy_auth_rate_limiter: Option<Arc<ProxyAuthRateLimiter>>,
 }
 
 impl SocksServer {
@@ -294,8 +295,9 @@ impl SocksServer {
             admin_state: None,
             dns_resolver: None,
             verbose_logging: false,
-            unsafe_ssl: true,
+            unsafe_ssl: false,
             inject_bifrost_badge: true,
+            proxy_auth_rate_limiter: None,
         }
     }
 
@@ -341,8 +343,17 @@ impl SocksServer {
         self
     }
 
+    pub fn with_proxy_auth_rate_limiter(mut self, limiter: Arc<ProxyAuthRateLimiter>) -> Self {
+        self.proxy_auth_rate_limiter = Some(limiter);
+        self
+    }
+
     pub fn config(&self) -> &SocksConfig {
         &self.config
+    }
+
+    pub fn unsafe_ssl(&self) -> bool {
+        self.unsafe_ssl
     }
 
     pub fn access_control(&self) -> &Arc<RwLock<ClientAccessControl>> {
@@ -525,6 +536,7 @@ impl SocksServer {
             let unsafe_ssl = self.unsafe_ssl;
             let inject_bifrost_badge = self.inject_bifrost_badge;
             let access_control = Arc::clone(&self.access_control);
+            let proxy_auth_rate_limiter = self.proxy_auth_rate_limiter.clone();
 
             tokio::spawn(async move {
                 let _permit = permit;
@@ -541,6 +553,9 @@ impl SocksServer {
                         .with_unsafe_ssl(unsafe_ssl)
                         .with_inject_bifrost_badge(inject_bifrost_badge)
                         .with_access_control(access_control);
+                    if let Some(limiter) = proxy_auth_rate_limiter {
+                        handler = handler.with_proxy_auth_rate_limiter(limiter);
+                    }
                     if let Some(dns) = dns_resolver {
                         handler = handler.with_dns_resolver(dns);
                     }
@@ -588,6 +603,7 @@ pub struct SocksHandler {
     verbose_logging: bool,
     unsafe_ssl: bool,
     inject_bifrost_badge: bool,
+    proxy_auth_rate_limiter: Option<Arc<ProxyAuthRateLimiter>>,
 }
 
 impl SocksHandler {
@@ -617,8 +633,9 @@ impl SocksHandler {
             access_control: None,
             dns_resolver: None,
             verbose_logging: false,
-            unsafe_ssl: true,
+            unsafe_ssl: false,
             inject_bifrost_badge: true,
+            proxy_auth_rate_limiter: None,
         }
     }
 
@@ -665,6 +682,11 @@ impl SocksHandler {
 
     pub fn with_inject_bifrost_badge(mut self, enabled: bool) -> Self {
         self.inject_bifrost_badge = enabled;
+        self
+    }
+
+    pub fn with_proxy_auth_rate_limiter(mut self, limiter: Arc<ProxyAuthRateLimiter>) -> Self {
+        self.proxy_auth_rate_limiter = Some(limiter);
         self
     }
 
@@ -800,6 +822,19 @@ impl SocksHandler {
         let username = String::from_utf8_lossy(&username).to_string();
         let password = String::from_utf8_lossy(&password).to_string();
 
+        if let Some(ref limiter) = self.proxy_auth_rate_limiter {
+            if limiter.is_banned(&self.peer_addr.ip()) {
+                warn!(
+                    "SOCKS5: Auth rejected for {} — IP is temporarily banned",
+                    self.peer_addr.ip()
+                );
+                self.stream().write_all(&[0x01, 0x01]).await?;
+                return Err(BifrostError::Network(
+                    "Too many failed authentication attempts".to_string(),
+                ));
+            }
+        }
+
         let matched_username = self.verify_credentials(&username, &password).await;
         let auth_success = matched_username.is_some();
 
@@ -812,7 +847,19 @@ impl SocksHandler {
         self.stream().write_all(&response).await?;
 
         if !auth_success {
+            if let Some(ref limiter) = self.proxy_auth_rate_limiter {
+                let failures = limiter.record_failure(self.peer_addr.ip());
+                warn!(
+                    "SOCKS5: Auth failed for {} (attempt #{})",
+                    self.peer_addr.ip(),
+                    failures
+                );
+            }
             return Err(BifrostError::Network("Authentication failed".to_string()));
+        }
+
+        if let Some(ref limiter) = self.proxy_auth_rate_limiter {
+            limiter.record_success(&self.peer_addr.ip());
         }
 
         debug!("SOCKS5: User '{}' authenticated successfully", username);
@@ -2190,6 +2237,28 @@ mod tests {
         let server = SocksServer::new(config);
         assert_eq!(server.config().port, 1080);
         assert_eq!(server.config().host, "127.0.0.1");
+        assert!(!server.unsafe_ssl());
+    }
+
+    #[test]
+    fn test_socks_server_unsafe_ssl_default_is_false() {
+        let server = SocksServer::new(SocksConfig::default());
+        assert!(
+            !server.unsafe_ssl(),
+            "SocksServer should default to unsafe_ssl=false for security"
+        );
+    }
+
+    #[test]
+    fn test_socks_server_unsafe_ssl_explicit_true() {
+        let server = SocksServer::new(SocksConfig::default()).with_unsafe_ssl(true);
+        assert!(server.unsafe_ssl());
+    }
+
+    #[test]
+    fn test_socks_server_unsafe_ssl_explicit_false() {
+        let server = SocksServer::new(SocksConfig::default()).with_unsafe_ssl(false);
+        assert!(!server.unsafe_ssl());
     }
 
     #[test]

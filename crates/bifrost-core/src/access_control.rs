@@ -658,6 +658,114 @@ impl Default for ClientAccessControl {
     }
 }
 
+const PROXY_AUTH_MAX_FAILURES: u32 = 10;
+const PROXY_AUTH_BAN_DURATION_SECS: u64 = 300;
+const PROXY_AUTH_CLEANUP_INTERVAL_SECS: u64 = 60;
+
+#[derive(Debug)]
+struct ProxyAuthIpState {
+    failures: u32,
+    last_failure: u64,
+    banned_until: Option<u64>,
+}
+
+pub struct ProxyAuthRateLimiter {
+    state: RwLock<HashMap<IpAddr, ProxyAuthIpState>>,
+    last_cleanup: RwLock<u64>,
+}
+
+impl ProxyAuthRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            state: RwLock::new(HashMap::new()),
+            last_cleanup: RwLock::new(0),
+        }
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    pub fn is_banned(&self, ip: &IpAddr) -> bool {
+        let now = Self::now_secs();
+        self.maybe_cleanup(now);
+        let state = self.state.read().unwrap();
+        if let Some(entry) = state.get(ip) {
+            if let Some(banned_until) = entry.banned_until {
+                return now < banned_until;
+            }
+        }
+        false
+    }
+
+    pub fn record_failure(&self, ip: IpAddr) -> u32 {
+        let now = Self::now_secs();
+        self.maybe_cleanup(now);
+        let mut state = self.state.write().unwrap();
+        let entry = state.entry(ip).or_insert(ProxyAuthIpState {
+            failures: 0,
+            last_failure: now,
+            banned_until: None,
+        });
+        entry.failures += 1;
+        entry.last_failure = now;
+
+        if entry.failures >= PROXY_AUTH_MAX_FAILURES {
+            entry.banned_until = Some(now + PROXY_AUTH_BAN_DURATION_SECS);
+            warn!(
+                ip = %ip,
+                failures = entry.failures,
+                ban_seconds = PROXY_AUTH_BAN_DURATION_SECS,
+                "Proxy auth: IP temporarily banned due to too many failed attempts"
+            );
+        }
+        entry.failures
+    }
+
+    pub fn record_success(&self, ip: &IpAddr) {
+        let mut state = self.state.write().unwrap();
+        state.remove(ip);
+    }
+
+    fn maybe_cleanup(&self, now: u64) {
+        let last = *self.last_cleanup.read().unwrap();
+        if now.saturating_sub(last) < PROXY_AUTH_CLEANUP_INTERVAL_SECS {
+            return;
+        }
+        if let Ok(mut last_cleanup) = self.last_cleanup.try_write() {
+            if now.saturating_sub(*last_cleanup) < PROXY_AUTH_CLEANUP_INTERVAL_SECS {
+                return;
+            }
+            *last_cleanup = now;
+            drop(last_cleanup);
+
+            let mut state = self.state.write().unwrap();
+            state.retain(|_, entry| {
+                if let Some(banned_until) = entry.banned_until {
+                    if now >= banned_until {
+                        return false;
+                    }
+                }
+                now.saturating_sub(entry.last_failure) < PROXY_AUTH_BAN_DURATION_SECS
+            });
+        }
+    }
+
+    pub fn failure_count(&self, ip: &IpAddr) -> u32 {
+        let state = self.state.read().unwrap();
+        state.get(ip).map(|e| e.failures).unwrap_or(0)
+    }
+}
+
+impl Default for ProxyAuthRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1037,5 +1145,147 @@ mod tests {
         };
         let ac = ClientAccessControl::new(config_disabled);
         assert!(!ac.loopback_requires_auth());
+    }
+
+    #[test]
+    fn test_verify_userpass_correct_credentials() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass123".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+        assert_eq!(
+            ac.verify_userpass("user1", "pass123"),
+            Some("user1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_verify_userpass_wrong_password() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass123".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+        assert_eq!(ac.verify_userpass("user1", "wrong"), None);
+    }
+
+    #[test]
+    fn test_verify_userpass_wrong_username() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass123".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+        assert_eq!(ac.verify_userpass("wronguser", "pass123"), None);
+    }
+
+    #[test]
+    fn test_verify_userpass_disabled_account() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass123".to_string()),
+                    enabled: false,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+        assert_eq!(ac.verify_userpass("user1", "pass123"), None);
+    }
+
+    #[test]
+    fn test_rate_limiter_no_ban_initially() {
+        let limiter = ProxyAuthRateLimiter::new();
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        assert!(!limiter.is_banned(&ip));
+        assert_eq!(limiter.failure_count(&ip), 0);
+    }
+
+    #[test]
+    fn test_rate_limiter_records_failures() {
+        let limiter = ProxyAuthRateLimiter::new();
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+
+        for i in 1..=5 {
+            assert_eq!(limiter.record_failure(ip), i);
+        }
+        assert_eq!(limiter.failure_count(&ip), 5);
+        assert!(!limiter.is_banned(&ip));
+    }
+
+    #[test]
+    fn test_rate_limiter_bans_after_max_failures() {
+        let limiter = ProxyAuthRateLimiter::new();
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+
+        for _ in 0..PROXY_AUTH_MAX_FAILURES {
+            limiter.record_failure(ip);
+        }
+        assert!(limiter.is_banned(&ip));
+    }
+
+    #[test]
+    fn test_rate_limiter_success_resets() {
+        let limiter = ProxyAuthRateLimiter::new();
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+
+        for _ in 0..5 {
+            limiter.record_failure(ip);
+        }
+        assert_eq!(limiter.failure_count(&ip), 5);
+
+        limiter.record_success(&ip);
+        assert_eq!(limiter.failure_count(&ip), 0);
+        assert!(!limiter.is_banned(&ip));
+    }
+
+    #[test]
+    fn test_rate_limiter_independent_ips() {
+        let limiter = ProxyAuthRateLimiter::new();
+        let ip1: IpAddr = "192.168.1.100".parse().unwrap();
+        let ip2: IpAddr = "192.168.1.200".parse().unwrap();
+
+        for _ in 0..PROXY_AUTH_MAX_FAILURES {
+            limiter.record_failure(ip1);
+        }
+        assert!(limiter.is_banned(&ip1));
+        assert!(!limiter.is_banned(&ip2));
     }
 }
