@@ -153,9 +153,7 @@ cleanup() {
             info "正在停止代理服务器 (PID: $PROXY_PID)..."
             safe_cleanup_proxy "$PROXY_PID"
         fi
-        if is_windows; then
-            kill_bifrost_on_port "$PROXY_PORT"
-        fi
+        kill_bifrost_on_port "$PROXY_PORT"
     fi
 
     if [[ "$SKIP_MOCK_SERVERS" != "true" ]]; then
