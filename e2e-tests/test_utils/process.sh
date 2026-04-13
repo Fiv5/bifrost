@@ -88,18 +88,22 @@ kill_bifrost_on_port() {
             done
         fi
     else
-        local target_pid=""
+        local pids=""
         if command -v lsof &>/dev/null; then
-            # NOTE: `lsof -ti` returns exit code 1 when no process is found.
-            # Under `set -e -o pipefail` this would abort the whole test suite,
-            # so make it best-effort.
-            target_pid="$(lsof -ti :"$port" 2>/dev/null | head -n 1 || true)"
-        elif command -v fuser &>/dev/null; then
-            # `fuser` also returns non-zero when no process is found.
-            target_pid="$(fuser "$port"/tcp 2>/dev/null | awk '{print $1}' || true)"
+            pids="$(lsof -ti :"$port" 2>/dev/null || true)"
         fi
-        if [ -n "$target_pid" ]; then
-            kill -9 "$target_pid" 2>/dev/null || true
+        if [[ -z "$pids" ]] && command -v ss &>/dev/null; then
+            pids="$(ss -tlnp "sport = :$port" 2>/dev/null \
+                | grep -oP 'pid=\K[0-9]+' 2>/dev/null || true)"
+        fi
+        if [[ -z "$pids" ]] && command -v fuser &>/dev/null; then
+            pids="$(fuser "$port"/tcp 2>/dev/null | tr -s ' ' '\n' || true)"
+        fi
+        if [ -n "$pids" ]; then
+            echo "$pids" | while IFS= read -r pid; do
+                pid="$(echo "$pid" | tr -d '[:space:]')"
+                [[ -n "$pid" ]] && kill -9 "$pid" 2>/dev/null || true
+            done
         fi
     fi
 }
@@ -207,7 +211,8 @@ allocate_free_port() {
 import socket
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.bind(("127.0.0.1", 0))
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", 0))
 print(s.getsockname()[1])
 s.close()
 PY
@@ -221,18 +226,20 @@ import socket
 import sys
 
 port = int(sys.argv[1])
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-try:
-    s.bind(("127.0.0.1", port))
-except OSError:
-    sys.exit(1)
-finally:
+ok = True
+for addr in ("0.0.0.0", "127.0.0.1"):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        s.close()
-    except Exception:
-        pass
-sys.exit(0)
+        s.bind((addr, port))
+    except OSError:
+        ok = False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+sys.exit(0 if ok else 1)
 PY
 }
 
@@ -257,10 +264,11 @@ def range_ok(base: int, span: int) -> bool:
     sockets = []
     try:
         for p in range(base, base + span):
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("127.0.0.1", p))
-            sockets.append(s)
+            for addr in ("0.0.0.0", "127.0.0.1"):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((addr, p))
+                sockets.append(s)
         return True
     except OSError:
         return False

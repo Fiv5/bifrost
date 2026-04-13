@@ -698,7 +698,7 @@ retry_failed_suites_once() {
         local proxy_port="$((BASE_PORT + idx))"
         kill_bifrost_on_port "$proxy_port"
         local wait_free=0
-        while ! port_is_available "$proxy_port" 2>/dev/null && [[ $wait_free -lt 50 ]]; do
+        while ! port_is_available "$proxy_port" 2>/dev/null && [[ $wait_free -lt 100 ]]; do
             sleep_seconds 0.1
             wait_free=$((wait_free + 1))
         done

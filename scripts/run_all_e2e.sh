@@ -716,9 +716,12 @@ run_shell_batch_parallel() {
         ECHO_HTTPS_PORT="$((shell_port + 2))" \
         HTTPS_PORT="$((shell_port + 2))" \
         HTTPS_MOCK_PORT="$((shell_port + 2))" \
+        ECHO_WS_PORT="$((shell_port + 3))" \
         WS_PORT="$((shell_port + 3))" \
         MOCK_WS_PORT="$((shell_port + 3))" \
+        ECHO_WSS_PORT="$((shell_port + 4))" \
         WSS_PORT="$((shell_port + 4))" \
+        ECHO_SSE_PORT="$((shell_port + 5))" \
         SSE_PORT="$((shell_port + 5))" \
         MOCK_SSE_PORT="$((shell_port + 5))" \
         SOCKS5_PORT="$((shell_port + 6))" \
