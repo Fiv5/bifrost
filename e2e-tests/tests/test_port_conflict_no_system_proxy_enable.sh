@@ -107,7 +107,7 @@ main() {
         exit 1
     fi
 
-    assert_body_contains "already in use" "${output}" "应报告端口绑定失败" || true
+    assert_body_contains "already in use" "${output}" "应报告端口占用" || true
     assert_body_not_contains "System proxy enabled:" "${output}" "端口冲突时不应启用系统代理" || true
 
     print_test_summary || exit 1

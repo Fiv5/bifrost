@@ -32,6 +32,7 @@ cleanup() {
         safe_cleanup_proxy "$PROXY_PID"
     fi
     kill_bifrost_on_port "$PROXY_PORT"
+    MOCK_SERVERS="http,https" \
     HTTP_PORT="${ECHO_HTTP_PORT:-3000}" \
     HTTPS_PORT="${ECHO_HTTPS_PORT:-3443}" \
     "$E2E_DIR/mock_servers/start_servers.sh" stop >/dev/null 2>&1 || true
@@ -46,6 +47,7 @@ start_mock_servers() {
     local https_port="${ECHO_HTTPS_PORT:-3443}"
 
     echo "Starting mock HTTP ($http_port) and HTTPS ($https_port) servers..."
+    MOCK_SERVERS="http,https" \
     HTTP_PORT="$http_port" \
     HTTPS_PORT="$https_port" \
     "$E2E_DIR/mock_servers/start_servers.sh" start-bg 2>&1 || true

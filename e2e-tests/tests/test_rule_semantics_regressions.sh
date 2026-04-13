@@ -34,6 +34,12 @@ HTTP_BODY=""
 cleanup() {
     kill_bifrost_on_port "$PROXY_PORT"
     safe_cleanup_proxy "$PROXY_PID"
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
+    WS_PORT="$ECHO_WS_PORT" \
+    WSS_PORT="$ECHO_WSS_PORT" \
+    SSE_PORT="$ECHO_SSE_PORT" \
+    PROXY_PORT="$ECHO_PROXY_PORT" \
     "$ROOT_DIR/e2e-tests/mock_servers/start_servers.sh" stop >/dev/null 2>&1 || true
     rm -rf "$TEST_DATA_DIR"
 }

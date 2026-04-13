@@ -40,6 +40,8 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 cleanup() {
     kill_bifrost_on_port "$PROXY_PORT"
     safe_cleanup_proxy "$PROXY_PID"
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
     "$E2E_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 }
 
@@ -58,6 +60,8 @@ check_dependencies() {
 
 start_mock_servers() {
     mkdir -p "$TEST_DATA_DIR"
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
     "$E2E_DIR/mock_servers/start_servers.sh" start > "$MOCK_LOG_FILE" 2>&1 &
     local count=0
     while ! nc -z 127.0.0.1 "$ECHO_HTTP_PORT" 2>/dev/null; do

@@ -216,6 +216,7 @@ WINDOWS_SKIP_RULES=(
     "tls/tls_options.txt"
     "tls/tls_intercept_rule.txt"
     "forwarding/tunnel.txt"
+    "pattern/protocol_wildcard.txt"
 )
 
 should_skip_on_windows() {

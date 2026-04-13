@@ -16,6 +16,7 @@ import sys
 import time
 import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 import threading
 
@@ -374,10 +375,29 @@ class SSEHandler(BaseHTTPRequestHandler):
         self.send_bytes_chunked(done_bytes, chunk=chunk, interval=interval)
 
 
-def run_server(port=3003, host="0.0.0.0"):
-    server_address = (host, port)
-    httpd = HTTPServer(server_address, SSEHandler)
-    print(f"[SSE] Server starting on {host}:{port}")
+class ReusableHTTPServer(ThreadingMixIn, HTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def _try_bind(host, port, retries=0):
+    last_err = None
+    for attempt in range(retries + 1):
+        candidate = port + attempt
+        try:
+            httpd = ReusableHTTPServer((host, candidate), SSEHandler)
+            return httpd, candidate
+        except OSError as exc:
+            last_err = exc
+            print(f"[SSE] Port {candidate} bind failed: {exc}; retries left={retries - attempt}", flush=True)
+    raise last_err
+
+
+def run_server(port=3003, host="127.0.0.1"):
+    httpd, actual_port = _try_bind(host, port)
+    if actual_port != port:
+        print(f"[SSE] NOTE: Requested port {port} was busy; bound to {actual_port} instead", flush=True)
+    print(f"[SSE] Server starting on {host}:{actual_port}")
     print(f"[SSE] Endpoints:")
     print(f"[SSE]   GET  /sse              - Stream 5 events")
     print(f"[SSE]   GET  /sse/custom       - Custom ?count=N&interval=M")
@@ -386,6 +406,7 @@ def run_server(port=3003, host="0.0.0.0"):
     print(f"[SSE]   GET  /sse/json         - JSON payload events")
     print(f"[SSE]   POST /sse/trigger      - Manual trigger")
     print(f"[SSE]   GET  /health           - Health check")
+    print("READY", flush=True)
 
     try:
         httpd.serve_forever()
@@ -397,7 +418,7 @@ def run_server(port=3003, host="0.0.0.0"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SSE Echo Server")
     parser.add_argument("--port", type=int, default=3003, help="Port to listen on")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")
     args = parser.parse_args()
 
     run_server(port=args.port, host=args.host)

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -77,6 +77,16 @@ fn check_and_resolve_port_conflict(host: &str, port: u16, yes: bool) -> bifrost_
     }
 
     let bind_addr = format!("{}:{}", host, port);
+    let non_interactive = !io::stdin().is_terminal();
+
+    if !yes && non_interactive {
+        return Err(bifrost_core::BifrostError::Network(format!(
+            "Port {} is already in use and no interactive terminal is available. Use --yes to auto-resolve.",
+            bind_addr
+        )));
+    }
+
+    let auto_yes = yes;
 
     if let Some(proc_info) = find_process_on_port(port) {
         println!(
@@ -84,8 +94,8 @@ fn check_and_resolve_port_conflict(host: &str, port: u16, yes: bool) -> bifrost_
             bind_addr, proc_info.name, proc_info.pid
         );
 
-        let should_kill = if yes {
-            println!("> y (auto-confirmed with --yes)");
+        let should_kill = if auto_yes {
+            println!("> y (auto-confirmed)");
             true
         } else {
             prompt_yes_no()?
@@ -124,8 +134,8 @@ fn check_and_resolve_port_conflict(host: &str, port: u16, yes: bool) -> bifrost_
             bind_addr
         );
 
-        let should_kill = if yes {
-            println!("> y (auto-confirmed with --yes)");
+        let should_kill = if auto_yes {
+            println!("> y (auto-confirmed)");
             true
         } else {
             prompt_yes_no()?

@@ -30,6 +30,7 @@ cleanup() {
         safe_cleanup_proxy "$PROXY_PID"
     fi
 
+    MOCK_SERVERS=http HTTP_PORT="$ECHO_HTTP_PORT" \
     "$E2E_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 
     kill_bifrost_on_port "$PROXY_PORT"

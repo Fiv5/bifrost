@@ -164,7 +164,7 @@ admin_start_bifrost() {
             XDG_CONFIG_HOME="$ADMIN_CLIENT_XDG_CONFIG_HOME" \
             XDG_DATA_HOME="$ADMIN_CLIENT_XDG_DATA_HOME" \
             BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-            "$bifrost_bin" -H "$host" -p "$port" start --access-mode allow_all --skip-cert-check --unsafe-ssl \
+            "$bifrost_bin" -H "$host" -p "$port" start -y --access-mode allow_all --skip-cert-check --unsafe-ssl \
             >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
     else
         (cd "$ADMIN_CLIENT_REPO_DIR" && \
@@ -173,7 +173,7 @@ admin_start_bifrost() {
             XDG_CONFIG_HOME="$ADMIN_CLIENT_XDG_CONFIG_HOME" \
             XDG_DATA_HOME="$ADMIN_CLIENT_XDG_DATA_HOME" \
             BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-            cargo run --release --bin bifrost -- -H "$host" -p "$port" start --access-mode allow_all --skip-cert-check --unsafe-ssl \
+            cargo run --release --bin bifrost -- -H "$host" -p "$port" start -y --access-mode allow_all --skip-cert-check --unsafe-ssl \
         ) >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
     fi
 

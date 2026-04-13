@@ -164,7 +164,7 @@ start_proxy_with_rules() {
     fi
 
     BIFROST_DATA_DIR="${TEST_DATA_DIR}" "${PROJECT_DIR}/target/release/bifrost" \
-        --port "${PROXY_PORT}" start \
+        --port "${PROXY_PORT}" start -y \
         --skip-cert-check --unsafe-ssl \
         --rules-file "${rules_file}" "${extra_flags[@]}" &
     PROXY_PID=$!

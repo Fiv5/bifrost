@@ -565,11 +565,11 @@ start_proxy() {
         fi
         BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" \
             --port "${PROXY_PORT}" \
-            start --access-mode allow_all --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
+            start -y --access-mode allow_all --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
     else
         BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- \
             --port "${PROXY_PORT}" \
-            start --access-mode allow_all --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
+            start -y --access-mode allow_all --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
     fi
     PROXY_PID=$!
 
@@ -3312,14 +3312,14 @@ start_specialized_proxy() {
             XDG_DATA_HOME="${xdg_data_home}" \
             BIFROST_DATA_DIR="${TEST_DATA_DIR}" \
             RUST_LOG="${rust_log_value}" \
-            "$bifrost_bin" --port "${PROXY_PORT}" start --no-intercept --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
+            "$bifrost_bin" --port "${PROXY_PORT}" start -y --no-intercept --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
     else
         env \
             HOME="${home_dir}" \
             XDG_CONFIG_HOME="${xdg_config_home}" \
             XDG_DATA_HOME="${xdg_data_home}" \
             BIFROST_DATA_DIR="${TEST_DATA_DIR}" \
-            "$bifrost_bin" --port "${PROXY_PORT}" start --no-intercept --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
+            "$bifrost_bin" --port "${PROXY_PORT}" start -y --no-intercept --skip-cert-check --unsafe-ssl --rules-file "${rules_file}" >"${proxy_log}" 2>&1 &
     fi
     PROXY_PID=$!
 

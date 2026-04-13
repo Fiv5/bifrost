@@ -234,11 +234,13 @@ impl TestRunner {
             tracing::info!("Retrying {} failed test(s) once...", failed_indices.len());
 
             let test_timeout = self.test_timeout;
+            let total_tests = self.tests.len() as u16;
             for &idx in &failed_indices {
                 let test = &self.tests[idx];
-                let port = self.base_port + (idx as u16);
-                tracing::info!("  Retrying: {} (port {})", test.name, port);
-                let result = run_single_test(test, port, test_timeout).await;
+                let retry_port = self.base_port + total_tests + (idx as u16);
+                wait_for_port_available(retry_port).await;
+                tracing::info!("  Retrying: {} (port {})", test.name, retry_port);
+                let result = run_single_test(test, retry_port, test_timeout).await;
                 tracing::info!(
                     "  Retry result: {} {} ({}ms)",
                     match result.status {
@@ -446,6 +448,20 @@ async fn run_single_test(test: &TestCase, port: u16, test_timeout: Duration) -> 
             error: Some(format!("test timed out after {}s", test_timeout.as_secs())),
         },
     }
+}
+
+async fn wait_for_port_available(port: u16) {
+    use std::net::TcpListener;
+    for attempt in 0..30 {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return;
+        }
+        if attempt == 0 {
+            tracing::info!("  Waiting for port {} to become available...", port);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    tracing::warn!("  Port {} may still be in use after waiting", port);
 }
 
 impl Default for TestRunner {
