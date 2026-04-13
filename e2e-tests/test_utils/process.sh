@@ -226,19 +226,17 @@ import sys
 
 port = int(sys.argv[1])
 ok = True
-for addr in ("0.0.0.0", "127.0.0.1"):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("127.0.0.1", port))
+except OSError:
+    ok = False
+finally:
     try:
-        s.bind((addr, port))
-    except OSError:
-        ok = False
-    finally:
-        try:
-            s.close()
-        except Exception:
-            pass
-    if not ok:
-        break
+        s.close()
+    except Exception:
+        pass
+if ok:
     s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s2.settimeout(0.2)
     try:
@@ -251,8 +249,6 @@ for addr in ("0.0.0.0", "127.0.0.1"):
             s2.close()
         except Exception:
             pass
-    if not ok:
-        break
 sys.exit(0 if ok else 1)
 PY
 }
@@ -278,10 +274,9 @@ def range_ok(base: int, span: int) -> bool:
     sockets = []
     try:
         for p in range(base, base + span):
-            for addr in ("0.0.0.0", "127.0.0.1"):
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.bind((addr, p))
-                sockets.append(s)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(("127.0.0.1", p))
+            sockets.append(s)
             probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             probe.settimeout(0.1)
             try:

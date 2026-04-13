@@ -928,7 +928,10 @@ main() {
 
     info "选择可用端口段..."
     local selected_base_port
-    selected_base_port=$(pick_available_base_port "$BASE_PORT" "$total_suites")
+    if ! selected_base_port=$(pick_available_base_port "$BASE_PORT" "$total_suites"); then
+        echo -e "${RED}✗${NC} 无法找到 $total_suites 个连续可用端口 (起始请求: $BASE_PORT)"
+        exit 1
+    fi
     BASE_PORT="$selected_base_port"
     info "已选择起始端口: $BASE_PORT"
 

@@ -140,6 +140,15 @@ pub struct TestRunner {
 
 impl TestRunner {
     pub fn new(base_port: u16, reporter: Reporter) -> Self {
+        let base_port = if base_port < 1024 {
+            tracing::warn!(
+                "base_port {} is in privileged range, overriding to 18080",
+                base_port
+            );
+            18080
+        } else {
+            base_port
+        };
         Self {
             tests: Vec::new(),
             base_port,
