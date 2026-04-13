@@ -170,32 +170,6 @@ http://www.example.com redirect://`https://www.example.com${url.path}`
 
 ---
 
-## locationHref
-
-类似于 redirect，但使用 JavaScript 进行客户端跳转。
-
-### 语法
-
-```
-pattern locationHref://target_url
-```
-
-### 示例
-
-```bash
-# JavaScript 跳转
-www.example.com/old locationHref://https://www.example.com/new
-```
-
-### 与 redirect 的区别
-
-| 规则           | 方式         | 适用场景          |
-| -------------- | ------------ | ----------------- |
-| `redirect`     | HTTP 302/301 | 标准重定向        |
-| `locationHref` | JavaScript   | 需要客户端执行 JS |
-
----
-
 ## 规则组合
 
 状态码规则可以与其他规则组合：

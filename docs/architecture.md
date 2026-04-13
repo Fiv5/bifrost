@@ -13,7 +13,8 @@
 │   ├── bifrost-admin/
 │   ├── bifrost-cli/
 │   ├── bifrost-e2e/
-│   └── bifrost-tests/
+│   ├── bifrost-tests/
+│   └── bifrost-sync/
 ├── web/
 ├── desktop/
 ├── docs/
@@ -58,3 +59,7 @@ Rust 端到端测试 runner。
 ### `bifrost-tests`
 
 测试辅助 crate。
+
+### `bifrost-sync`
+
+远程同步模块，负责规则与配置的远程同步能力。

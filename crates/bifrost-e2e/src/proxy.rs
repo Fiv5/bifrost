@@ -384,12 +384,12 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 }
                 Protocol::ReqSpeed => {
                     if let Ok(speed) = value.parse::<u64>() {
-                        result.req_speed = Some(speed);
+                        result.req_speed = Some(speed.saturating_mul(1024));
                     }
                 }
                 Protocol::ResSpeed => {
                     if let Ok(speed) = value.parse::<u64>() {
-                        result.res_speed = Some(speed);
+                        result.res_speed = Some(speed.saturating_mul(1024));
                     }
                 }
                 Protocol::Redirect => {

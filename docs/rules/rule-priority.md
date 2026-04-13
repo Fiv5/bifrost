@@ -28,6 +28,7 @@ Bifrost 规则的执行遵循两个核心原则：
 | `http` / `https` | 显式协议转发      |
 | `ws` / `wss` | WebSocket 转发        |
 | `redirect` | URL 重定向               |
+| `file` / `tpl` / `rawfile` | 本地文件/模板响应 |
 
 **执行特点**：
 
@@ -212,7 +213,7 @@ www.example.com resHeaders://(X-B:2)
 ### 转发类规则优先级
 
 1. `xhost`
-2. `host` / `proxy` / `pac` / `http` / `https` / `ws` / `wss` / `redirect`
+2. `host` / `proxy` / `pac` / `http` / `https` / `ws` / `wss` / `redirect` / `file` / `tpl` / `rawfile`
 3. 同类型：**先定义的优先**
 
 ### 修改类规则合并顺序

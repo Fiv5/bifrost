@@ -118,7 +118,7 @@ pattern reqHeaders:///Users/xxx/headers.txt           # 从本地文件加载
 pattern resHeaders://https://example.com/config.json  # 从远程 URL 加载
 ```
 
-> ⚠️ 注意：部分协议（如 `http`、`https`、`ws`、`wss`、`host`、`enable`、`cache` 等）禁止通过文件路径或远程 URL 获取内容，详见各协议文档。
+> ⚠️ 注意：部分协议（如 `http`、`https`、`ws`、`wss`、`host`、`cache` 等）禁止通过文件路径或远程 URL 获取内容，详见各协议文档。
 
 ## 模板字符串
 
@@ -174,12 +174,21 @@ pattern protocol://`...${variable}...`
 
 #### Headers 和 Cookies
 
-| 变量                                | 说明                 |
-| ----------------------------------- | -------------------- |
-| `${reqHeaders.xxx}` / `${reqH.xxx}` | 请求头字段 xxx 的值  |
-| `${resHeaders.xxx}` / `${resH.xxx}` | 响应头字段 xxx 的值  |
-| `${reqCookies.xxx}`                 | 请求 cookie xxx 的值 |
-| `${resCookies.xxx}`                 | 响应 cookie xxx 的值 |
+| 变量                                                         | 说明                 |
+| ------------------------------------------------------------ | -------------------- |
+| `${reqHeaders.xxx}` / `${reqHeader.xxx}` / `${reqH.xxx}`     | 请求头字段 xxx 的值  |
+| `${resHeaders.xxx}` / `${resHeader.xxx}` / `${resH.xxx}`     | 响应头字段 xxx 的值  |
+| `${reqCookies.xxx}` / `${reqCookie.xxx}`                     | 请求 cookie xxx 的值 |
+| `${resCookies.xxx}` / `${resCookie.xxx}`                     | 响应 cookie xxx 的值 |
+
+> 不带 `.xxx` 属性时返回所有 headers/cookies 的完整字符串。
+
+#### 客户端标识
+
+| 变量              | 说明                                |
+| ----------------- | ----------------------------------- |
+| `${clientId}`     | 客户端标识符                        |
+| `${localClientId}`| 本地客户端标识符                    |
 
 #### 其他
 
@@ -245,10 +254,17 @@ pattern file://`{response.json}`
 
 ### 捕获变量
 
-在正则匹配模式中，可以使用 `$1`、`$2` 等引用捕获组：
+在正则匹配模式或通配符模式中，可以使用 `$1`、`$2` 等引用捕获组：
 
 ```txt
+# 正则捕获
 /api\/v(\d+)\/(.*)/ redirect://`https://api-v$1.example.com/$2`
+
+# 通配符捕获
+*.example.com host://$1.backend.local
+
+# 路径通配符捕获
+^example.com/*/action/* redirect://`https://new.example.com/$1/do/$2`
 ```
 
 ## 数据对象格式
@@ -276,27 +292,7 @@ key3:value3
 
 - 优先以 `: `（冒号+空格）分隔
 - 没有冒号+空格时，以第一个冒号分隔
-- 没有冒号时，value 为空字符串
-
-**多级嵌套：**
-
-```txt
-a.b.c: 123
-c\.d\.e: abc
-```
-
-等价于：
-
-```json
-{
-  "a": {
-    "b": {
-      "c": 123
-    }
-  },
-  "c.d.e": "abc"
-}
-```
+- 不包含分隔符的行会被跳过（不产生键值对）
 
 ### 内联参数格式
 
@@ -308,22 +304,21 @@ key1=value1&key2=value2&keyN=valueN
 
 ## 协议别名
 
-部分协议支持别名，以下是常用别名映射：
+部分协议支持别名，以下是完整的别名映射：
 
-| 别名                                                 | 实际协议     |
-| ---------------------------------------------------- | ------------ |
-| `hosts`                                              | `host`       |
-| `ignore`                                             | `passthrough` |
-| `status`                                             | `statusCode` |
-| `download`                                           | `attachment` |
-| `html`                                               | `htmlAppend` |
-| `js`                                                 | `jsAppend`   |
-| `css`                                                | `cssAppend`  |
-| `http-proxy`                                         | `proxy`      |
-| `h3`                                                 | `http3`      |
-| `pathReplace`                                        | `urlReplace` |
-| `reqMerge`                                           | `params`     |
-
+| 别名          | 实际协议      |
+| ------------- | ------------- |
+| `hosts`       | `host`        |
+| `ignore`      | `passthrough` |
+| `status`      | `statusCode`  |
+| `download`    | `attachment`  |
+| `html`        | `htmlAppend`  |
+| `js`          | `jsAppend`    |
+| `css`         | `cssAppend`   |
+| `http-proxy`  | `proxy`       |
+| `h3`          | `http3`       |
+| `pathReplace` | `urlReplace`  |
+| `reqMerge`    | `params`      |
 
 ## 操作协议
 
@@ -331,19 +326,112 @@ key1=value1&key2=value2&keyN=valueN
 
 ### 控制类
 
-`tlsIntercept`、`tlsPassthrough`、`passthrough`、`delete`、`skip`
+| 协议 | 说明 |
+| ---- | ---- |
+| `tlsIntercept` | 启用 TLS 拦截 |
+| `tlsPassthrough` | 禁用 TLS 拦截（直接透传） |
+| `tlsOptions` | 配置 CONNECT 上游 TLS 选项 |
+| `sniCallback` | 配置 SNI 回调元数据（CONNECT 请求） |
+| `passthrough` | 直连透传，不做任何修改 |
+| `tunnel` | 重定向 CONNECT 隧道目标 |
+| `delete` | 删除/阻断请求 |
+| `skip` | 跳过已匹配的规则，继续后续匹配 |
 
 ### 请求修改类
 
-`reqHeaders`、`reqBody`、`reqPrepend`、`reqAppend`、`reqCookies`、`reqCors`、`reqDelay`、`reqSpeed`、`reqType`、`reqCharset`、`reqReplace`、`method`、`auth`、`ua`、`referer`、`urlParams`、`params`
+| 协议 | 说明 |
+| ---- | ---- |
+| `reqHeaders` | 修改请求头 |
+| `reqBody` | 设置请求体 |
+| `reqPrepend` | 在请求体前追加内容 |
+| `reqAppend` | 在请求体后追加内容 |
+| `reqCookies` | 设置请求 Cookie |
+| `reqCors` | 添加 CORS 请求头 |
+| `reqDelay` | 延迟请求（毫秒） |
+| `reqSpeed` | 限制请求速率（KB/s，输入值 × 1024 为实际字节限速） |
+| `reqType` | 设置请求 Content-Type |
+| `reqCharset` | 设置请求字符集 |
+| `reqReplace` | 替换请求体内容 |
+| `forwardedFor` | 设置 X-Forwarded-For 请求头 |
+| `method` | 修改请求方法 |
+| `auth` | 设置 Authorization 请求头 |
+| `ua` | 设置 User-Agent 请求头 |
+| `referer` | 设置 Referer 请求头 |
+| `urlParams` | 添加/修改 URL 查询参数 |
+| `params` | 合并参数 |
+| `dns` | 自定义 DNS 解析 |
+| `http3` | 启用上游 HTTP/3 尝试 |
+| `reqScript` | 执行请求脚本 |
 
 ### 响应修改类
 
-`resHeaders`、`resBody`、`resPrepend`、`resAppend`、`resCookies`、`resCors`、`resDelay`、`resSpeed`、`resType`、`resCharset`、`resReplace`、`statusCode`、`cache`、`attachment`
+| 协议 | 说明 |
+| ---- | ---- |
+| `resHeaders` | 修改响应头 |
+| `resBody` | 设置响应体 |
+| `resPrepend` | 在响应体前追加内容 |
+| `resAppend` | 在响应体后追加内容 |
+| `resCookies` | 设置响应 Cookie |
+| `resCors` | 添加 CORS 响应头 |
+| `resDelay` | 延迟响应（毫秒） |
+| `resSpeed` | 限制响应速率（KB/s，输入值 × 1024 为实际字节限速） |
+| `resType` | 设置响应 Content-Type |
+| `resCharset` | 设置响应字符集 |
+| `resReplace` | 替换响应体内容 |
+| `replaceStatus` | 替换响应状态码（请求完成后替换） |
+| `statusCode` | 直接返回指定状态码 |
+| `cache` | 设置缓存控制（秒） |
+| `attachment` | 设置 Content-Disposition 为下载 |
+| `responseFor` | 设置 x-bifrost-response-for 响应头 |
+| `trailers` | 设置响应 trailers |
+| `resMerge` | 合并 JSON 到响应体 |
+| `headerReplace` | 替换 header 内容 |
+| `resScript` | 执行响应脚本 |
 
 ### 路由类
 
-`host`、`xhost`、`http`、`https`、`http3`、`ws`、`wss`、`proxy`、`redirect`、`file`、`tpl`、`rawfile`
+| 协议 | 说明 |
+| ---- | ---- |
+| `host` | 转发请求到指定 host |
+| `xhost` | 扩展 host 转发（支持路径重写） |
+| `http` | HTTP 协议转发 |
+| `https` | HTTPS 协议转发 |
+| `ws` | WebSocket 转发 |
+| `wss` | 安全 WebSocket 转发 |
+| `proxy` | HTTP 代理转发 |
+| `pac` | PAC 脚本路由 |
+| `redirect` | URL 重定向（301/302） |
+| `file` | 返回文件内容作为响应 |
+| `tpl` | 模板响应（支持变量替换） |
+| `rawfile` | 返回原始文件内容 |
+
+### URL 处理类
+
+| 协议 | 说明 |
+| ---- | ---- |
+| `urlReplace` | 替换 URL 路径 |
+
+### 内容注入类
+
+| 协议 | 说明 |
+| ---- | ---- |
+| `htmlAppend` | 在 HTML 尾部追加内容 |
+| `htmlPrepend` | 在 HTML 头部追加内容 |
+| `htmlBody` | 替换 HTML body |
+| `jsAppend` | 在 JavaScript 尾部追加内容 |
+| `jsPrepend` | 在 JavaScript 头部追加内容 |
+| `jsBody` | 替换 JavaScript body |
+| `cssAppend` | 在 CSS 尾部追加内容 |
+| `cssPrepend` | 在 CSS 头部追加内容 |
+| `cssBody` | 替换 CSS body |
+
+### 脚本/解码类
+
+| 协议 | 说明 |
+| ---- | ---- |
+| `reqScript` | 执行请求阶段脚本（同时列于请求修改类） |
+| `resScript` | 执行响应阶段脚本（同时列于响应修改类） |
+| `decode` | 执行解码脚本（请求/响应解码） |
 
 ### `http3`
 
@@ -357,10 +445,6 @@ api.example.com h3://
 说明：
 
 - 默认不会主动尝试上游 H3，只有命中 `http3://` 或 `h3://` 规则才会启用
-- 该能力控制的是“代理到目标服务”的上游协议选择，不是开启下游 UDP/QUIC 监听
+- 该能力控制的是"代理到目标服务"的上游协议选择，不是开启下游 UDP/QUIC 监听
 - 仅对 HTTPS 上游请求生效
 - 如果目标不支持 H3 或协商失败，会回退到现有的 HTTP/1.1 或 HTTP/2 转发链路
-
-### 内容注入类
-
-`htmlAppend`、`htmlPrepend`、`htmlBody`、`jsAppend`、`jsPrepend`、`jsBody`、`cssAppend`、`cssPrepend`、`cssBody`

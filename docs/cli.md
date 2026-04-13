@@ -275,7 +275,6 @@ bifrost system-proxy disable
 ### 配置项管理
 
 ```bash
-bifrost config show traffic
 bifrost config show --section traffic
 bifrost config show --json
 bifrost config get tls.enabled

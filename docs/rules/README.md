@@ -61,7 +61,7 @@
 ### 4) URL 操作
 
 - `urlParams`
-- `pathReplace`
+- `urlReplace`
 
 详见：[url-manipulation.md](./url-manipulation.md)
 

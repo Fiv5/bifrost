@@ -149,7 +149,7 @@ assert_equals() {
 find_latest_sse_traffic_id() {
     local url_pattern="$1"
     local limit="${2:-50}"
-    get_traffic_list "$limit" | jq -r "[.records[] | select((.is_sse // false) == true) | select((.url // .p // .path // \"\") | contains(\"$url_pattern\"))] | sort_by(.sequence) | last | .id"
+    admin_get "/api/traffic?limit=${limit}&is_sse=true" | jq -r "[.records[] | select((.url // .p // .path // \"\") | contains(\"$url_pattern\"))] | sort_by(.seq) | last | .id"
 }
 
 wait_for_sse_traffic_id() {
@@ -316,18 +316,19 @@ test_sse_json_events() {
 }
 
 test_sse_frames_capture() {
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
+
     local url="${SSE_TARGET}/sse?count=3"
     echo "[DEBUG] Fetching $url via $SSE_PROXY" >&2
-    
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
+
     export NO_PROXY=""
     export no_proxy=""
 
-    # 显式使用 curl 并带上代理，并强制覆盖 no_proxy
     curl -sN -x "$SSE_PROXY" "$url" --max-time 10 --verbose > /tmp/curl_sse_debug.log 2>&1
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse" 15)
 
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         log_fail "No SSE traffic found in traffic list"
@@ -353,7 +354,9 @@ test_sse_frames_capture() {
 }
 
 test_sse_stream_closed_behavior() {
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
+
     export NO_PROXY=""
     export no_proxy=""
     curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse/custom?count=5&interval=0.05" --max-time 10 > /dev/null 2>&1
@@ -361,7 +364,7 @@ test_sse_stream_closed_behavior() {
     sleep 1
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse/custom" 15)
 
     if [[ -z "$traffic_id" ]]; then
         log_fail "No SSE traffic found"
@@ -395,40 +398,15 @@ test_sse_stream_open_full_and_live() {
 
     sleep 0.5
 
-    
-
-        curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse/custom?count=80&interval=0.05" --max-time 15 > /dev/null 2>&1 &
-
-    
-
-        # 这里 curl 运行在后台，也需要 NO_PROXY=""
-
-    
-
-        local sse_curl_pid=$!
-
-    
-
-        # 修改为使用 NO_PROXY="" 的后台进程
-
-    
-
-        # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
     export NO_PROXY=""
     export no_proxy=""
-    
+
     (curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse/custom?count=80&interval=0.05" --max-time 15 > /dev/null 2>&1) &
 
-    
-
-        local sse_pid=$!
-
-    
-
-    
+    local sse_pid=$!
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse/custom" 15)
     if [[ -z "$traffic_id" ]]; then
         log_fail "No SSE traffic found"
         kill_pid "$sse_pid"
@@ -470,14 +448,13 @@ test_sse_frame_content() {
     clear_traffic >/dev/null 2>&1 || true
     sleep 0.5
 
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
     export NO_PROXY=""
     export no_proxy=""
     curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse/custom?count=20&interval=0.05" --max-time 10 > /dev/null 2>&1
     sleep 1
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse/custom" 15)
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         log_fail "No SSE traffic found"
         return 1
@@ -533,14 +510,13 @@ test_sse_response_body_integrity() {
     local stored_file
     stored_file="$(mktemp)"
 
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
     export NO_PROXY=""
     export no_proxy=""
     curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse/custom?count=6&interval=0.02" --max-time 8 > "$raw_file" 2>/dev/null
     sleep 1
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse/custom" 15)
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         log_fail "No SSE traffic found"
         rm -f "$raw_file" "$stored_file"
@@ -568,7 +544,9 @@ test_sse_response_body_integrity() {
 }
 
 test_sse_frames_api_disabled() {
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
+
     export NO_PROXY=""
     export no_proxy=""
     curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse?count=2" --max-time 5 > /dev/null 2>&1
@@ -576,7 +554,7 @@ test_sse_frames_api_disabled() {
     sleep 1
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse" 15)
 
     if [[ -z "$traffic_id" ]]; then
         log_fail "No SSE traffic found"
@@ -597,14 +575,13 @@ test_sse_updates_live_size() {
     clear_traffic >/dev/null 2>&1 || true
     sleep 0.5
 
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
     export NO_PROXY=""
     export no_proxy=""
     (curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse/custom?count=100&interval=0.05" --max-time 10 > /dev/null 2>&1) &
     local sse_pid=$!
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse/custom" 15)
     if [[ -z "$traffic_id" ]]; then
         log_fail "No SSE traffic found"
         kill_pid "$sse_pid"
@@ -640,7 +617,9 @@ test_sse_updates_live_size() {
 }
 
 test_sse_traffic_identification() {
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
+
     export NO_PROXY=""
     export no_proxy=""
     curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse/custom?count=1&interval=0.01" --max-time 5 > /dev/null 2>&1
@@ -648,7 +627,7 @@ test_sse_traffic_identification() {
     sleep 1
 
     local traffic_id
-    traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
+    traffic_id=$(wait_for_sse_traffic_id "/sse/custom" 15)
 
     if [[ -z "$traffic_id" ]]; then
         log_fail "No SSE traffic found"
@@ -665,7 +644,9 @@ test_sse_traffic_identification() {
 }
 
 test_sse_vs_websocket_distinction() {
-    # 强制不使用本地回环绕过，确保流量经过 Bifrost 代理
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
+
     export NO_PROXY=""
     export no_proxy=""
     curl -sN -x "$SSE_PROXY" "$SSE_TARGET/sse?count=1" --max-time 5 > /dev/null 2>&1
@@ -718,8 +699,25 @@ main() {
     log_info "SSE Server: $SSE_HOST:$SSE_PORT"
     echo ""
 
-    start_sse_server
-    start_bifrost
+    start_sse_server || { log_fail "SSE server failed to start"; exit 1; }
+    start_bifrost || { log_fail "Bifrost proxy failed to start"; exit 1; }
+
+    local preflight_ok=false
+    local preflight_attempts=0
+    while [[ $preflight_attempts -lt 30 ]]; do
+        export NO_PROXY=""
+        export no_proxy=""
+        if curl -sf -x "$SSE_PROXY" "$SSE_TARGET/health" --max-time 3 >/dev/null 2>&1; then
+            preflight_ok=true
+            break
+        fi
+        sleep 0.5
+        preflight_attempts=$((preflight_attempts + 1))
+    done
+    if [[ "$preflight_ok" != "true" ]]; then
+        log_fail "Preflight check failed: proxy cannot reach SSE server"
+        exit 1
+    fi
 
     clear_traffic >/dev/null 2>&1 || true
     sleep 0.5

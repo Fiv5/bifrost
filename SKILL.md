@@ -7,17 +7,6 @@ description: "使用 bifrost 命令行工具管理代理生命周期、规则、
 
 该技能用于指导 Agent 直接使用 `bifrost` CLI 完成代理启动、配置修改、规则调试、Group 规则管理、脚本管理和流量排查，而不是绕过 CLI 直接改底层数据文件。
 
-## 何时调用
-
-- 需要启动、停止、检查 Bifrost 代理
-- 需要通过命令行添加或调试规则
-- 需要管理 Group（查询 group、管理 group 规则）
-- 需要启用或排查 TLS 拦截（推荐使用域名/应用白名单而非全局开启）
-- 需要管理 CA、系统代理、访问白名单、变量值
-- 需要管理脚本（request/response/decode）
-- 需要查询运行中的代理配置、流量记录或搜索请求
-- 用户提及一个少于 6 位的数字并希望获取其请求详情（如「获取 57544 的详情」「查看 12345 的内容」），应识别为 `bifrost traffic get <ID>` 操作
-
 ## 启动时必须执行的自检流程
 
 每次技能被触发后，Agent 在正式执行任何 `bifrost` 命令前，都必须先完成下面的启动检查：
@@ -98,9 +87,8 @@ bifrost install-skill -y
 ## 4. 完成自检后再进入正式任务
 
 1. 先确认目标是"运行代理"还是"管理已有代理"。
-2. 始终使用默认数据目录（`~/.bifrost`），禁止使用临时 `BIFROST_DATA_DIR`，以确保证书、规则、配置等数据正确可用。
-3. 先用 `bifrost --help` 或 `bifrost <command> --help` 补充具体参数，再执行高影响命令。
-4. 会改本机网络环境的命令必须谨慎：`system-proxy enable/disable`、`start --system-proxy`、`start --cli-proxy`。
+2. 先用 `bifrost --help` 或 `bifrost <command> --help` 补充具体参数，再执行高影响命令。
+3. 会改本机网络环境的命令必须谨慎：`system-proxy enable/disable`、`start --system-proxy`、`start --cli-proxy`。
 
 ## 关键约束
 
@@ -108,20 +96,20 @@ bifrost install-skill -y
 - `config`、`traffic`、`search`、`group`、多数 `status` 相关能力依赖"已有运行中的代理"
 - `rule`、`value`、`script`、`ca` 主要操作本地数据目录，不一定要求代理正在运行
 - `system-proxy` 会修改操作系统代理设置；除非用户明确要求，不要主动启用
-- **TLS 拦截默认关闭**（`--no-intercept`），不要主动全局开启；优先通过 `--intercept-include` / `--app-intercept-include` 配置域名或应用白名单
 
 ## 命令能力映射
 
 ### 1. 生命周期
 
 ```bash
-bifrost start -p 9900
+bifrost status                     # 启动前必须先检查是否已有服务在运行
+bifrost start -p 9900              # 仅当 status 显示无运行中的服务时才启动
 bifrost start -p 9900 --daemon
-bifrost status
 bifrost status --tui
 bifrost stop
 ```
 
+- **启动前必须先执行 `bifrost status` 检查**，如果已有服务在运行，直接复用，不要尝试启动新的
 - 前台调试优先用普通 `start`
 - 需要后台运行时才用 `--daemon`
 - 若未指定端口，默认 `9900`
@@ -247,7 +235,7 @@ bifrost group rule disable <group_id> <name>
 - `group list` 支持 `-k/--keyword` 模糊搜索、`-l/--limit` 限制最大结果数（默认 50）和 `-o/--offset` 分页偏移
 
 ### 6. 脚本管理
-
+> 支持 QuickJS 引擎执行 JS 脚本
 ```bash
 bifrost script list
 bifrost script list -t request             # 按类型过滤：request, response, decode
@@ -393,28 +381,13 @@ bifrost config export --format json
 ### 12. 流量查询
 
 ```bash
-# 列出流量记录
 bifrost traffic list --limit 20
-bifrost traffic list --host example.com --format json-pretty
-bifrost traffic list --method POST --status 200
-bifrost traffic list --status-min 400 --status-max 499
-bifrost traffic list --protocol https --content-type json
-bifrost traffic list --client-ip 192.168.1.100 --client-app Chrome
-bifrost traffic list --has-rule-hit true
-bifrost traffic list --is-websocket true
-bifrost traffic list --is-sse true
-bifrost traffic list --is-tunnel true
-bifrost traffic list --cursor 100 --direction forward  # 分页
-
-# 查看单条详情（ID 为少于 6 位的数字序号）
-bifrost traffic get 57544
+bifrost traffic list --host example.com --method POST --format json-pretty
 bifrost traffic get 57544 --request-body --response-body
-
-# 搜索（等同于 bifrost search）
 bifrost traffic search openai --domain api.openai.com --method POST
 ```
 
-> **快捷用法**：当用户说「获取 57544 的详情」「查看 12345 的内容」等包含纯数字 ID 的请求时，直接执行 `bifrost traffic get <ID> --request-body --response-body`。
+> 当用户提及一个少于 6 位的数字 ID 并希望查看详情时，直接执行 `bifrost traffic get <ID>`。
 
 `traffic list` 完整过滤参数：
 
@@ -445,10 +418,8 @@ bifrost traffic search openai --domain api.openai.com --method POST
 
 ```bash
 bifrost search openai --domain api.openai.com --method POST
-bifrost search --interactive                    # 交互式 TUI 模式
-bifrost search error --status 5xx --format json-pretty
-bifrost search auth --req-header --host api.example.com
 bifrost search '{"error"' --res-body --content-type json
+bifrost search --interactive                    # 交互式 TUI 模式
 ```
 
 `search` 完整参数：
@@ -528,7 +499,7 @@ bifrost admin audit --limit 100 --offset 0
 bifrost admin audit --limit 100 --json         # 以 JSON 格式输出最近 100 条审计记录
 ```
 
-- `admin remote enable/disable` 修改本机 `~/.bifrost/values` 中的远程访问开关（管理端会在请求时读取该值）
+- `admin remote enable/disable` 修改远程访问开关（管理端会在请求时读取该值）
 - `admin passwd` 会更新本地认证凭据
 - `admin revoke-all` 会立即让所有已登录的管理端会话失效
 
@@ -566,28 +537,7 @@ bifrost install-skill -t trae                  # 仅安装到 Trae
 bifrost install-skill -t all -y                # 自动安装到所有支持的工具
 ```
 
-## 环境变量
-
-| 变量                 | 说明                                               | 默认值                |
-| ------------------ | ------------------------------------------------ | ------------------ |
-| `BIFROST_DATA_DIR` | 数据目录路径（含 config/rules/values/scripts/certs/logs） | `~/.bifrost`（平台相关） |
-| `RUST_LOG`         | 日志级别与过滤器                                         | `info`             |
-
 ## 推荐工作流
-
-### 本地调试一个规则
-
-```bash
-bifrost start -p 9900 \
-  --rules "example.com reqHeaders://X-Debug=1" 
-```
-
-然后用 `curl` 或目标客户端走 `127.0.0.1:9900`，再执行：
-
-```bash
-bifrost traffic list --limit 20
-bifrost traffic get 1
-```
 
 ### 调试 HTTPS 明文请求
 
@@ -605,20 +555,6 @@ bifrost start -p 9900 --app-intercept-include '*Chrome'
 ```
 
 仅在确实需要全局解包时才用 `--intercept`（不推荐）。
-
-### 调试长期规则文件
-
-```bash
-bifrost rule add local-debug -f ./rules/local-debug.txt
-bifrost rule enable local-debug
-bifrost rule show local-debug
-```
-
-需要单独验证规则内容时，再参考：
-
-```bash
-bifrost start --rules-file ./rules/local-debug.txt
-```
 
 ### 脚本开发调试
 
@@ -644,34 +580,78 @@ bifrost traffic list --host example.com --limit 20
 bifrost traffic get <id> --request-body --response-body  # <id> 为少于 6 位的数字序号
 ```
 
-### 管理 Group 规则
+### 创建规则工作流
+
+#### 第一步：阅读必要文档
+
+| 优先级 | 文档 | 内容 |
+| --- | --- | --- |
+| **必读** | [docs/rule.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rule.md) | 规则整体语法（pattern + operation + filter + lineProps） |
+| **必读** | [docs/pattern.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/pattern.md) | 匹配模式：Domain / IP / Wildcard / PathWildcard / Regex、否定匹配 |
+| **必读** | [docs/operation.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/operation.md) | 操作指令语法、Value 类型、模板变量、协议列表 |
+| 按需 | [docs/rules/routing.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/routing.md) | host / xhost / proxy / pac 等路由转发 |
+| 按需 | [docs/rules/request-modification.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/request-modification.md) | reqHeaders / reqBody / reqCookies / method / ua 等 |
+| 按需 | [docs/rules/response-modification.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/response-modification.md) | resHeaders / resBody / resCookies / statusCode / cache 等 |
+| 按需 | [docs/rules/body-manipulation.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/body-manipulation.md) | reqReplace / resReplace / resMerge 等 Body 操作 |
+| 按需 | [docs/rules/url-manipulation.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/url-manipulation.md) | urlParams / pathReplace 等 URL 操作 |
+| 按需 | [docs/rules/status-redirect.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/status-redirect.md) | statusCode / redirect |
+| 按需 | [docs/rules/filters.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/filters.md) | includeFilter / excludeFilter |
+| 按需 | [docs/rules/scripts.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rules/scripts.md) | reqScript / resScript / decode |
+| 按需 | [docs/values.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/values.md) | Values 变量管理 |
+| 按需 | [docs/scripts.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/scripts.md) | 脚本开发完整指南 |
+
+#### 第二步：添加规则
 
 ```bash
-# 查找目标 group
-bifrost group list -k "team"
-bifrost group show <group_id>
+# 内联规则
+bifrost rule add my-rule -c "example.com host://127.0.0.1:3000"
+bifrost rule add my-rule -c "example.com host://127.0.0.1:3000 reqHeaders://X-Debug=1 resCors://*"
 
-# 查看/管理 group 规则
-bifrost group rule list <group_id>
-bifrost group rule add <group_id> api-mock -c "api.example.com host://127.0.0.1:3000"
-bifrost group rule enable <group_id> api-mock
-bifrost group rule show <group_id> api-mock
+# 从文件添加（适合多条/复杂规则）
+bifrost rule add my-rule -f ./rules/my-rule.txt
+bifrost rule enable my-rule
 
-# 更新已有规则
-bifrost group rule update <group_id> api-mock -f ./rules/api-mock-v2.txt
+# 使用 Values 引用
+bifrost value add mock-response '{"code":0,"data":{"name":"test"}}'
+bifrost rule add api-mock -c "api.example.com/user resBody://{mock-response}"
 
-# 不再需要时禁用或删除
-bifrost group rule disable <group_id> api-mock
-bifrost group rule delete <group_id> api-mock
+# 临时规则（不持久化，适合一次性调试）
+bifrost start -p 9900 --rules "example.com host://127.0.0.1:3000"
 ```
 
-### 配置代理认证
+#### 第三步：验证规则
 
 ```bash
-bifrost start --proxy-user admin:secret --proxy-user viewer:pass123
-# 或运行时动态配置
-bifrost config set access.userpass.enabled true
-bifrost config add access.userpass.accounts 'admin:secret'
+bifrost rule show my-rule                                          # 确认规则内容
+curl -x http://127.0.0.1:9900 http://example.com/api/test         # 发送测试请求
+bifrost traffic list --host example.com --has-rule-hit true --limit 5  # 确认规则命中
+bifrost traffic get <id> --request-body --response-body            # 检查请求/响应详情
+```
+
+### 修改规则工作流
+
+```bash
+# 查看现有规则
+bifrost rule list
+bifrost rule show <rule-name>
+
+# 更新规则内容
+bifrost rule update my-rule -c "example.com host://127.0.0.1:4000 reqHeaders://X-Version=2"
+bifrost rule update my-rule -f ./rules/my-rule-v2.txt
+
+# 启用 / 禁用 / 删除
+bifrost rule disable my-rule
+bifrost rule enable my-rule
+bifrost rule delete my-rule
+
+# 重命名 / 调整优先级
+bifrost rule rename old-name new-name
+bifrost rule reorder
+
+# 验证（同创建规则第三步）
+bifrost rule show my-rule
+curl -x http://127.0.0.1:9900 http://example.com/api/test
+bifrost traffic list --host example.com --has-rule-hit true --limit 5
 ```
 
 ## 特别说明
@@ -688,18 +668,9 @@ bifrost <command> <action> -h # 子动作帮助（如 bifrost rule add -h、bifr
 
 ## Agent 行为建议
 
-- 优先通过 CLI 完成任务，不要直接手改 `~/.bifrost` 下的数据
-- 禁止使用临时 `BIFROST_DATA_DIR`，始终使用默认数据目录，确保证书和配置正确
+- 优先通过 CLI 完成任务，不要直接手改底层数据文件
 - 如果用户没有要求修改系统环境，不要开启 `--system-proxy`、`--cli-proxy`
-- **TLS 拦截默认关闭，不要主动全局开启 `--intercept`**。当用户需要查看 HTTPS 明文时，优先使用 `--intercept-include` 指定目标域名或 `--app-intercept-include` 指定目标应用，仅对必要的流量解包
+- **TLS 拦截默认关闭**，不要主动全局开启 `--intercept`（详见 §3 TLS/CA）
 - 如果用户只想验证规则，不必启用 TLS 拦截
 - 当用户提供一个少于 6 位的纯数字（如 57544、12345），且上下文含有「详情」「内容」「请求」「查看」等关键词时，应识别为 `bifrost traffic get <ID> --request-body --response-body` 操作
 - 遇到不确定的参数或用法，**先执行** **`bifrost <command> -h`** **获取完整手册**，不要猜测
-
-## 参考
-
-- CLI 定义：[crates/bifrost/src/cli.rs](https://github.com/bifrost-proxy/bifrost/blob/main/crates/bifrost/src/cli.rs)
-- 启动与命令分发：[crates/bifrost/src/main.rs](https://github.com/bifrost-proxy/bifrost/blob/main/crates/bifrost/src/main.rs)
-- 规则语法：[docs/rule.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rule.md)
-- Pattern 说明：[docs/pattern.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/pattern.md)
-- Operation 说明：[docs/operation.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/operation.md)
