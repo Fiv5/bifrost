@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::update_check::{
-    get_latest_version, get_latest_version_fresh, is_newer_version, VersionCache,
+    get_latest_version, get_latest_version_fresh_with_diagnostics, is_newer_version, VersionCache,
 };
 use crate::process::{is_process_running, read_pid, read_runtime_info};
 
@@ -155,6 +155,34 @@ fn detect_glibc_version() -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+#[cfg(target_os = "macos")]
+fn clear_quarantine_attr(path: &Path) {
+    use tracing::debug;
+    for flag in ["-c", "-d com.apple.quarantine", "-d com.apple.provenance"] {
+        let args: Vec<&str> = flag.split_whitespace().collect();
+        let result = Command::new("xattr").args(&args).arg(path).output();
+        match result {
+            Ok(output) if !output.status.success() => {
+                debug!(
+                    flag,
+                    path = %path.display(),
+                    stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                    "xattr removal returned non-zero (may be absent, safe to ignore)"
+                );
+            }
+            Err(e) => {
+                debug!(
+                    flag,
+                    path = %path.display(),
+                    error = %e,
+                    "failed to run xattr command"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 fn get_musl_fallback_triple(target: &str) -> Option<String> {
     match target {
         "x86_64-unknown-linux-gnu" => Some("x86_64-unknown-linux-musl".to_string()),
@@ -163,20 +191,12 @@ fn get_musl_fallback_triple(target: &str) -> Option<String> {
     }
 }
 
-fn verify_binary(_path: &Path) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        Command::new(_path)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        true
-    }
+fn verify_binary(path: &Path) -> bool {
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn prompt_confirm(message: &str) -> bool {
@@ -324,7 +344,11 @@ fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
 
     println!(
         "{}",
-        "✓ Upgrade completed successfully!".bright_green().bold()
+        "⚠ Upgrade completed but could not verify installed version.".bright_yellow()
+    );
+    println!(
+        "{}",
+        "  Run `bifrost --version` to confirm the upgrade succeeded.".dimmed()
     );
     Ok(())
 }
@@ -332,24 +356,30 @@ fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
 fn upgrade_via_script() -> Result<(), BifrostError> {
     println!("{}", "Upgrading via install script...".bright_cyan());
 
-    let status = Command::new("sh")
+    let output = Command::new("sh")
         .args([
             "-c",
             "curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash",
         ])
-        .status()
+        .output()
         .map_err(BifrostError::Io)?;
 
-    if status.success() {
+    if output.status.success() {
         println!(
             "{}",
             "✓ Upgrade completed successfully!".bright_green().bold()
         );
         Ok(())
     } else {
-        Err(BifrostError::Network(
-            "Install script failed. Check network connection and try again.".to_string(),
-        ))
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(BifrostError::Network(format!(
+            "Install script failed — {}",
+            if stderr.trim().is_empty() {
+                "check network connection and try again".to_string()
+            } else {
+                stderr.trim().to_string()
+            }
+        )))
     }
 }
 
@@ -367,15 +397,17 @@ fn download_and_install(
 
     let archive_path = temp_dir.path().join(&archive_name);
 
-    let status = Command::new("curl")
+    let output = Command::new("curl")
         .args(["-fsSL", "-o", archive_path.to_str().unwrap(), &download_url])
-        .status()
+        .output()
         .map_err(BifrostError::Io)?;
 
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(BifrostError::Network(format!(
-            "Failed to download {}. Check if the release exists.",
-            archive_name
+            "Failed to download {} — {}",
+            archive_name,
+            stderr.trim()
         )));
     }
 
@@ -385,7 +417,7 @@ fn download_and_install(
     fs::create_dir_all(&extract_dir)?;
 
     if cfg!(windows) {
-        let status = Command::new("powershell")
+        let output = Command::new("powershell")
             .args([
                 "-Command",
                 &format!(
@@ -394,25 +426,33 @@ fn download_and_install(
                     extract_dir.display()
                 ),
             ])
-            .status()
+            .output()
             .map_err(BifrostError::Io)?;
 
-        if !status.success() {
-            return Err(BifrostError::Parse("Failed to extract archive".to_string()));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BifrostError::Parse(format!(
+                "Failed to extract archive — {}",
+                stderr.trim()
+            )));
         }
     } else {
-        let status = Command::new("tar")
+        let output = Command::new("tar")
             .args([
                 "-xzf",
                 archive_path.to_str().unwrap(),
                 "-C",
                 extract_dir.to_str().unwrap(),
             ])
-            .status()
+            .output()
             .map_err(BifrostError::Io)?;
 
-        if !status.success() {
-            return Err(BifrostError::Parse("Failed to extract archive".to_string()));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BifrostError::Parse(format!(
+                "Failed to extract archive — {}",
+                stderr.trim()
+            )));
         }
     }
 
@@ -439,7 +479,16 @@ fn download_and_install(
 
     let backup_path = target_path.with_extension("backup");
     if target_path.exists() {
-        fs::rename(target_path, &backup_path)?;
+        fs::rename(target_path, &backup_path).map_err(|e| {
+            BifrostError::Io(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "failed to backup current binary {}: {}",
+                    target_path.display(),
+                    e
+                ),
+            ))
+        })?;
     }
 
     match fs::copy(&new_binary, target_path) {
@@ -451,9 +500,34 @@ fn download_and_install(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mut perms = fs::metadata(target_path)?.permissions();
+                let mut perms = fs::metadata(target_path)
+                    .map_err(|e| {
+                        BifrostError::Io(std::io::Error::new(
+                            e.kind(),
+                            format!(
+                                "failed to read metadata of {}: {}",
+                                target_path.display(),
+                                e
+                            ),
+                        ))
+                    })?
+                    .permissions();
                 perms.set_mode(0o755);
-                fs::set_permissions(target_path, perms)?;
+                fs::set_permissions(target_path, perms).map_err(|e| {
+                    BifrostError::Io(std::io::Error::new(
+                        e.kind(),
+                        format!(
+                            "failed to set executable permissions on {}: {}",
+                            target_path.display(),
+                            e
+                        ),
+                    ))
+                })?;
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                clear_quarantine_attr(target_path);
             }
 
             Ok(())
@@ -503,7 +577,7 @@ fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostErr
 
             if !verify_binary(target_path) {
                 return Err(BifrostError::Config(
-                    "Fallback musl binary also failed to run".to_string(),
+                    "Fallback musl binary also failed to run. Try installing manually with:\n  curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash".to_string(),
                 ));
             }
 
@@ -513,7 +587,7 @@ fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostErr
             return Err(e);
         } else {
             return Err(BifrostError::Config(
-                "Installed binary failed to run. Try installing manually with: curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --libc musl".to_string(),
+                "Installed binary failed verification (`bifrost --version` returned non-zero). Try installing manually with:\n  curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash".to_string(),
             ));
         }
     }
@@ -536,16 +610,51 @@ pub fn handle_upgrade(force: bool, restart: bool) -> Result<(), BifrostError> {
         format!("(current: v{})", current_version).dimmed()
     );
 
-    let cache = if let Some(c) = get_latest_version_fresh() {
-        c
-    } else if let Some(cached) = get_latest_version() {
-        cached
-    } else {
-        println!(
-            "{}",
-            "⚠ Could not check for updates. Check your network connection.".bright_yellow()
-        );
-        return Ok(());
+    let cache = match get_latest_version_fresh_with_diagnostics() {
+        Ok(c) => c,
+        Err(diagnostic) => {
+            if let Some(cached) = get_latest_version() {
+                println!(
+                    "{}",
+                    format!(
+                        "⚠ Could not fetch latest version ({}), using cached data.",
+                        diagnostic
+                    )
+                    .bright_yellow()
+                );
+                cached
+            } else {
+                println!(
+                    "{}",
+                    format!("⚠ Could not check for updates: {}", diagnostic).bright_yellow()
+                );
+                println!();
+                println!("{}", "  You can upgrade manually by running:".dimmed());
+                println!(
+                    "  {}",
+                    "curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash"
+                        .bright_cyan()
+                );
+                println!();
+                println!("{}", "  Troubleshooting tips:".dimmed());
+                println!("{}", "    • Check your internet connection".dimmed());
+                println!(
+                    "{}",
+                    "    • If behind a proxy/firewall, ensure api.github.com is accessible"
+                        .dimmed()
+                );
+                println!(
+                    "{}",
+                    "    • Try: curl -sI https://api.github.com/repos/bifrost-proxy/bifrost/releases/latest"
+                        .dimmed()
+                );
+                println!(
+                    "{}",
+                    "    • Set RUST_LOG=debug for detailed diagnostics".dimmed()
+                );
+                return Ok(());
+            }
+        }
     };
 
     if !is_newer_version(current_version, &cache.latest_version) {
@@ -678,11 +787,10 @@ fn maybe_restart_running_proxy(auto_restart: bool) -> Result<(), BifrostError> {
                 .bold()
         );
     } else {
-        println!(
-            "{}",
-            "⚠ Failed to restart proxy. Please start manually with: bifrost start -d"
-                .bright_yellow()
-        );
+        return Err(BifrostError::Config(
+            "Failed to restart proxy after upgrade. Please start manually with: bifrost start -d"
+                .to_string(),
+        ));
     }
 
     Ok(())

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::thread;
+use tracing::debug;
 
 const GITHUB_RELEASES_API_URL: &str =
     "https://api.github.com/repos/bifrost-proxy/bifrost/releases/latest";
@@ -12,7 +13,9 @@ const GITHUB_TAGS_API_URL: &str = "https://api.github.com/repos/bifrost-proxy/bi
 const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/tag";
 const CACHE_FILE_NAME: &str = "version_cache.json";
 const CACHE_DURATION_HOURS: i64 = 24;
-const REQUEST_TIMEOUT_SECS: u64 = 5;
+const REQUEST_TIMEOUT_SECS: u64 = 10;
+const MAX_RETRIES: u32 = 2;
+const RETRY_DELAY_MS: u64 = 500;
 const MAX_RELEASE_HIGHLIGHTS: usize = 5;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,36 +66,147 @@ fn is_cache_valid(cache: &VersionCache) -> bool {
     cache_age < Duration::hours(CACHE_DURATION_HOURS)
 }
 
+fn classify_ureq_error(err: &ureq::Error) -> &'static str {
+    match err {
+        ureq::Error::Status(status, _) => {
+            if *status == 403 {
+                "GitHub API rate limit exceeded"
+            } else if *status == 404 {
+                "GitHub API endpoint not found"
+            } else {
+                "HTTP error from GitHub API"
+            }
+        }
+        ureq::Error::Transport(transport) => match transport.kind() {
+            ureq::ErrorKind::Dns => "DNS resolution failed (check network connectivity)",
+            ureq::ErrorKind::ConnectionFailed => {
+                "connection failed (GitHub may be unreachable from your network)"
+            }
+            ureq::ErrorKind::Io => {
+                let msg = transport.to_string().to_lowercase();
+                if msg.contains("timed out") || msg.contains("timeout") {
+                    "connection timed out (GitHub may be unreachable from your network)"
+                } else {
+                    "network I/O error"
+                }
+            }
+            ureq::ErrorKind::ProxyConnect | ureq::ErrorKind::ProxyUnauthorized => {
+                "proxy-related error"
+            }
+            ureq::ErrorKind::InvalidUrl | ureq::ErrorKind::UnknownScheme => "invalid URL",
+            ureq::ErrorKind::TooManyRedirects => "too many redirects",
+            ureq::ErrorKind::InsecureRequestHttpsOnly => "TLS/SSL configuration error",
+            _ => "network error",
+        },
+    }
+}
+
+fn fetch_with_retry(agent: &ureq::Agent, url: &str) -> Result<ureq::Response, Box<ureq::Error>> {
+    let mut last_err = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            debug!(
+                attempt = attempt + 1,
+                max = MAX_RETRIES + 1,
+                url,
+                "retrying request"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(
+                RETRY_DELAY_MS * (attempt as u64),
+            ));
+        }
+        match agent.get(url).call() {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                let reason = classify_ureq_error(&e);
+                debug!(
+                    url,
+                    attempt = attempt + 1,
+                    error = %e,
+                    reason,
+                    "request failed"
+                );
+                last_err = Some(Box::new(e));
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+#[derive(Debug)]
+pub(crate) enum FetchError {
+    Network(String),
+    Parse(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchError::Network(msg) => write!(f, "{}", msg),
+            FetchError::Parse(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
 fn fetch_latest_release() -> Option<(String, Vec<String>)> {
+    match fetch_latest_release_detailed() {
+        Ok(result) => Some(result),
+        Err(e) => {
+            debug!(error = %e, "fetch_latest_release failed");
+            None
+        }
+    }
+}
+
+fn fetch_latest_release_detailed() -> Result<(String, Vec<String>), FetchError> {
     let agent = bifrost_core::direct_ureq_agent_builder()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("bifrost-cli")
         .build();
 
-    if let Ok(response) = agent.get(GITHUB_RELEASES_API_URL).call() {
-        if let Ok(release) = response.into_json::<GitHubRelease>() {
-            let version = release
-                .tag_name
-                .strip_prefix('v')
-                .unwrap_or(&release.tag_name)
-                .to_string();
-
-            let highlights = parse_release_highlights(release.body.as_deref());
-            return Some((version, highlights));
+    match fetch_with_retry(&agent, GITHUB_RELEASES_API_URL) {
+        Ok(response) => match response.into_json::<GitHubRelease>() {
+            Ok(release) => {
+                let version = release
+                    .tag_name
+                    .strip_prefix('v')
+                    .unwrap_or(&release.tag_name)
+                    .to_string();
+                let highlights = parse_release_highlights(release.body.as_deref());
+                return Ok((version, highlights));
+            }
+            Err(e) => {
+                debug!(error = %e, "failed to parse GitHub release JSON, falling back to tags API");
+            }
+        },
+        Err(e) => {
+            let reason = classify_ureq_error(&e);
+            debug!(
+                error = %e,
+                reason,
+                "releases API failed, falling back to tags API"
+            );
         }
     }
 
-    let response = agent.get(GITHUB_TAGS_API_URL).call().ok()?;
-    let tags: Vec<GitHubTag> = response.into_json().ok()?;
+    let response = fetch_with_retry(&agent, GITHUB_TAGS_API_URL).map_err(|e| {
+        let reason = classify_ureq_error(&e);
+        FetchError::Network(format!("{}: {}", reason, e))
+    })?;
+
+    let tags: Vec<GitHubTag> = response
+        .into_json()
+        .map_err(|e| FetchError::Parse(format!("failed to parse tags response: {}", e)))?;
 
     let version = tags
         .into_iter()
         .map(|t| t.name)
         .filter(|name| name.starts_with('v'))
         .map(|name| name.trim_start_matches('v').to_string())
-        .max_by(|a, b| compare_versions(a, b))?;
+        .max_by(|a, b| compare_versions(a, b))
+        .ok_or_else(|| FetchError::Parse("no valid version tags found".to_string()))?;
 
-    Some((version, Vec::new()))
+    Ok((version, Vec::new()))
 }
 
 fn parse_release_highlights(body: Option<&str>) -> Vec<String> {
@@ -437,27 +551,41 @@ pub fn get_latest_version() -> Option<VersionCache> {
         }
     }
 
-    let (latest, highlights) = fetch_latest_release()?;
+    if let Some((latest, highlights)) = fetch_latest_release() {
+        let cache = VersionCache {
+            latest_version: latest,
+            release_highlights: highlights,
+            checked_at: Utc::now(),
+        };
+        write_cache(&cache);
+        return Some(cache);
+    }
 
-    let cache = VersionCache {
-        latest_version: latest,
-        release_highlights: highlights,
-        checked_at: Utc::now(),
-    };
-    write_cache(&cache);
+    if let Some(stale_cache) = read_cache() {
+        debug!(
+            version = %stale_cache.latest_version,
+            checked_at = %stale_cache.checked_at,
+            "using stale cache as network fallback"
+        );
+        return Some(stale_cache);
+    }
 
-    Some(cache)
+    None
 }
 
-pub fn get_latest_version_fresh() -> Option<VersionCache> {
-    let (latest, highlights) = fetch_latest_release()?;
-    let cache = VersionCache {
-        latest_version: latest,
-        release_highlights: highlights,
-        checked_at: Utc::now(),
-    };
-    write_cache(&cache);
-    Some(cache)
+pub fn get_latest_version_fresh_with_diagnostics() -> Result<VersionCache, String> {
+    match fetch_latest_release_detailed() {
+        Ok((latest, highlights)) => {
+            let cache = VersionCache {
+                latest_version: latest,
+                release_highlights: highlights,
+                checked_at: Utc::now(),
+            };
+            write_cache(&cache);
+            Ok(cache)
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 pub fn check_and_print_update_notice() {
