@@ -34,7 +34,7 @@ export async function handleOAuth2(
 
 function getRedirectUri(ctx: RequestContext, oauth2: OAuth2Config): string {
   if (oauth2.redirect_uri) return oauth2.redirect_uri;
-  const proto = ctx.req.headers['x-forwarded-proto'] ?? 'http';
+  const proto = ctx.trustForwardedFor ? (ctx.req.headers['x-forwarded-proto'] ?? 'http') : 'http';
   const host = ctx.req.headers['host'] ?? 'localhost';
   return `${proto}://${host}/v4/sso/callback`;
 }

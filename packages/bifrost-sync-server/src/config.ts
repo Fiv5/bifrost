@@ -7,6 +7,8 @@ const DEFAULT_CONFIG: SyncServerConfig = {
   server: {
     port: 8686,
     host: '0.0.0.0',
+    // DANGEROUS: only enable when deployed behind a trusted reverse proxy.
+    trust_forwarded_for: false,
   },
   storage: {
     type: 'sqlite',

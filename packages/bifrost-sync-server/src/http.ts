@@ -10,6 +10,7 @@ export interface RequestContext {
   url: URL;
   body: string;
   clientIp: string;
+  trustForwardedFor: boolean;
   user?: User;
 }
 

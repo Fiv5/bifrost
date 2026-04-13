@@ -45,7 +45,9 @@ use crate::utils::process_info::{
     resolve_client_process_async_for_connection_with_retry, spawn_async_process_resolver,
     ClientProcess,
 };
-use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
+use bifrost_core::{
+    AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl, ProxyAuthRateLimiter,
+};
 
 const NOISY_CONN_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -571,6 +573,7 @@ pub struct ProxyServer {
     udp_relay_addr: Arc<RwLock<Option<SocketAddr>>>,
     #[allow(dead_code)]
     udp_relay: Arc<RwLock<Option<UdpRelay>>>,
+    proxy_auth_rate_limiter: Arc<ProxyAuthRateLimiter>,
 }
 
 impl ProxyServer {
@@ -597,6 +600,7 @@ impl ProxyServer {
             dns_resolver,
             udp_relay_addr: Arc::new(RwLock::new(None)),
             udp_relay: Arc::new(RwLock::new(None)),
+            proxy_auth_rate_limiter: Arc::new(ProxyAuthRateLimiter::new()),
         }
     }
 
@@ -764,6 +768,7 @@ impl ProxyServer {
                 .with_unsafe_ssl(self.config.unsafe_ssl)
                 .with_inject_bifrost_badge(self.config.inject_bifrost_badge)
                 .with_dns_resolver(Arc::clone(&self.dns_resolver))
+                .with_proxy_auth_rate_limiter(Arc::clone(&self.proxy_auth_rate_limiter))
                 .with_tls_intercept(
                     Arc::clone(&self.tls_config),
                     tls_intercept_config,
@@ -935,6 +940,7 @@ impl ProxyServer {
             let socks5_password = self.config.socks5_password.clone();
             let timeout_secs = self.config.timeout_secs;
             let udp_relay_addr = Arc::clone(&self.udp_relay_addr);
+            let proxy_auth_rate_limiter = Arc::clone(&self.proxy_auth_rate_limiter);
 
             tokio::spawn(async move {
                 let _permit = permit;
@@ -968,6 +974,7 @@ impl ProxyServer {
                                 .with_unsafe_ssl(proxy_config.unsafe_ssl)
                                 .with_access_control(Arc::clone(&access_control))
                                 .with_dns_resolver(Arc::clone(&dns_resolver))
+                                .with_proxy_auth_rate_limiter(Arc::clone(&proxy_auth_rate_limiter))
                                 .with_tls_intercept(
                                     Arc::clone(&tls_config),
                                     tls_intercept_config,
@@ -999,6 +1006,7 @@ impl ProxyServer {
                             dns_resolver,
                             access_control,
                             initial_generation,
+                            Arc::clone(&proxy_auth_rate_limiter),
                         )
                         .await;
                     } else {
@@ -1014,6 +1022,7 @@ impl ProxyServer {
                             dns_resolver,
                             access_control,
                             initial_generation,
+                            proxy_auth_rate_limiter,
                         )
                         .await;
                     }
@@ -1052,6 +1061,7 @@ async fn handle_http_connection(
     dns_resolver: Arc<DnsResolver>,
     access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
     initial_generation: u64,
+    proxy_auth_rate_limiter: Arc<ProxyAuthRateLimiter>,
 ) {
     let local_addr = match stream.local_addr() {
         Ok(addr) => addr,
@@ -1108,6 +1118,7 @@ async fn handle_http_connection(
         let access_control = Arc::clone(&access_control);
         let client_process_cache = Arc::clone(&client_process_cache);
         let client_process_resolution_started = Arc::clone(&client_process_resolution_started);
+        let proxy_auth_rate_limiter = Arc::clone(&proxy_auth_rate_limiter);
         async move {
             handle_request(
                 req,
@@ -1124,6 +1135,7 @@ async fn handle_http_connection(
                 initial_generation,
                 client_process_cache,
                 client_process_resolution_started,
+                proxy_auth_rate_limiter,
             )
             .await
         }
@@ -1156,6 +1168,7 @@ async fn handle_request(
     initial_generation: u64,
     client_process_cache: Arc<Mutex<Option<ClientProcess>>>,
     client_process_resolution_started: Arc<AtomicBool>,
+    proxy_auth_rate_limiter: Arc<ProxyAuthRateLimiter>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let method = req.method().clone();
     let uri = req.uri().clone();
@@ -1508,9 +1521,15 @@ async fn handle_request(
     };
 
     if !is_loopback || has_userpass {
-        if let Some(response) =
-            authorize_proxy_request(&req, peer_addr, &access_control, admin_state.as_ref(), &ctx)
-                .await
+        if let Some(response) = authorize_proxy_request(
+            &req,
+            peer_addr,
+            &access_control,
+            admin_state.as_ref(),
+            &ctx,
+            &proxy_auth_rate_limiter,
+        )
+        .await
         {
             return Ok(response);
         }
@@ -1675,6 +1694,7 @@ async fn authorize_proxy_request(
     access_control: &Arc<tokio::sync::RwLock<ClientAccessControl>>,
     admin_state: Option<&Arc<AdminState>>,
     ctx: &RequestContext,
+    rate_limiter: &Arc<ProxyAuthRateLimiter>,
 ) -> Option<Response<BoxBody>> {
     let (decision, has_userpass, loopback_requires_auth) = {
         let access_control = access_control.read().await;
@@ -1689,10 +1709,31 @@ async fn authorize_proxy_request(
     }
 
     if has_userpass {
+        if rate_limiter.is_banned(&peer_addr.ip()) {
+            warn!(
+                "[{}] Proxy auth rejected for {} — IP is temporarily banned",
+                ctx.id_str(),
+                peer_addr.ip()
+            );
+            return Some(proxy_auth_banned_response());
+        }
+
         match authenticate_proxy_credentials(req.headers(), access_control, admin_state, ctx).await
         {
-            ProxyAuthResult::Authorized => return None,
-            ProxyAuthResult::Unauthorized => return Some(proxy_auth_required_response()),
+            ProxyAuthResult::Authorized => {
+                rate_limiter.record_success(&peer_addr.ip());
+                return None;
+            }
+            ProxyAuthResult::Unauthorized => {
+                let failures = rate_limiter.record_failure(peer_addr.ip());
+                warn!(
+                    "[{}] Proxy auth failed for {} (attempt #{})",
+                    ctx.id_str(),
+                    peer_addr.ip(),
+                    failures
+                );
+                return Some(proxy_auth_required_response());
+            }
         }
     }
 
@@ -1784,6 +1825,17 @@ fn proxy_auth_required_response() -> Response<BoxBody> {
         .header("Proxy-Authenticate", "Basic realm=\"Bifrost\"")
         .body(full_body(
             "Proxy authentication required. Provide valid proxy username and password.".to_string(),
+        ))
+        .unwrap()
+}
+
+fn proxy_auth_banned_response() -> Response<BoxBody> {
+    Response::builder()
+        .status(429)
+        .header("Retry-After", "300")
+        .body(full_body(
+            "Too many failed authentication attempts. Your IP has been temporarily banned."
+                .to_string(),
         ))
         .unwrap()
 }

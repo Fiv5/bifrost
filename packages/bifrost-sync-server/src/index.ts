@@ -28,6 +28,7 @@ export function createSyncServer(config: SyncServerConfig): SyncServerInstance {
   const storage = createStorage(config.storage);
   const authMode = config.auth.mode;
   const oauth2Config = config.auth.oauth2;
+  const trustForwardedFor = config.server.trust_forwarded_for ?? false;
 
   const globalLimiter = new RateLimiter(200, 60_000);
   const authLimiter = new RateLimiter(20, 60_000);
@@ -51,7 +52,7 @@ export function createSyncServer(config: SyncServerConfig): SyncServerInstance {
       return;
     }
 
-    const clientIp = getClientIp(req);
+    const clientIp = getClientIp(req, trustForwardedFor);
 
     const globalCheck = globalLimiter.check(clientIp);
     if (!globalCheck.allowed) {
@@ -81,7 +82,7 @@ export function createSyncServer(config: SyncServerConfig): SyncServerInstance {
       return;
     }
 
-    const ctx: RequestContext = { req, res, url, body, clientIp };
+    const ctx: RequestContext = { req, res, url, body, clientIp, trustForwardedFor };
 
     try {
       if (authMode === 'oauth2' && oauth2Config) {
