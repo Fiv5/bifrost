@@ -313,6 +313,15 @@ run_single_test() {
 
     mkdir -p "$data_dir"
 
+    if ! port_is_available "$proxy_port" 2>/dev/null; then
+        kill_bifrost_on_port "$proxy_port"
+        local wait_free=0
+        while ! port_is_available "$proxy_port" 2>/dev/null && [[ $wait_free -lt 50 ]]; do
+            sleep_seconds 0.1
+            wait_free=$((wait_free + 1))
+        done
+    fi
+
     local http_retries="${BIFROST_E2E_HTTP_RETRIES:-2}"
 
     {

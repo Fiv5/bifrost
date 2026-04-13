@@ -211,7 +211,6 @@ allocate_free_port() {
 import socket
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("0.0.0.0", 0))
 print(s.getsockname()[1])
 s.close()
@@ -229,7 +228,6 @@ port = int(sys.argv[1])
 ok = True
 for addr in ("0.0.0.0", "127.0.0.1"):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind((addr, port))
     except OSError:
@@ -239,6 +237,22 @@ for addr in ("0.0.0.0", "127.0.0.1"):
             s.close()
         except Exception:
             pass
+    if not ok:
+        break
+    s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s2.settimeout(0.2)
+    try:
+        s2.connect(("127.0.0.1", port))
+        ok = False
+    except (ConnectionRefusedError, OSError):
+        pass
+    finally:
+        try:
+            s2.close()
+        except Exception:
+            pass
+    if not ok:
+        break
 sys.exit(0 if ok else 1)
 PY
 }
@@ -266,9 +280,20 @@ def range_ok(base: int, span: int) -> bool:
         for p in range(base, base + span):
             for addr in ("0.0.0.0", "127.0.0.1"):
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 s.bind((addr, p))
                 sockets.append(s)
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.settimeout(0.1)
+            try:
+                probe.connect(("127.0.0.1", p))
+                return False
+            except (ConnectionRefusedError, OSError):
+                pass
+            finally:
+                try:
+                    probe.close()
+                except Exception:
+                    pass
         return True
     except OSError:
         return False
@@ -280,15 +305,12 @@ def range_ok(base: int, span: int) -> bool:
                 pass
 
 def candidate_bases():
-    # Prefer ephemeral-ish high ports to reduce collisions.
-    low, high = 20000, 59000
-    # Leave room for span.
+    low, high = 10000, 19999
     high = max(low, high - max(span, 1) - 1)
     if requested > 0:
         yield requested
         for i in range(1, 50):
             yield requested + i * 100
-    # Randomized fallback (helps when multiple jobs start concurrently).
     for _ in range(200):
         yield random.randint(low, high)
 

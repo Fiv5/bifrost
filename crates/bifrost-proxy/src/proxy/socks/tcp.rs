@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use socket2::{Domain, Socket, Type};
+
 use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, ConnectionInfo, FrameDirection, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, ProxyAuthRateLimiter, Result};
@@ -361,9 +363,29 @@ impl SocksServer {
     }
 
     pub async fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
-        TcpListener::bind(addr)
-            .await
-            .map_err(|e| BifrostError::Network(format!("Failed to bind to {}: {}", addr, e)))
+        let domain = if addr.is_ipv4() {
+            Domain::IPV4
+        } else {
+            Domain::IPV6
+        };
+        let socket = Socket::new(domain, Type::STREAM, None)
+            .map_err(|e| BifrostError::Network(format!("Failed to create socket: {}", e)))?;
+        #[cfg(unix)]
+        socket
+            .set_reuse_address(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set SO_REUSEADDR: {}", e)))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set non-blocking: {}", e)))?;
+        socket
+            .bind(&addr.into())
+            .map_err(|e| BifrostError::Network(format!("Failed to bind to {}: {}", addr, e)))?;
+        socket
+            .listen(1024)
+            .map_err(|e| BifrostError::Network(format!("Failed to listen on {}: {}", addr, e)))?;
+        TcpListener::from_std(socket.into()).map_err(|e| {
+            BifrostError::Network(format!("Failed to convert to tokio listener: {}", e))
+        })
     }
 
     pub async fn run(&self) -> Result<()> {
