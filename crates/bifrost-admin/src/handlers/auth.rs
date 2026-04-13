@@ -80,7 +80,7 @@ pub async fn handle_auth(
         } else {
             0
         };
-        let locked_out = !remote_enabled && get_failed_login_count(&state) >= MAX_LOGIN_ATTEMPTS;
+        let locked_out = !remote_enabled && !has_admin_password(&state);
         return json_response(&AuthStatusResponse {
             remote_access_enabled: remote_enabled,
             auth_required: remote_enabled && !is_loopback,
@@ -96,6 +96,13 @@ pub async fn handle_auth(
     if path == "/api/auth/login" {
         if *req.method() != Method::POST {
             return method_not_allowed();
+        }
+
+        if !require_json_content_type(&req) {
+            return error_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be application/json",
+            );
         }
 
         if !is_remote_access_enabled(&state) {
@@ -238,6 +245,13 @@ pub async fn handle_auth(
             return method_not_allowed();
         }
 
+        if !require_json_content_type(&req) {
+            return error_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be application/json",
+            );
+        }
+
         let body = match http_body_util::BodyExt::collect(req.into_body()).await {
             Ok(collected) => collected.to_bytes(),
             Err(_) => {
@@ -289,6 +303,13 @@ pub async fn handle_auth(
     if path == "/api/auth/remote" {
         if *req.method() != Method::POST {
             return method_not_allowed();
+        }
+
+        if !require_json_content_type(&req) {
+            return error_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be application/json",
+            );
         }
 
         let body = match http_body_util::BodyExt::collect(req.into_body()).await {
@@ -355,6 +376,14 @@ pub async fn handle_auth(
     }
 
     error_response(StatusCode::NOT_FOUND, "API endpoint not found")
+}
+
+fn require_json_content_type<B>(req: &Request<B>) -> bool {
+    req.headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.to_ascii_lowercase().contains("application/json"))
+        .unwrap_or(false)
 }
 
 pub fn extract_bearer_token<T>(req: &Request<T>) -> Option<String> {

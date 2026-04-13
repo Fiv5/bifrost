@@ -96,6 +96,7 @@ export type LoginAuditEntry = {
   username: string;
   ip: string;
   ua: string;
+  success: boolean;
 };
 
 export type LoginAuditResponse = {

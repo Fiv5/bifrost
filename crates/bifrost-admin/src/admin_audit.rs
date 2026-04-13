@@ -5,7 +5,7 @@ use bifrost_core::{BifrostError, Result};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-const MAX_LOGIN_RECORDS: i64 = 100;
+const MAX_LOGIN_RECORDS: i64 = 500;
 const MAX_LOGIN_AGE_DAYS: i64 = 30;
 const AUDIT_SCHEMA_VERSION: u32 = 3;
 
@@ -16,6 +16,7 @@ pub struct AdminLoginAuditEntry {
     pub username: String,
     pub ip: String,
     pub ua: String,
+    pub success: bool,
 }
 
 pub fn audit_db_path() -> Result<PathBuf> {
@@ -167,7 +168,7 @@ pub fn list_logins(limit: usize, offset: usize) -> Result<Vec<AdminLoginAuditEnt
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, ts, username, ip, ua \
+            "SELECT id, ts, username, ip, ua, success \
              FROM admin_login_audit \
              ORDER BY id DESC \
              LIMIT ?1 OFFSET ?2",
@@ -182,6 +183,7 @@ pub fn list_logins(limit: usize, offset: usize) -> Result<Vec<AdminLoginAuditEnt
                 username: row.get(2)?,
                 ip: row.get(3)?,
                 ua: row.get(4)?,
+                success: row.get::<_, i32>(5).unwrap_or(1) != 0,
             })
         })
         .map_err(|e| BifrostError::Storage(format!("Failed to query audit rows: {e}")))?;
@@ -285,14 +287,14 @@ mod tests {
         init_db(&conn).unwrap();
 
         let now = chrono::Utc::now().timestamp();
-        for i in 0..110 {
+        for i in 0..510 {
             conn.execute(
                 "INSERT INTO admin_login_audit(ts, username, ip, ua) VALUES (?1, ?2, ?3, ?4)",
                 params![now, format!("user-{i:04}"), "10.0.0.1", "ua"],
             )
             .unwrap();
         }
-        assert_eq!(count(&conn), 110);
+        assert_eq!(count(&conn), 510);
 
         cleanup_old_records(&conn).unwrap();
 
@@ -312,7 +314,7 @@ mod tests {
         assert_eq!(
             max_id - min_id + 1,
             MAX_LOGIN_RECORDS,
-            "should retain the latest 100 consecutive records"
+            "should retain the latest consecutive records"
         );
     }
 
@@ -333,21 +335,21 @@ mod tests {
             )
             .unwrap();
         }
-        for i in 0..80 {
+        for i in 0..480 {
             conn.execute(
                 "INSERT INTO admin_login_audit(ts, username, ip, ua) VALUES (?1, ?2, ?3, ?4)",
                 params![now, format!("fresh-{i}"), "10.0.0.2", "ua"],
             )
             .unwrap();
         }
-        assert_eq!(count(&conn), 130);
+        assert_eq!(count(&conn), 530);
 
         cleanup_old_records(&conn).unwrap();
 
         let remaining = count(&conn);
         assert_eq!(
-            remaining, 80,
-            "all expired removed, 80 fresh remain (< 100 limit)"
+            remaining, 480,
+            "all expired removed, 480 fresh remain (< 500 limit)"
         );
     }
 }

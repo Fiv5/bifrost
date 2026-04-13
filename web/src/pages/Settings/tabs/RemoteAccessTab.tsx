@@ -19,6 +19,8 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
+  CheckCircleOutlined,
+  CloseCircleOutlined,
   KeyOutlined,
   LockOutlined,
   ReloadOutlined,
@@ -40,6 +42,18 @@ import {
 const { Text } = Typography;
 
 const auditColumns: ColumnsType<LoginAuditEntry> = [
+  {
+    title: "Status",
+    dataIndex: "success",
+    key: "success",
+    width: 80,
+    render: (success: boolean) =>
+      success ? (
+        <Tag icon={<CheckCircleOutlined />} color="success">OK</Tag>
+      ) : (
+        <Tag icon={<CloseCircleOutlined />} color="error">Failed</Tag>
+      ),
+  },
   {
     title: "Time",
     dataIndex: "ts",
