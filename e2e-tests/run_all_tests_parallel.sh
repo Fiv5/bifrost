@@ -357,8 +357,14 @@ run_single_test() {
 
             if kill -0 "$test_pid" 2>/dev/null; then
                 echo "[TIMEOUT] fixture ${rel_path} exceeded ${fixture_timeout}s on port ${proxy_port}" >> "$log_file"
-                kill_pid "$test_pid"
+                # The fixture script spawns background processes (notably `bifrost`).
+                # Killing only the script PID can leak children and keep the port busy.
+                kill_process_tree "$test_pid"
                 sleep 3
+                # Best-effort: force-kill the whole process group on Unix if it's still around.
+                if ! is_windows; then
+                    kill -9 -- "-${test_pid}" 2>/dev/null || true
+                fi
                 kill_pid_force "$test_pid"
                 kill_bifrost_on_port "$proxy_port"
             fi

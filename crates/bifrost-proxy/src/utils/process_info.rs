@@ -1315,6 +1315,23 @@ mod tests {
         command.args(args.iter().map(|arg| arg.replace("{url}", &url)));
         command.stdout(Stdio::null());
         command.stderr(Stdio::piped());
+        // Ensure the spawned client connects DIRECTLY to our local listener.
+        // Some environments export proxy variables (e.g. http_proxy) pointing to `bifrost`,
+        // which would make the peer process be the proxy instead of the intended client.
+        for key in [
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+        ] {
+            command.env_remove(key);
+        }
+        command.env("NO_PROXY", "*");
+        command.env("no_proxy", "*");
         for (key, value) in envs {
             command.env(key, value.replace("{url}", &url));
         }

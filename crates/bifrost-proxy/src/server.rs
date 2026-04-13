@@ -31,6 +31,8 @@ use tokio::sync::{RwLock, Semaphore};
 use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
 use tracing::{debug, error, info, warn};
 
+use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
+
 use crate::dns::DnsResolver;
 use crate::proxy::http::{
     handle_connect, handle_http_request, requires_client_app_for_tls_decision, SingleCertResolver,
@@ -666,8 +668,41 @@ impl ProxyServer {
             )));
         }
 
-        TcpListener::bind(addr)
-            .await
+        // IMPORTANT:
+        // We want the proxy to be restart-friendly (especially for E2E retries).
+        // Binding without SO_REUSEADDR can fail on Linux when the previous process
+        // recently had many connections and the port is stuck in TIME_WAIT.
+        let domain = match addr {
+            SocketAddr::V4(_) => Domain::IPV4,
+            SocketAddr::V6(_) => Domain::IPV6,
+        };
+        let socket = Socket::new(domain, Type::STREAM, Some(SocketProtocol::TCP))
+            .map_err(|e| BifrostError::Network(format!("Failed to create listen socket: {}", e)))?;
+        // NOTE:
+        // - On Unix, SO_REUSEADDR is needed to make quick restarts reliable (E2E retries)
+        //   when the port is stuck behind TIME_WAIT.
+        // - On Windows, SO_REUSEADDR can enable port hijacking semantics; keep the default
+        //   exclusive bind behavior for safety.
+        #[cfg(unix)]
+        socket
+            .set_reuse_address(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set SO_REUSEADDR: {}", e)))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set nonblocking: {}", e)))?;
+        socket
+            .bind(&addr.into())
+            .map_err(|e| BifrostError::Network(format!("Failed to bind to {}: {}", addr, e)))?;
+        // Backlog doesn't need to be huge here; we also cap active connections separately.
+        socket
+            .listen(1024)
+            .map_err(|e| BifrostError::Network(format!("Failed to listen on {}: {}", addr, e)))?;
+
+        let std_listener: std::net::TcpListener = socket.into();
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| BifrostError::Network(format!("Failed to set nonblocking: {}", e)))?;
+        TcpListener::from_std(std_listener)
             .map_err(|e| BifrostError::Network(format!("Failed to bind to {}: {}", addr, e)))
     }
 
