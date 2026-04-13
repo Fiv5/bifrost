@@ -66,8 +66,9 @@ export const HeaderView = ({
   const tableRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<'current' | 'original'>('current');
 
-  const showOriginalTab = !!originalHeaders && !areHeadersEqual(headers, originalHeaders);
+  const showOriginalTab = !!headers && headers.length > 0 && !!originalHeaders && !areHeadersEqual(headers, originalHeaders);
   const hasModifications = showOriginalTab;
+  const effectiveHeaders = (headers && headers.length > 0) ? headers : originalHeaders ?? null;
   const resolvedViewMode = useMemo(() => {
     if (viewMode === 'original' && !showOriginalTab) {
       return 'current';
@@ -145,8 +146,8 @@ export const HeaderView = ({
     if (resolvedViewMode === 'original' && originalHeaders) {
       return originalHeaders;
     }
-    return headers;
-  }, [resolvedViewMode, headers, originalHeaders]);
+    return effectiveHeaders;
+  }, [resolvedViewMode, effectiveHeaders, originalHeaders]);
 
   const dataSource = useMemo<HeaderItem[]>(() => {
     if (!displayHeaders) return [];
@@ -299,7 +300,7 @@ export const HeaderView = ({
     },
   ];
 
-  if (!headers || headers.length === 0) {
+  if (!effectiveHeaders || effectiveHeaders.length === 0) {
     const showInterceptButton = isTunnel && host;
     const showAppInterceptButton = isTunnel && clientApp;
     const hasAnyButton = showInterceptButton || showAppInterceptButton;
