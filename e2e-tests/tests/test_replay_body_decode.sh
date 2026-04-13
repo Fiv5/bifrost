@@ -90,10 +90,10 @@ test_replay_gzip_decoding() {
 
     if [ "$status" = "200" ] && [ "$gzipped" = "true" ]; then
         _log_pass "Replay decoded gzip response body as JSON"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Replay gzip body decoding failed" "status=200 & gzipped=true" "status=$status gzipped=$gzipped"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 

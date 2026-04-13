@@ -115,7 +115,7 @@ wait_for_port_closed() {
             return 0
         fi
         sleep 1
-        ((attempt++))
+        attempt=$((attempt + 1))
     done
 
     log "$service_name port $port is still busy after $max_attempts attempts"
@@ -207,7 +207,7 @@ wait_for_server() {
             return 0
         fi
         sleep 1
-        ((attempt++))
+        attempt=$((attempt + 1))
     done
     log "$service_name did not become ready after $max_attempts attempts"
     return 1
@@ -305,7 +305,7 @@ stop_all() {
     local i=0
     for port in "${ports_to_stop[@]}"; do
         wait_for_port_closed 127.0.0.1 "$port" "${names_to_stop[$i]}" 30 || failed=1
-        ((i++))
+        i=$((i + 1))
     done
 
     if [ $failed -ne 0 ]; then

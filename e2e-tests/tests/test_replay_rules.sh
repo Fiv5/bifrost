@@ -244,20 +244,20 @@ test_reqHeaders_rule() {
     
     if [ "$status" = "200" ] && [ "$received_header" = "custom-value-123" ]; then
         _log_pass "reqHeaders rule applied: X-Custom-Header=custom-value-123"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "reqHeaders rule not applied" "custom-value-123" "$received_header"
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     local applied_rules
     applied_rules=$(printf '%s' "$response" | jq -r '.data.applied_rules | length // 0')
     if [ "$applied_rules" -gt 0 ]; then
         _log_pass "applied_rules returned: count=$applied_rules"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "applied_rules not returned" ">0" "$applied_rules"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -280,10 +280,10 @@ test_host_rule() {
     
     if [ "$status" = "200" ] && [ "$server_port" = "$MOCK_HTTP_PORT" ]; then
         _log_pass "Host rule applied: redirected to 127.0.0.1:${MOCK_HTTP_PORT}"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Host rule not applied" "port=$MOCK_HTTP_PORT" "status=$status, port=$server_port"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -306,10 +306,10 @@ test_method_rule() {
     
     if [ "$status" = "200" ] && [ "$received_method" = "POST" ]; then
         _log_pass "Method rule applied: GET -> POST"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Method rule not applied" "POST" "$received_method"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -332,10 +332,10 @@ test_ua_rule() {
     
     if [ "$status" = "200" ] && [ "$received_ua" = "CustomUA/1.0-test" ]; then
         _log_pass "UA rule applied: User-Agent=CustomUA/1.0-test"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "UA rule not applied" "CustomUA/1.0-test" "$received_ua"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -358,10 +358,10 @@ test_referer_rule() {
     
     if [ "$status" = "200" ] && [ "$received_referer" = "https://example.com/page" ]; then
         _log_pass "Referer rule applied: Referer=https://example.com/page"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Referer rule not applied" "https://example.com/page" "$received_referer"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -387,10 +387,10 @@ test_urlParams_rule() {
     
     if [ "$status" = "200" ] && [ "$existing_param" = "value" ] && [ "$added_param" = "new_value" ]; then
         _log_pass "urlParams rule applied: added_param=new_value (existing param preserved)"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "urlParams rule not applied" "existing=value, added_param=new_value" "existing=$existing_param, added_param=$added_param"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -413,10 +413,10 @@ test_reqCookies_rule() {
     
     if [ "$status" = "200" ] && [ "$received_cookie" = "abc123" ]; then
         _log_pass "reqCookies rule applied: session_id=abc123"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "reqCookies rule not applied" "abc123" "$received_cookie"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -439,10 +439,10 @@ test_reqBody_rule() {
     
     if [ "$status" = "200" ] && [ "$received_body" = "replaced_body_content" ]; then
         _log_pass "reqBody rule applied: body replaced"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "reqBody rule not applied" "replaced_body_content" "$received_body"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -465,10 +465,10 @@ test_delete_header_rule() {
     
     if [ "$status" = "200" ] && [ "$removed_header" = "null" ]; then
         _log_pass "Delete header rule applied: X-Remove-Me removed"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Delete header rule not applied" "null (removed)" "$removed_header"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -500,18 +500,18 @@ test_multiple_rules() {
     
     if [ "$status" = "200" ] && [ "$header1" = "value1" ] && [ "$header2" = "value2" ] && [ "$ua" = "MultiTestUA/2.0" ]; then
         _log_pass "Multiple rules applied: 3 rules, all effective"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Multiple rules not fully applied" "X-Multi-1=value1, X-Multi-2=value2, UA=MultiTestUA/2.0" "h1=$header1, h2=$header2, ua=$ua"
-        ((failed++))
+        failed=$((failed + 1))
     fi
     
     if [ "$applied_count" = "3" ]; then
         _log_pass "Applied rules count correct: $applied_count"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Applied rules count incorrect" "3" "$applied_count"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -533,10 +533,10 @@ test_no_rules_mode() {
     
     if [ "$status" = "200" ] && [ "$applied_count" = "0" ]; then
         _log_pass "No rules mode: request sent without rules"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "No rules mode failed" "applied_rules=0" "applied_rules=$applied_count"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -564,7 +564,7 @@ EOF
     sleep 2
     if ! kill -0 "$curl_pid" 2>/dev/null; then
         _log_fail "SSE Replay: stream exited too early" ">=2s alive" "exited"
-        ((failed++))
+        failed=$((failed + 1))
         return
     fi
 
@@ -576,18 +576,18 @@ EOF
         tail -20 "$err_file" >&2 || true
         echo "--- curl stdout ---" >&2
         tail -20 "$out_file" >&2 || true
-        ((failed++))
+        failed=$((failed + 1))
         return
     fi
 
     if grep -q '"type_":"connection"' "$out_file" && grep -q '"applied_rules":' "$out_file"; then
         _log_pass "SSE Replay: connection event received and stream kept alive >10s"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "SSE Replay: missing connection/applied_rules" "connection + applied_rules" "not found"
         echo "--- curl stdout ---" >&2
         tail -40 "$out_file" >&2 || true
-        ((failed++))
+        failed=$((failed + 1))
     fi
 
     kill "$curl_pid" 2>/dev/null || true
@@ -616,10 +616,10 @@ test_response_modification_rules() {
 
     if [ "$status" = "201" ] && [ "$header_val" = "ok" ] && [ "$body" = "replaced" ]; then
         _log_pass "Response rules applied: replaceStatus/resHeaders/resBody"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "Response rules not applied" "status=201 & X-Replay-Res=ok & body=replaced" "status=$status header=$header_val body=$body"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -649,10 +649,10 @@ test_websocket_replay_with_rules() {
         --expect-text-count 1 \
         >/dev/null 2>&1; then
         _log_pass "WebSocket replay: upstream handshake headers include rule header"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "WebSocket replay: missing handshake header from rules" "X-WS-Rule in connection_info" "not found"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 
     # 2) 发送消息：验证消息能通过 replay 转发并回显
@@ -668,10 +668,10 @@ test_websocket_replay_with_rules() {
         --expect-text-count 1 \
         >/dev/null 2>&1; then
         _log_pass "WebSocket replay: message proxied and echoed"
-        ((passed++))
+        passed=$((passed + 1))
     else
         _log_fail "WebSocket replay: echo missing" "echo hello-websocket" "not found"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 

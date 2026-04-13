@@ -306,7 +306,7 @@ run_single_test() {
     local data_dir="${RESULTS_DIR}/data_${test_index}"
 
     local timeout="${TIMEOUT:-60}"
-    local fixture_timeout="${BIFROST_E2E_FIXTURE_TIMEOUT:-180}"
+    local fixture_timeout="${BIFROST_E2E_FIXTURE_TIMEOUT:-120}"
 
     mkdir -p "$data_dir"
 
@@ -504,21 +504,19 @@ aggregate_results() {
         echo -e "${RED}失败的测试套件:${NC}"
         for suite in "${failed_suites[@]}"; do
             echo "  - $suite"
-            if [[ "$VERBOSE" == "true" ]]; then
-                for f in "${RESULTS_DIR}"/result_*.txt; do
-                    if grep -q "TEST_FILE=$suite" "$f" 2>/dev/null; then
-                        local idx="${f##*result_}"
-                        idx="${idx%.txt}"
-                        local log_file="${RESULTS_DIR}/log_${idx}.txt"
-                        if [[ -f "$log_file" ]]; then
-                            print_failure_diagnostics "$log_file"
-                            echo -e "    ${YELLOW}最后 20 行日志:${NC}"
-                            tail -20 "$log_file" | sed 's/^/      /'
-                        fi
-                        break
+            for f in "${RESULTS_DIR}"/result_*.txt; do
+                if grep -q "TEST_FILE=$suite" "$f" 2>/dev/null; then
+                    local idx="${f##*result_}"
+                    idx="${idx%.txt}"
+                    local log_file="${RESULTS_DIR}/log_${idx}.txt"
+                    if [[ -f "$log_file" ]]; then
+                        print_failure_diagnostics "$log_file"
+                        echo -e "    ${YELLOW}最后 30 行日志:${NC}"
+                        tail -30 "$log_file" | sed 's/^/      /'
                     fi
-                done
-            fi
+                    break
+                fi
+            done
         done
         echo ""
     fi
@@ -537,6 +535,7 @@ aggregate_results() {
 }
 
 cleanup() {
+    set +e
     info "清理资源..."
 
     # 确保无论成功/失败/中断，都能回收后台任务，避免残留 bifrost/mock 进程占用端口。

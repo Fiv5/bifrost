@@ -60,7 +60,7 @@ error() {
 
 pass() {
     echo -e "  ${GREEN}✓${NC} $1"
-    ((PASSED++))
+    PASSED=$((PASSED + 1))
 }
 
 fail() {
@@ -71,12 +71,12 @@ fail() {
     if [[ $# -gt 2 ]]; then
         echo -e "    ${RED}Actual:${NC} $3"
     fi
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 }
 
 skip() {
     echo -e "  ${YELLOW}○${NC} $1 (skipped)"
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED + 1))
 }
 
 cleanup() {

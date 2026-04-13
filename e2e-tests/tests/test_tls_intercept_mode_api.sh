@@ -57,14 +57,14 @@ run_test() {
     local test_func="$2"
 
     log_info "Running: $test_name"
-    ((TESTS_RUN++))
+    TESTS_RUN=$((TESTS_RUN + 1))
 
     if $test_func; then
         log_pass "$test_name"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         log_fail "$test_name"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 }
 

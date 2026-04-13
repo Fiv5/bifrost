@@ -45,7 +45,7 @@ http_timeout() {
 }
 
 http_retry_count() {
-    local retries="${BIFROST_E2E_HTTP_RETRIES:-0}"
+    local retries="${BIFROST_E2E_HTTP_RETRIES:-2}"
     if [[ "$retries" =~ ^[0-9]+$ ]]; then
         echo "$retries"
     else
@@ -119,10 +119,15 @@ http_request() {
     _temp_headers_file=$(mktemp)
     _temp_body_file=$(mktemp)
 
+    local timeout_val
+    timeout_val="$(http_timeout)"
+    local connect_timeout=$(( timeout_val > 10 ? 10 : timeout_val ))
+
     local curl_args=(
         -s
         -X "$method"
-        --max-time "$(http_timeout)"
+        --connect-timeout "$connect_timeout"
+        --max-time "$timeout_val"
         -D "$_temp_headers_file"
         -o "$_temp_body_file"
         -w '%{http_code}'
@@ -194,10 +199,15 @@ http_post_file() {
     _temp_headers_file=$(mktemp)
     _temp_body_file=$(mktemp)
 
+    local timeout_val
+    timeout_val="$(http_timeout)"
+    local connect_timeout=$(( timeout_val > 10 ? 10 : timeout_val ))
+
     local curl_args=(
         -s
         -X "POST"
-        --max-time "$(http_timeout)"
+        --connect-timeout "$connect_timeout"
+        --max-time "$timeout_val"
         -D "$_temp_headers_file"
         -o "$_temp_body_file"
         -w '%{http_code}'
@@ -221,7 +231,6 @@ http_post_file() {
             curl_args+=(--proxy "http://${proxy_host}:${proxy_port}")
         fi
 
-        # Force curl to always use the proxy even if NO_PROXY/no_proxy is set.
         curl_args+=(--noproxy "")
     fi
 
@@ -261,10 +270,15 @@ http_request_no_proxy() {
     _temp_headers_file=$(mktemp)
     _temp_body_file=$(mktemp)
 
+    local timeout_val
+    timeout_val="$(http_timeout)"
+    local connect_timeout=$(( timeout_val > 10 ? 10 : timeout_val ))
+
     local curl_args=(
         -s
         -X "$method"
-        --max-time "$(http_timeout)"
+        --connect-timeout "$connect_timeout"
+        --max-time "$timeout_val"
         -D "$_temp_headers_file"
         -o "$_temp_body_file"
         -w '%{http_code}'
@@ -320,11 +334,16 @@ https_request() {
     _temp_headers_file=$(mktemp)
     _temp_body_file=$(mktemp)
 
+    local timeout_val
+    timeout_val="$(http_timeout)"
+    local connect_timeout=$(( timeout_val > 10 ? 10 : timeout_val ))
+
     local curl_args=(
         -s
-        -k  # 允许自签名证书
+        -k
         -X "$method"
-        --max-time "$(http_timeout)"
+        --connect-timeout "$connect_timeout"
+        --max-time "$timeout_val"
         -D "$_temp_headers_file"
         -o "$_temp_body_file"
         -w '%{http_code}'

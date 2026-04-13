@@ -55,9 +55,9 @@ fi
 
 log_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 log_debug()   { [[ "$VERBOSE" == "true" ]] && echo -e "${CYAN}[DEBUG]${NC} $*"; }
-log_pass()    { echo -e "${GREEN}[PASS]${NC} $*"; ((passed++)); }
-log_fail()    { echo -e "${RED}[FAIL]${NC} $*"; ((failed++)); }
-log_skip()    { echo -e "${YELLOW}[SKIP]${NC} $*"; ((skipped++)); }
+log_pass()    { echo -e "${GREEN}[PASS]${NC} $*"; passed=$((passed + 1)); }
+log_fail()    { echo -e "${RED}[FAIL]${NC} $*"; failed=$((failed + 1)); }
+log_skip()    { echo -e "${YELLOW}[SKIP]${NC} $*"; skipped=$((skipped + 1)); }
 log_warning() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $*"; }
 

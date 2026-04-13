@@ -51,9 +51,9 @@ trap cleanup EXIT
 
 record_result() {
     if [[ $1 -eq 0 ]]; then
-        ((passed++))
+        passed=$((passed + 1))
     else
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 

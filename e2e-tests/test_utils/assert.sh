@@ -16,16 +16,16 @@ FAILED_ASSERTIONS=0
 # 输出辅助函数
 _log_pass() {
     echo -e "${GREEN}✓${NC} $1"
-    ((TOTAL_ASSERTIONS++))
-    ((PASSED_ASSERTIONS++))
+    TOTAL_ASSERTIONS=$((TOTAL_ASSERTIONS + 1))
+    PASSED_ASSERTIONS=$((PASSED_ASSERTIONS + 1))
 }
 
 _log_fail() {
     echo -e "${RED}✗${NC} $1"
     echo -e "  ${RED}Expected:${NC} $2"
     echo -e "  ${RED}Actual:${NC}   $3"
-    ((TOTAL_ASSERTIONS++))
-    ((FAILED_ASSERTIONS++))
+    TOTAL_ASSERTIONS=$((TOTAL_ASSERTIONS + 1))
+    FAILED_ASSERTIONS=$((FAILED_ASSERTIONS + 1))
 }
 
 _log_info() {

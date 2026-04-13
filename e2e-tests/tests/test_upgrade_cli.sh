@@ -47,17 +47,17 @@ error() {
 
 pass() {
     echo -e "  ${GREEN}✓${NC} $1"
-    ((PASSED++))
+    PASSED=$((PASSED + 1))
 }
 
 fail() {
     echo -e "  ${RED}✗${NC} $1"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 }
 
 skip() {
     echo -e "  ${YELLOW}○${NC} $1 (skipped)"
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED + 1))
 }
 
 cleanup() {
@@ -104,19 +104,19 @@ test_upgrade_help() {
     local checks=0
 
     if echo "$result" | grep -qi "Upgrade bifrost to the latest version"; then
-        ((checks++))
+        checks=$((checks + 1))
     fi
 
     if echo "$result" | grep -q "\-\-yes\|\-y"; then
-        ((checks++))
+        checks=$((checks + 1))
     fi
 
     if echo "$result" | grep -q "\-\-help\|\-h"; then
-        ((checks++))
+        checks=$((checks + 1))
     fi
 
     if echo "$result" | grep -q "\-\-restart"; then
-        ((checks++))
+        checks=$((checks + 1))
     fi
 
     if [[ $checks -eq 4 ]]; then
@@ -279,15 +279,15 @@ EOF
     local checks=0
 
     if echo "$result" | grep -iq "new version\|A new version"; then
-        ((checks++))
+        checks=$((checks + 1))
     fi
 
     if echo "$result" | grep -q "99\.0\.0"; then
-        ((checks++))
+        checks=$((checks + 1))
     fi
 
     if echo "$result" | grep -iq "bifrost upgrade"; then
-        ((checks++))
+        checks=$((checks + 1))
     fi
 
     if [[ $checks -ge 2 ]]; then
