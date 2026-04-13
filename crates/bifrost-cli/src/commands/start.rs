@@ -1046,10 +1046,18 @@ pub fn run_foreground(
             let phase_started_at = Instant::now();
             let values_storage = config_manager.values_storage().await;
             let rules_storage = config_manager.rules_storage().await;
-            let auth_db = {
-                let auth_db_path =
-                    bifrost_admin::admin_auth_db::auth_db_path_in(&bifrost_dir)?;
-                bifrost_admin::admin_auth_db::AuthDb::open(&auth_db_path)?
+            let auth_db = match bifrost_admin::admin_auth_db::auth_db_path_in(&bifrost_dir)
+                .and_then(|p| bifrost_admin::admin_auth_db::AuthDb::open(&p))
+            {
+                Ok(db) => Some(db),
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        data_dir = %bifrost_dir.display(),
+                        "Failed to open auth database; admin auth features will be unavailable"
+                    );
+                    None
+                }
             };
             let mut values = {
                 use bifrost_core::ValueStore;
@@ -1104,7 +1112,7 @@ pub fn run_foreground(
             let shared_config_manager = Arc::new(config_manager);
 
             let phase_started_at = Instant::now();
-            let admin_state = AdminState::new(config.port)
+            let mut admin_state = AdminState::new(config.port)
                 .with_access_control(access_control.clone())
                 .with_body_store(body_store)
                 .with_ws_payload_store(ws_payload_store)
@@ -1114,8 +1122,11 @@ pub fn run_foreground(
                 .with_runtime_config(runtime_config)
                 .with_connection_registry(connection_registry)
                 .with_values_storage(values_storage)
-                .with_auth_db(auth_db)
-                .with_rules_storage(rules_storage)
+                .with_rules_storage(rules_storage);
+            if let Some(db) = auth_db {
+                admin_state = admin_state.with_auth_db(db);
+            }
+            let admin_state = admin_state
                 .with_ca_cert_path(ca_cert_path)
                 .with_system_proxy_manager_shared(system_proxy_manager.clone())
                 .with_config_manager_shared(shared_config_manager.clone())
@@ -1711,11 +1722,20 @@ pub fn run_daemon(
 
                     let values_storage = config_manager.values_storage().await;
                     let rules_storage = config_manager.rules_storage().await;
-                    let auth_db = {
-                        let auth_db_path =
-                            bifrost_admin::admin_auth_db::auth_db_path_in(&bifrost_dir)?;
-                        bifrost_admin::admin_auth_db::AuthDb::open(&auth_db_path)?
-                    };
+                    let auth_db =
+                        match bifrost_admin::admin_auth_db::auth_db_path_in(&bifrost_dir)
+                            .and_then(|p| bifrost_admin::admin_auth_db::AuthDb::open(&p))
+                        {
+                            Ok(db) => Some(db),
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    data_dir = %bifrost_dir.display(),
+                                    "Failed to open auth database; admin auth features will be unavailable"
+                                );
+                                None
+                            }
+                        };
                     let mut values = {
                         use bifrost_core::ValueStore;
                         values_storage.as_hashmap()
@@ -1759,7 +1779,7 @@ pub fn run_daemon(
                     let access_control =
                         ProxyServer::new(config.clone()).access_control().clone();
 
-                    let admin_state = AdminState::new(config.port)
+                    let mut admin_state = AdminState::new(config.port)
                         .with_access_control(access_control.clone())
                         .with_body_store(body_store)
                         .with_ws_payload_store(ws_payload_store)
@@ -1769,8 +1789,11 @@ pub fn run_daemon(
                         .with_runtime_config(runtime_config)
                         .with_connection_registry(connection_registry)
                         .with_values_storage(values_storage)
-                        .with_auth_db(auth_db)
-                        .with_rules_storage(rules_storage)
+                        .with_rules_storage(rules_storage);
+                    if let Some(db) = auth_db {
+                        admin_state = admin_state.with_auth_db(db);
+                    }
+                    let admin_state = admin_state
                         .with_ca_cert_path(ca_cert_path)
                         .with_system_proxy_manager_shared(system_proxy_manager.clone())
                         .with_config_manager_shared(shared_config_manager.clone())
