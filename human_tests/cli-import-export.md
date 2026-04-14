@@ -2,7 +2,7 @@
 
 ## 功能模块说明
 
-测试 Bifrost CLI 中的导入/导出（`import`/`export`）、指标查看（`metrics`）、远程同步（`sync`）、版本升级（`upgrade`/`version-check`）、Shell 补全（`completions`）以及技能安装（`install-skill`）等命令的完整功能。
+测试 Bifrost CLI 中的导入/导出（`import`/`export`）、指标查看（`metrics`）、远程同步（`sync`）、版本升级（`upgrade`/`version-check`）、Shell 补全（`completions`）以及技能安装（`install-skill`）等命令的完整功能，包含 install-skill 更多 agent 兼容回归。
 
 ## 前置条件
 
@@ -375,7 +375,39 @@
 
 ---
 
-### TC-CIE-22：导入不存在的文件报错
+### TC-CIE-22：安装 SKILL.md 到 GitHub Copilot
+
+**操作步骤**：
+1. 执行命令：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- install-skill -t github-copilot -y
+   ```
+
+**预期结果**：
+- `Target tools:` 显示 `GitHub Copilot`
+- 输出的目标路径包含 `~/.copilot/skills/bifrost/SKILL.md` 或等价的 Copilot skills 目录
+- 最终输出 `✓ Successfully installed to 1 tool!`
+- 命令退出码为 0
+
+---
+
+### TC-CIE-23：安装 SKILL.md 到通用 Agent Skills 目录
+
+**操作步骤**：
+1. 执行命令：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- install-skill -t universal -y
+   ```
+
+**预期结果**：
+- `Target tools:` 显示 `Universal Agent Skills`
+- 输出的目标路径包含 `~/.agents/skills/bifrost/SKILL.md` 或等价的项目级 `.agents/skills` 目录
+- 最终输出 `✓ Successfully installed to 1 tool!`
+- 命令退出码为 0
+
+---
+
+### TC-CIE-24：导入不存在的文件报错
 
 **操作步骤**：
 1. 执行命令：

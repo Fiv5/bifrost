@@ -21,6 +21,8 @@ pub enum AiTool {
     Codex,
     Trae,
     Cursor,
+    GitHubCopilot,
+    Universal,
 }
 
 impl AiTool {
@@ -30,6 +32,7 @@ impl AiTool {
             AiTool::Codex,
             AiTool::Trae,
             AiTool::Cursor,
+            AiTool::GitHubCopilot,
         ]
     }
 
@@ -39,12 +42,19 @@ impl AiTool {
             AiTool::ClaudeCode => {
                 vec![home.join(".claude").join("skills").join("bifrost")]
             }
-            AiTool::Codex => vec![home.join(".codex").join("skills").join("bifrost")],
+            AiTool::Codex => vec![
+                home.join(".codex").join("skills").join("bifrost"),
+                home.join(".agents").join("skills").join("bifrost"),
+            ],
             AiTool::Trae => vec![
                 home.join(".trae").join("skills").join("bifrost"),
                 home.join(".trae-cn").join("skills").join("bifrost"),
             ],
             AiTool::Cursor => vec![home.join(".cursor").join("skills").join("bifrost")],
+            AiTool::GitHubCopilot => {
+                vec![home.join(".copilot").join("skills").join("bifrost")]
+            }
+            AiTool::Universal => vec![home.join(".agents").join("skills").join("bifrost")],
         }
     }
 
@@ -54,6 +64,18 @@ impl AiTool {
             AiTool::Codex => base.join(".codex").join("skills").join("bifrost"),
             AiTool::Trae => base.join(".trae").join("skills").join("bifrost"),
             AiTool::Cursor => base.join(".cursor").join("skills").join("bifrost"),
+            AiTool::GitHubCopilot => base.join(".github").join("skills").join("bifrost"),
+            AiTool::Universal => base.join(".agents").join("skills").join("bifrost"),
+        }
+    }
+
+    fn project_local_dirs(&self, base: &Path) -> Vec<PathBuf> {
+        match self {
+            AiTool::Codex => vec![
+                self.project_local_dir(base),
+                base.join(".agents").join("skills").join("bifrost"),
+            ],
+            _ => vec![self.project_local_dir(base)],
         }
     }
 
@@ -73,6 +95,8 @@ impl fmt::Display for AiTool {
             AiTool::Codex => write!(f, "Codex"),
             AiTool::Trae => write!(f, "Trae"),
             AiTool::Cursor => write!(f, "Cursor"),
+            AiTool::GitHubCopilot => write!(f, "GitHub Copilot"),
+            AiTool::Universal => write!(f, "Universal Agent Skills"),
         }
     }
 }
@@ -84,8 +108,10 @@ fn parse_tool(s: &str) -> Result<Vec<AiTool>, BifrostError> {
         "codex" | "openai-codex" => Ok(vec![AiTool::Codex]),
         "trae" => Ok(vec![AiTool::Trae]),
         "cursor" => Ok(vec![AiTool::Cursor]),
+        "github-copilot" | "copilot" => Ok(vec![AiTool::GitHubCopilot]),
+        "universal" | "agent-skills" => Ok(vec![AiTool::Universal]),
         _ => Err(BifrostError::Config(format!(
-            "Unknown tool: '{}'. Available: claude-code, codex, trae, cursor, all",
+            "Unknown tool: '{}'. Available: claude-code, codex, trae, cursor, github-copilot, universal, all",
             s
         ))),
     }
@@ -304,8 +330,9 @@ fn download_skill() -> Result<String, BifrostError> {
         );
         println!(
             "    {}",
-            "All major AI coding tools (Claude Code, Codex, Trae, Cursor) require frontmatter \
-             with 'name' and 'description' fields for skill auto-discovery."
+            "Major AI coding tools and Agent Skills runtimes (Claude Code, Codex, Trae, Cursor, \
+             GitHub Copilot, and standard .agents/skills consumers) require frontmatter with \
+             'name' and 'description' fields for skill auto-discovery."
                 .dimmed()
         );
     }
@@ -334,7 +361,7 @@ fn resolve_target_dirs(tool: &AiTool, custom_dir: &Option<PathBuf>, cwd: bool) -
     }
     if cwd {
         let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        return vec![tool.project_local_dir(&base)];
+        return tool.project_local_dirs(&base);
     }
     tool.default_global_dirs()
 }

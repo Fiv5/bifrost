@@ -221,7 +221,7 @@ export <ACTION>                   Export to .bifrost file
 version-check                     Check for new version without upgrading
 
 install-skill [OPTIONS]           Install SKILL.md to AI coding tools
-  -t, --tool <TOOL>                   Target: claude-code, codex, trae, cursor, all
+  -t, --tool <TOOL>                   Target: claude-code, codex, trae, cursor, github-copilot, universal, all
   -d, --dir <PATH>                    Custom install directory
   --cwd                               Install to current directory (project-level)
   -y, --yes                           Skip confirmation prompt
@@ -540,14 +540,22 @@ pub enum Commands {
         action: TrafficCommands,
     },
     #[command(
-        about = "Install bifrost SKILL.md to AI coding tools (Claude Code, Codex, Trae, Cursor)"
+        about = "Install bifrost SKILL.md to AI coding tools (Claude Code, Codex, Trae, Cursor, GitHub Copilot, and standard Agent Skills runtimes)"
     )]
     InstallSkill {
         #[arg(
             short,
             long,
-            value_parser = ["claude-code", "codex", "trae", "cursor", "all"],
-            help = "Target tool: claude-code, codex, trae, cursor, or 'all' (default: all)"
+            value_parser = [
+                "claude-code",
+                "codex",
+                "trae",
+                "cursor",
+                "github-copilot",
+                "universal",
+                "all"
+            ],
+            help = "Target tool: claude-code, codex, trae, cursor, github-copilot, universal, or 'all' (default: all)"
         )]
         tool: Option<String>,
         #[arg(

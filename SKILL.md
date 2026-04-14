@@ -529,11 +529,13 @@ bifrost completions fish                       # 生成 fish 补全脚本
 
 ### 21. 安装 Skill 到 AI 工具
 
-bifrost 支持将自身的 `SKILL.md` 文档安装到各种 AI 编码辅助工具中（如 Claude Code, Trae, Cursor 等），以便这些工具能更好地理解和使用 bifrost。
+bifrost 支持将自身的 `SKILL.md` 文档安装到各种 AI 编码辅助工具中（如 Claude Code、Codex、Trae、Cursor、GitHub Copilot 等），也兼容更多遵循通用 Agent Skills 目录规范的运行时。
 
 ```bash
-bifrost install-skill --cwd                    # 安装到当前项目目录 (.trae/skills/ 或 .cursor/rules/)
+bifrost install-skill --cwd                    # 安装到当前项目目录（如 .claude/.codex/.agents/.github/.trae/.cursor）
 bifrost install-skill -t trae                  # 仅安装到 Trae
+bifrost install-skill -t github-copilot        # 仅安装到 GitHub Copilot
+bifrost install-skill -t universal             # 仅安装到通用 .agents/skills 目录
 bifrost install-skill -t all -y                # 自动安装到所有支持的工具
 ```
 

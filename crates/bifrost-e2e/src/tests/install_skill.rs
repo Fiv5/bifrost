@@ -237,6 +237,99 @@ pub fn get_all_tests() -> Vec<TestCase> {
             },
         ),
         TestCase::standalone(
+            "install_skill_cwd_codex_installs_legacy_and_universal_dirs",
+            "Install skill with --cwd for codex writes both .codex and .agents skill directories",
+            "install_skill",
+            || async move {
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
+                let tmp = tempdir("install_skill_cwd_codex")?;
+                let original_dir =
+                    std::env::current_dir().map_err(|e| format!("Failed to get cwd: {e}"))?;
+
+                std::env::set_current_dir(&tmp).map_err(|e| format!("Failed to set cwd: {e}"))?;
+
+                let result = handle_install_skill(Some("codex".to_string()), None, true, true);
+
+                std::env::set_current_dir(&original_dir)
+                    .map_err(|e| format!("Failed to restore cwd: {e}"))?;
+
+                result.map_err(|e| format!("handle_install_skill codex --cwd failed: {e}"))?;
+
+                let targets = [
+                    tmp.join(".codex")
+                        .join("skills")
+                        .join("bifrost")
+                        .join("SKILL.md"),
+                    tmp.join(".agents")
+                        .join("skills")
+                        .join("bifrost")
+                        .join("SKILL.md"),
+                ];
+
+                for target in &targets {
+                    if !target.exists() {
+                        return Err(format!(
+                            "Expected project-local file not found: {}",
+                            target.display()
+                        ));
+                    }
+
+                    let content = fs::read_to_string(target)
+                        .map_err(|e| format!("Failed to read project-local file: {e}"))?;
+                    if content.trim().is_empty() {
+                        return Err(format!("Installed file is empty: {}", target.display()));
+                    }
+                }
+
+                cleanup_dir(&tmp);
+                Ok(())
+            },
+        ),
+        TestCase::standalone(
+            "install_skill_github_copilot_cwd_mode",
+            "Install skill with --cwd for GitHub Copilot writes to .github/skills/bifrost",
+            "install_skill",
+            || async move {
+                std::env::set_var("BIFROST_INSTALL_SKILL_SOURCE", "embedded");
+                let tmp = tempdir("install_skill_cwd_copilot")?;
+                let original_dir =
+                    std::env::current_dir().map_err(|e| format!("Failed to get cwd: {e}"))?;
+
+                std::env::set_current_dir(&tmp).map_err(|e| format!("Failed to set cwd: {e}"))?;
+
+                let result =
+                    handle_install_skill(Some("github-copilot".to_string()), None, true, true);
+
+                std::env::set_current_dir(&original_dir)
+                    .map_err(|e| format!("Failed to restore cwd: {e}"))?;
+
+                result.map_err(|e| {
+                    format!("handle_install_skill github-copilot --cwd failed: {e}")
+                })?;
+
+                let target = tmp
+                    .join(".github")
+                    .join("skills")
+                    .join("bifrost")
+                    .join("SKILL.md");
+                if !target.exists() {
+                    return Err(format!(
+                        "Expected GitHub Copilot project-local file not found: {}",
+                        target.display()
+                    ));
+                }
+
+                let content = fs::read_to_string(&target)
+                    .map_err(|e| format!("Failed to read GitHub Copilot file: {e}"))?;
+                if content.trim().is_empty() {
+                    return Err("GitHub Copilot installed file is empty".to_string());
+                }
+
+                cleanup_dir(&tmp);
+                Ok(())
+            },
+        ),
+        TestCase::standalone(
             "install_skill_dir_and_cwd_conflict",
             "--dir and --cwd are mutually exclusive",
             "install_skill",
