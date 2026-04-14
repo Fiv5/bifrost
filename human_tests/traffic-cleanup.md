@@ -152,6 +152,42 @@
 - 不出现记录数降到 500 以下的情况
 - 这是对旧 bug（记录数从 4000 骤降到数百条）的回归验证
 
+### TC-CL-07: 磁盘总量清理一次性完成 body 文件清理（回归验证）
+
+**操作步骤**：
+1. 设置较小的 `max_db_size_bytes` 和 `max_body_memory_size`：
+   ```bash
+   curl -s -X PUT http://localhost:8800/_bifrost/api/config/performance \
+     -H "Content-Type: application/json" \
+     -d '{"max_db_size_bytes": 262144, "max_body_memory_size": 1, "max_records": 1000}'
+   ```
+2. 发送 150 个包含 32KB body 的请求：
+   ```bash
+   PAYLOAD=$(python3 -c "print('a' * 32768)")
+   for i in $(seq 1 150); do
+     curl -s -o /dev/null -x http://127.0.0.1:8800 -X POST "http://httpbin.org/post" -d "$PAYLOAD"
+   done
+   ```
+3. 等待最多 60 秒，检查记录数和 body 文件数是否回落：
+   ```bash
+   for i in $(seq 1 60); do
+     TOTAL=$(curl -s "http://localhost:8800/_bifrost/api/traffic?limit=1" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['total'])")
+     BODY=$(curl -s http://localhost:8800/_bifrost/api/config/performance | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('body_store_stats',{}).get('file_count',0))")
+     echo "[$i] records=$TOTAL, body_files=$BODY"
+     if [ "$TOTAL" -lt 150 ] && [ "$BODY" -lt 150 ]; then
+       echo "PASS: both records and body files cleaned"
+       break
+     fi
+     sleep 1
+   done
+   ```
+
+**预期结果**：
+- 在 60 秒内，记录数降到 150 以下
+- body_cache 文件数同步降到 150 以下
+- cleanup_total_disk_usage 能在一次调用中通过多轮删除将磁盘占用降到目标水位以下
+- 这是对旧 bug（body 文件清理滞后于记录清理）的回归验证
+
 ## 清理步骤
 
 ```bash

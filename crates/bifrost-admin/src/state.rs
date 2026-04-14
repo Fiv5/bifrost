@@ -529,80 +529,101 @@ impl AdminState {
         }
 
         let target_size = max_db_size_bytes.saturating_sub(max_db_size_bytes / 4);
-        let bytes_to_remove = total_size.saturating_sub(target_size);
-        if bytes_to_remove == 0 {
+        let mut remaining_to_remove = total_size.saturating_sub(target_size);
+        if remaining_to_remove == 0 {
             return;
         }
 
-        let record_count = existing_db_ids.len();
-        if record_count == 0 {
+        let initial_record_count = db_stats.record_count.max(existing_db_ids.len());
+        if initial_record_count == 0 {
             return;
         }
 
-        let record_count = db_stats.record_count.max(record_count);
-        let avg_db_bytes = (db_stats.db_size / record_count as u64).max(1);
-        let max_delete = (record_count / 4).max(1);
+        let avg_db_bytes = (db_stats.db_size / initial_record_count as u64).max(1);
+        let mut total_deleted = 0usize;
+        let mut cumulative_offset = 0usize;
+        const MAX_ROUNDS: usize = 10;
 
-        let mut ids_to_delete = Vec::new();
-        let mut removed_estimate = 0u64;
-        let mut offset = 0usize;
-        let batch = 500usize;
-
-        while removed_estimate < bytes_to_remove {
-            if ids_to_delete.len() >= max_delete {
+        for round in 0..MAX_ROUNDS {
+            let current_count = if round == 0 {
+                initial_record_count
+            } else {
+                initial_record_count.saturating_sub(total_deleted)
+            };
+            if current_count == 0 {
                 break;
             }
-            let ids = traffic_db_store.oldest_ids(batch, offset);
-            if ids.is_empty() {
-                break;
-            }
-            for id in ids {
-                let mut size = avg_db_bytes;
-                if let Some(extra) = body_sizes.get(&id) {
-                    size += *extra;
-                }
-                if let Some(extra) = frame_sizes.get(&id) {
-                    size += *extra;
-                }
-                let safe_id = WsPayloadStore::safe_connection_id(&id);
-                if let Some(extra) = ws_payload_sizes.get(&safe_id) {
-                    size += *extra;
-                }
-                removed_estimate += size;
-                ids_to_delete.push(id);
-                if removed_estimate >= bytes_to_remove || ids_to_delete.len() >= max_delete {
+            let max_delete = (current_count / 4).max(1);
+
+            let mut ids_to_delete = Vec::new();
+            let mut removed_estimate = 0u64;
+            let batch = 500usize;
+
+            while removed_estimate < remaining_to_remove {
+                if ids_to_delete.len() >= max_delete {
                     break;
                 }
+                let ids = traffic_db_store.oldest_ids(batch, cumulative_offset);
+                if ids.is_empty() {
+                    break;
+                }
+                let fetched = ids.len();
+                for id in ids {
+                    let mut size = avg_db_bytes;
+                    if let Some(extra) = body_sizes.get(&id) {
+                        size += *extra;
+                    }
+                    if let Some(extra) = frame_sizes.get(&id) {
+                        size += *extra;
+                    }
+                    let safe_id = WsPayloadStore::safe_connection_id(&id);
+                    if let Some(extra) = ws_payload_sizes.get(&safe_id) {
+                        size += *extra;
+                    }
+                    removed_estimate += size;
+                    ids_to_delete.push(id);
+                    if removed_estimate >= remaining_to_remove || ids_to_delete.len() >= max_delete
+                    {
+                        break;
+                    }
+                }
+                cumulative_offset += fetched;
             }
-            offset += batch;
-            if offset >= record_count {
+
+            if ids_to_delete.is_empty() {
+                break;
+            }
+
+            let round_deleted = ids_to_delete.len();
+            traffic_db_store.delete_by_ids(&ids_to_delete);
+            if let Some(ref body_store) = self.body_store {
+                let _ = body_store.write().delete_by_ids(&ids_to_delete);
+            }
+            if let Some(ref frame_store) = self.frame_store {
+                let _ = frame_store.delete_by_ids(&ids_to_delete);
+            }
+            if let Some(ref ws_payload_store) = self.ws_payload_store {
+                let _ = ws_payload_store.delete_by_ids(&ids_to_delete);
+            }
+            total_deleted += round_deleted;
+            remaining_to_remove = remaining_to_remove.saturating_sub(removed_estimate);
+            cumulative_offset = 0;
+
+            if remaining_to_remove == 0 {
                 break;
             }
         }
 
-        if ids_to_delete.is_empty() {
-            return;
+        if total_deleted > 0 {
+            traffic_db_store.compact_db(false);
+            tracing::info!(
+                deleted = total_deleted,
+                total_size = total_size,
+                max_db_size_bytes = max_db_size_bytes,
+                target_size = target_size,
+                "[TRAFFIC] Cleaned up data due to total size limit"
+            );
         }
-
-        traffic_db_store.delete_by_ids(&ids_to_delete);
-        if let Some(ref body_store) = self.body_store {
-            let _ = body_store.write().delete_by_ids(&ids_to_delete);
-        }
-        if let Some(ref frame_store) = self.frame_store {
-            let _ = frame_store.delete_by_ids(&ids_to_delete);
-        }
-        if let Some(ref ws_payload_store) = self.ws_payload_store {
-            let _ = ws_payload_store.delete_by_ids(&ids_to_delete);
-        }
-        traffic_db_store.compact_db(false);
-
-        tracing::info!(
-            deleted = ids_to_delete.len(),
-            total_size = total_size,
-            max_db_size_bytes = max_db_size_bytes,
-            target_size = target_size,
-            "[TRAFFIC] Cleaned up data due to total size limit"
-        );
     }
 
     pub fn update_client_process(

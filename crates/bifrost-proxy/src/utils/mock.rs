@@ -142,13 +142,9 @@ pub async fn generate_mock_response(
     }
 
     if let Some(template) = &rules.mock_template {
-        return Some(build_template_response(
-            template,
-            rules,
-            request_uri,
-            verbose_logging,
-            ctx,
-        ));
+        return Some(
+            build_template_response(template, rules, request_uri, verbose_logging, ctx).await,
+        );
     }
 
     None
@@ -407,7 +403,7 @@ async fn load_rawfile_response(
     }
 }
 
-fn build_template_response(
+async fn build_template_response(
     template: &str,
     rules: &ResolvedRules,
     request_uri: &hyper::Uri,
@@ -450,13 +446,35 @@ fn build_template_response(
         ctx.url.clone()
     };
 
-    let template = if template.starts_with('(') && template.ends_with(')') {
-        &template[1..template.len() - 1]
+    let template_content = if template.starts_with('(') && template.ends_with(')') {
+        template[1..template.len() - 1].to_string()
     } else {
-        template
+        let normalized = normalize_file_path(template);
+        match tokio::fs::read_to_string(&normalized).await {
+            Ok(content) => {
+                if verbose_logging {
+                    debug!(
+                        "[{}] [TPL] loaded template file {} ({} bytes)",
+                        ctx.id_str(),
+                        normalized,
+                        content.len()
+                    );
+                }
+                content
+            }
+            Err(e) => {
+                warn!(
+                    "[{}] [TPL] failed to read template file {}: {}",
+                    ctx.id_str(),
+                    normalized,
+                    e
+                );
+                return build_error_response(404, "Template file not found");
+            }
+        }
     };
     let rendered = TemplateEngine::expand_with_context(
-        template,
+        &template_content,
         &bifrost_core::RequestContext::builder()
             .url(&url_string)
             .host(host)

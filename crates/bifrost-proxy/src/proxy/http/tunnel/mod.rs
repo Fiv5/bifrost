@@ -4019,7 +4019,9 @@ async fn serve_mock_file(
         Ok(raw_bytes) => {
             let content_type = guess_content_type(file_path);
 
-            let body_bytes = if is_text_mime(&content_type) {
+            let should_process_as_text = template_vars.is_some() || is_text_mime(&content_type);
+
+            let body_bytes = if should_process_as_text {
                 match String::from_utf8(raw_bytes) {
                     Ok(text) => {
                         let processed = if let Some(vars) = template_vars {
@@ -4035,9 +4037,16 @@ async fn serve_mock_file(
                 raw_bytes
             };
 
+            let effective_content_type = if template_vars.is_some() && !is_text_mime(&content_type)
+            {
+                "application/json; charset=utf-8".to_string()
+            } else {
+                content_type
+            };
+
             Response::builder()
                 .status(status_code)
-                .header(hyper::header::CONTENT_TYPE, &content_type)
+                .header(hyper::header::CONTENT_TYPE, &effective_content_type)
                 .body(full_body(body_bytes))
                 .unwrap()
         }
@@ -5144,6 +5153,60 @@ mod tests {
         );
         assert!(
             body_str.contains("GET"),
+            "template method not substituted: {}",
+            body_str
+        );
+        cleanup_test_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_serve_mock_file_template_substitution_tpl_ext() {
+        let dir = create_test_dir();
+        let tpl_path = dir.join("response.tpl");
+        fs::write(
+            &tpl_path,
+            r#"{"host":"${host}","method":"${method}","url":"${url}"}"#,
+        )
+        .unwrap();
+
+        let vars = TemplateVars {
+            url: "https://example.com/api".to_string(),
+            method: "POST".to_string(),
+            host: "example.com".to_string(),
+            pathname: "/api".to_string(),
+            search: "".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+            req_id: "test-456".to_string(),
+        };
+        let resp = serve_mock_file(tpl_path.to_str().unwrap(), 200, Some(&vars)).await;
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            ct.contains("json"),
+            ".tpl with template_vars should get json content type, got: {}",
+            ct
+        );
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !body_str.contains("${"),
+            "template variables should be substituted in .tpl file: {}",
+            body_str
+        );
+        assert!(
+            body_str.contains("example.com"),
+            "template host not substituted: {}",
+            body_str
+        );
+        assert!(
+            body_str.contains("POST"),
             "template method not substituted: {}",
             body_str
         );
