@@ -68,6 +68,67 @@ use self::decode::{
 };
 use self::scripts::{execute_request_scripts, execute_response_scripts, headers_to_hashmap};
 
+#[allow(clippy::too_many_arguments)]
+fn record_http_mock_traffic(
+    state: &Arc<AdminState>,
+    ctx: &RequestContext,
+    method: &str,
+    record_url: &str,
+    uri: &Uri,
+    start_time: &Instant,
+    has_rules: bool,
+    resolved_rules: &ResolvedRules,
+    response: &Response<BoxBody>,
+    request: &Request<Incoming>,
+) {
+    let total_ms = start_time.elapsed().as_millis() as u64;
+    let mock_host = uri.host().unwrap_or("unknown").to_string();
+    let req_headers_pairs = headers_to_pairs(request.headers());
+    let mock_status = response.status().as_u16();
+    let mock_res_headers = headers_to_pairs(response.headers());
+
+    let traffic_type = get_traffic_type_from_url(record_url);
+    state
+        .metrics_collector
+        .add_bytes_sent_by_type(traffic_type, 0);
+    state
+        .metrics_collector
+        .increment_requests_by_type(traffic_type);
+
+    let mut record = TrafficRecord::new(
+        ctx.id_str().to_string(),
+        method.to_string(),
+        record_url.to_string(),
+    );
+    record.status = mock_status;
+    record.duration_ms = total_ms;
+    record.host = mock_host;
+    record.timing = Some(RequestTiming {
+        dns_ms: None,
+        connect_ms: None,
+        tls_ms: None,
+        send_ms: None,
+        wait_ms: Some(total_ms),
+        first_byte_ms: None,
+        receive_ms: None,
+        total_ms,
+    });
+    record.request_headers = Some(req_headers_pairs);
+    record.original_response_headers = Some(mock_res_headers);
+    record.has_rule_hit = has_rules;
+    record.matched_rules = crate::utils::build_matched_rules(resolved_rules);
+    record.client_ip = ctx.client_ip.clone();
+    record.client_app = ctx.client_app.clone();
+    record.client_pid = ctx.client_pid;
+    record.client_path = ctx.client_path.clone();
+    record.response_size = calculate_response_size(
+        mock_status,
+        record.original_response_headers.as_deref().unwrap_or(&[]),
+        0,
+    );
+    state.record_traffic(record);
+}
+
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 fn get_traffic_type_from_url(url: &str) -> TrafficType {
@@ -743,14 +804,44 @@ pub async fn handle_http_request(
                 status
             );
         }
-        return Ok(build_redirect_response(status, redirect_url));
+        let response = build_redirect_response(status, redirect_url);
+        if let Some(ref state) = admin_state {
+            record_http_mock_traffic(
+                state,
+                ctx,
+                &method,
+                &record_url,
+                &uri,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+            );
+        }
+        return Ok(response);
     }
 
     if let Some(ref location) = resolved_rules.location_href {
         if verbose_logging {
             info!("[{}] [LOCATION] {} -> {}", ctx.id_str(), url, location);
         }
-        return Ok(build_redirect_response(301, location));
+        let response = build_redirect_response(301, location);
+        if let Some(ref state) = admin_state {
+            record_http_mock_traffic(
+                state,
+                ctx,
+                &method,
+                &record_url,
+                &uri,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+            );
+        }
+        return Ok(response);
     }
 
     let processed_uri = apply_url_rules(&uri, &resolved_rules, verbose_logging, ctx);

@@ -746,9 +746,94 @@ wait
 
 ---
 
+### TC-WTR-回归-01：file:// 规则响应的请求在 Traffic 中可见
+
+**背景**：修复 Bug——使用 file:// 规则（如 `a.com file://xxxx`）响应请求时，该请求不在 network traffic 中显示。
+
+**前置条件**：
+1. 创建一个临时文件作为 mock 响应：
+   ```bash
+   echo '{"mock":"from_file"}' > /tmp/bifrost-mock-test.json
+   ```
+2. 启动 Bifrost 服务并配置 file:// 规则：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl -r "test.local file:///tmp/bifrost-mock-test.json"
+   ```
+
+**操作步骤**：
+1. 通过代理发起请求到匹配 file:// 规则的域名：
+   ```bash
+   curl -x http://127.0.0.1:8800 http://test.local/any-path
+   ```
+2. 在浏览器中打开 `http://127.0.0.1:8800/_bifrost/traffic`
+3. 通过 API 验证 traffic 记录：
+   ```bash
+   curl "http://127.0.0.1:8800/_bifrost/api/traffic?limit=10"
+   ```
+
+**预期结果**：
+- curl 请求返回 mock 文件内容 `{"mock":"from_file"}`
+- Traffic 页面中可以看到该请求记录
+- 请求记录 Host 为 `test.local`，Status 为 `200`
+- 请求记录的 Rules 列显示规则命中标识（蓝色闪电图标 + 数字）
+- API 返回的 records 数组中包含该请求记录，`h` 字段为 `test.local`，`s` 字段为 `200`，`rc` > 0
+
+---
+
+### TC-WTR-回归-02：redirect:// 规则响应的请求在 Traffic 中可见
+
+**背景**：与 file:// 同属 HTTPS tunnel mock 响应路径，修复前 redirect:// 规则响应也不会被录制。
+
+**操作步骤**：
+1. 启动 Bifrost 服务并配置 redirect:// 规则：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl -r "test.local/old redirect://https://example.com/new"
+   ```
+2. 通过代理发起请求：
+   ```bash
+   curl -x http://127.0.0.1:8800 http://test.local/old -v
+   ```
+3. 通过 API 验证 traffic 记录：
+   ```bash
+   curl "http://127.0.0.1:8800/_bifrost/api/traffic?limit=10"
+   ```
+
+**预期结果**：
+- curl 返回 302 重定向响应，`Location` 头为 `https://example.com/new`
+- API 返回的 records 中包含该请求记录，`h` 字段为 `test.local`，`s` 字段为 `302`
+
+---
+
+### TC-WTR-回归-03：tpl:// 和 rawfile:// 规则响应的请求在 Traffic 中可见
+
+**操作步骤**：
+1. 启动 Bifrost 服务并配置规则：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl \
+     -r "test.local/raw rawfile://(raw-content-test)" \
+     -r "test.local/tpl tpl://(Template for {{url}})"
+   ```
+2. 分别发起请求：
+   ```bash
+   curl -x http://127.0.0.1:8800 http://test.local/raw
+   curl -x http://127.0.0.1:8800 http://test.local/tpl
+   ```
+3. 通过 API 验证：
+   ```bash
+   curl "http://127.0.0.1:8800/_bifrost/api/traffic?limit=10"
+   ```
+
+**预期结果**：
+- 两个请求都返回对应的 mock 内容
+- API 返回的 records 中包含两条请求记录，Host 均为 `test.local`
+- 两条记录的 Rules 计数均 > 0
+
+---
+
 ## 清理
 
 测试完成后清理临时数据：
 ```bash
 rm -rf .bifrost-test
+rm -f /tmp/bifrost-mock-test.json
 ```

@@ -73,9 +73,15 @@
 | [proxy-rules-advanced.md](./proxy-rules-advanced.md) | 规则协议全量测试 | 58 | 40+ 规则操作协议：请求/响应修改、内容注入、控制、路由、脚本、高级特性（Values 引用、模板字符串、正则捕获） |
 | [proxy-auth-brute-force.md](./proxy-auth-brute-force.md) | 代理认证暴力破解防护 | 10 | HTTP/SOCKS5 代理认证 rate limiting：失败计数、10 次封禁（429/连接拒绝）、计数重置、IP 独立追踪 |
 
+### 网络与访问控制测试
+
+| 文件 | 功能模块 | 测试用例数 | 说明 |
+|------|---------|-----------|------|
+| [cgn-address-support.md](./cgn-address-support.md) | CGN 地址段支持与同子网局域网判定 | 9 | RFC 6598 CGN 100.64.0.0/10 地址段识别、同子网判定、allow_lan 联动、IP 列表展示、边界值验证 |
+
 ---
 
-**总计：46 个测试文件，984 个测试用例**
+**总计：47 个测试文件，993 个测试用例**
 
 ## 工作流程
 

@@ -10,6 +10,7 @@ pub mod group_rules;
 pub mod https;
 pub mod install_skill;
 pub mod matchers;
+pub mod mock_traffic;
 pub mod protocols;
 pub mod public;
 pub mod replay_sse;
@@ -65,5 +66,6 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(userpass_auth::get_all_tests());
     tests.extend(install_skill::get_all_tests());
     tests.extend(group_rules::get_all_tests());
+    tests.extend(mock_traffic::get_all_tests());
     tests
 }

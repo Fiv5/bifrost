@@ -1705,7 +1705,26 @@ async fn handle_intercepted_request_with_protocol(
                 req_id, original_uri, redirect_url, status
             );
         }
-        return Ok(build_redirect_response(status, redirect_url));
+        let response = build_redirect_response(status, redirect_url);
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     if let Some(ref mock_file) = resolved_rules.mock_file {
@@ -1713,7 +1732,26 @@ async fn handle_intercepted_request_with_protocol(
             info!("[{}] [MOCK_FILE] Serving file: {}", req_id, mock_file);
         }
         let status_code = resolved_rules.status_code.unwrap_or(200);
-        return Ok(serve_mock_file(mock_file, status_code, None).await);
+        let response = serve_mock_file(mock_file, status_code, None).await;
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     if let Some(ref mock_template) = resolved_rules.mock_template {
@@ -1733,7 +1771,26 @@ async fn handle_intercepted_request_with_protocol(
             req_id: req_id.to_string(),
         };
         let status_code = resolved_rules.status_code.unwrap_or(200);
-        return Ok(serve_mock_file(mock_template, status_code, Some(&template_vars)).await);
+        let response = serve_mock_file(mock_template, status_code, Some(&template_vars)).await;
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     if let Some(ref mock_rawfile) = resolved_rules.mock_rawfile {
@@ -1744,7 +1801,26 @@ async fn handle_intercepted_request_with_protocol(
             );
         }
         let status_code = resolved_rules.status_code.unwrap_or(200);
-        return Ok(serve_mock_file(mock_rawfile, status_code, None).await);
+        let response = serve_mock_file(mock_rawfile, status_code, None).await;
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     let (parts, body) = req.into_parts();
@@ -3836,6 +3912,67 @@ pub fn parse_connect_authority(authority: &str) -> Result<(String, u16)> {
             authority
         ))),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_mock_traffic(
+    state: &Arc<AdminState>,
+    req_id: &str,
+    method: &str,
+    url: &str,
+    host: &str,
+    start_time: &Instant,
+    has_rules: bool,
+    resolved_rules: &ResolvedRules,
+    response: &Response<BoxBody>,
+    request: &Request<Incoming>,
+    client_ip: &str,
+    client_app: Option<&str>,
+    client_pid: Option<u32>,
+    client_path: Option<&str>,
+) {
+    let total_ms = start_time.elapsed().as_millis() as u64;
+    let traffic_type = TrafficType::Https;
+
+    state
+        .metrics_collector
+        .add_bytes_sent_by_type(traffic_type, 0);
+    state
+        .metrics_collector
+        .increment_requests_by_type(traffic_type);
+
+    let req_headers_pairs = super::headers_to_pairs(request.headers());
+    let mock_status = response.status().as_u16();
+    let mock_res_headers = super::headers_to_pairs(response.headers());
+
+    let mut record = TrafficRecord::new(req_id.to_string(), method.to_string(), url.to_string());
+    record.status = mock_status;
+    record.duration_ms = total_ms;
+    record.host = host.to_string();
+    record.timing = Some(RequestTiming {
+        dns_ms: None,
+        connect_ms: None,
+        tls_ms: None,
+        send_ms: None,
+        wait_ms: Some(total_ms),
+        first_byte_ms: None,
+        receive_ms: None,
+        total_ms,
+    });
+    record.request_headers = Some(req_headers_pairs);
+    record.original_response_headers = Some(mock_res_headers);
+    record.has_rule_hit = has_rules;
+    record.matched_rules = crate::utils::build_matched_rules(resolved_rules);
+    record.client_ip = client_ip.to_string();
+    record.client_app = client_app.map(|s| s.to_string());
+    record.client_pid = client_pid;
+    record.client_path = client_path.map(|s| s.to_string());
+    record.response_size = calculate_response_size(
+        mock_status,
+        record.original_response_headers.as_deref().unwrap_or(&[]),
+        0,
+    );
+    state.record_traffic(record);
 }
 
 struct TemplateVars {
