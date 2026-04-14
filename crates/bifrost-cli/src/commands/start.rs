@@ -1117,6 +1117,11 @@ pub fn run_foreground(
             log_startup_phase("replay_db_store.init", phase_started_at);
 
             let access_control = ProxyServer::new(config.clone()).access_control().clone();
+            {
+                let subnets = bifrost_admin::network::get_local_subnets();
+                let ac = access_control.read().await;
+                ac.set_local_subnets(subnets);
+            }
             let (port_rebind_manager, mut port_rebind_rx) = PortRebindManager::channel(8);
 
             let shared_config_manager = Arc::new(config_manager);

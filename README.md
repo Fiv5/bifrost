@@ -17,8 +17,7 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 
 ## 特性说明
 
-![network.png](assets/network.png)
-<img width="1500" height="783" alt="image" src="https://github.com/user-attachments/assets/44062a96-47f3-481b-a2b6-e1bda9b3fda9" />
+![network.png](assets/network.png) <img width="1500" height="783" alt="image" src="https://github.com/user-attachments/assets/44062a96-47f3-481b-a2b6-e1bda9b3fda9" />
 ![scripts.png](assets/scripts.png)
 ![rules.png](assets/rules.png)
 ![replay.png](assets/replay.png)
@@ -37,11 +36,19 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 安装 CLI：
 
 方法一：使用脚本安装
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash
 ```
 
+安装指定版本
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --version v0.0.48-beta
+```
+
 方法二：使用 npm 安装
+
 ```bash
 npm i @bifrost-proxy/bifrost
 ```
@@ -61,6 +68,7 @@ http://127.0.0.1:9900/_bifrost/
 ```
 
 ## 用不习惯 CLI？想要使用桌面端 APP？
+
 请直接到[releases](https://github.com/bifrost-proxy/bifrost/releases)中下载对应平台的桌面端程序
 
 ## 基本用法摘要
@@ -121,3 +129,4 @@ chatgpt.com http3://
 - 请求重放说明：[`docs/replay.md`](docs/replay.md)
 - 项目结构与模块说明：[`docs/architecture.md`](docs/architecture.md)
 - Agent Skill 安装说明：[`docs/agent-skill.md`](docs/agent-skill.md)
+

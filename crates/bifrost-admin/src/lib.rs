@@ -11,7 +11,7 @@ mod frame_store;
 mod handlers;
 pub mod ip_tls_pending;
 mod metrics;
-pub(crate) mod network;
+pub mod network;
 mod port_rebind;
 pub mod push;
 pub mod replay_db;
