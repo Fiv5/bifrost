@@ -73,6 +73,7 @@
 | [proxy-rules-advanced.md](./proxy-rules-advanced.md) | 规则协议全量测试 | 58 | 40+ 规则操作协议：请求/响应修改、内容注入、控制、路由、脚本、高级特性（Values 引用、模板字符串、正则捕获） |
 | [proxy-auth-brute-force.md](./proxy-auth-brute-force.md) | 代理认证暴力破解防护 | 10 | HTTP/SOCKS5 代理认证 rate limiting：失败计数、10 次封禁（429/连接拒绝）、计数重置、IP 独立追踪 |
 | [mock-file-serving.md](./mock-file-serving.md) | Mock File Serving | 6 | file://协议二进制文件（PNG/图片）返回、JSON/HTML 文本文件、tpl://模板变量替换、Content-Type 自动检测、HTTPS TLS 拦截路径回归 |
+| [traffic-cleanup.md](./traffic-cleanup.md) | 流量记录清理逻辑 | 6 | 记录数超 115% 触发清理到 80% 水位、清理期间新流量落盘、Body 缓存文件清理、过度删除回归验证 |
 
 ### 网络与访问控制测试
 
@@ -83,7 +84,7 @@
 
 ---
 
-**总计：49 个测试文件，1007 个测试用例**
+**总计：50 个测试文件，1013 个测试用例**
 
 ## 工作流程
 

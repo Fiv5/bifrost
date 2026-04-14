@@ -1199,6 +1199,8 @@ pub fn run_foreground(
 
             let unsafe_ssl = config.unsafe_ssl;
             let admin_state_arc = Arc::new(admin_state);
+            let _total_disk_cleanup_task =
+                bifrost_admin::start_total_disk_cleanup_task(admin_state_arc.clone());
 
             let phase_started_at = Instant::now();
             let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
@@ -1875,6 +1877,9 @@ pub fn run_daemon(
                         .admin_state()
                         .cloned()
                         .expect("admin_state should be set");
+                    std::mem::drop(bifrost_admin::start_total_disk_cleanup_task(
+                        admin_state_arc.clone(),
+                    ));
 
                     let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
                         admin_state_arc.clone(),

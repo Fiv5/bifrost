@@ -112,7 +112,6 @@ pub struct AdminState {
     pub script_manager: Option<SharedScriptManager>,
     pub replay_db_store: Option<SharedReplayDbStore>,
     pub replay_executor: OnceCell<SharedReplayExecutor>,
-    pub total_size_cleanup_counter: AtomicUsize,
     pub port_rebind_manager: Option<SharedPortRebindManager>,
     pub sync_manager: Option<SharedSyncManager>,
     pub ip_tls_pending_manager: Option<Arc<IpTlsPendingManager>>,
@@ -153,7 +152,6 @@ impl AdminState {
             script_manager: None,
             replay_db_store: None,
             replay_executor: OnceCell::new(),
-            total_size_cleanup_counter: AtomicUsize::new(0),
             port_rebind_manager: None,
             sync_manager: None,
             ip_tls_pending_manager: None,
@@ -229,7 +227,6 @@ impl AdminState {
         } else {
             tracing::error!("[ADMIN_STATE] No traffic_db_store configured; drop record");
         }
-        self.maybe_cleanup_total_disk_usage();
     }
 
     #[inline]
@@ -399,14 +396,7 @@ impl AdminState {
         }
     }
 
-    fn maybe_cleanup_total_disk_usage(&self) {
-        const CLEANUP_CHECK_INTERVAL: usize = 100;
-        let counter = self
-            .total_size_cleanup_counter
-            .fetch_add(1, Ordering::Relaxed);
-        if !counter.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
-            return;
-        }
+    pub fn cleanup_total_disk_usage_if_needed(&self) {
         self.cleanup_total_disk_usage();
     }
 
@@ -551,6 +541,7 @@ impl AdminState {
 
         let record_count = db_stats.record_count.max(record_count);
         let avg_db_bytes = (db_stats.db_size / record_count as u64).max(1);
+        let max_delete = (record_count / 4).max(1);
 
         let mut ids_to_delete = Vec::new();
         let mut removed_estimate = 0u64;
@@ -558,6 +549,9 @@ impl AdminState {
         let batch = 500usize;
 
         while removed_estimate < bytes_to_remove {
+            if ids_to_delete.len() >= max_delete {
+                break;
+            }
             let ids = traffic_db_store.oldest_ids(batch, offset);
             if ids.is_empty() {
                 break;
@@ -576,7 +570,7 @@ impl AdminState {
                 }
                 removed_estimate += size;
                 ids_to_delete.push(id);
-                if removed_estimate >= bytes_to_remove {
+                if removed_estimate >= bytes_to_remove || ids_to_delete.len() >= max_delete {
                     break;
                 }
             }
@@ -972,6 +966,24 @@ impl GroupNameCacheGuard<'_> {
 }
 
 pub type SharedAdminState = Arc<AdminState>;
+
+pub fn start_total_disk_cleanup_task(state: SharedAdminState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let s = state.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                s.cleanup_total_disk_usage_if_needed();
+            })
+            .await
+            {
+                tracing::error!("Total disk cleanup task panicked: {}", e);
+            }
+        }
+    })
+}
 
 #[cfg(test)]
 mod tests {
