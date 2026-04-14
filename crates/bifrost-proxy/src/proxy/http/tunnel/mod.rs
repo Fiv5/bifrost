@@ -1705,7 +1705,26 @@ async fn handle_intercepted_request_with_protocol(
                 req_id, original_uri, redirect_url, status
             );
         }
-        return Ok(build_redirect_response(status, redirect_url));
+        let response = build_redirect_response(status, redirect_url);
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     if let Some(ref mock_file) = resolved_rules.mock_file {
@@ -1713,7 +1732,26 @@ async fn handle_intercepted_request_with_protocol(
             info!("[{}] [MOCK_FILE] Serving file: {}", req_id, mock_file);
         }
         let status_code = resolved_rules.status_code.unwrap_or(200);
-        return Ok(serve_mock_file(mock_file, status_code, None).await);
+        let response = serve_mock_file(mock_file, status_code, None).await;
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     if let Some(ref mock_template) = resolved_rules.mock_template {
@@ -1733,7 +1771,26 @@ async fn handle_intercepted_request_with_protocol(
             req_id: req_id.to_string(),
         };
         let status_code = resolved_rules.status_code.unwrap_or(200);
-        return Ok(serve_mock_file(mock_template, status_code, Some(&template_vars)).await);
+        let response = serve_mock_file(mock_template, status_code, Some(&template_vars)).await;
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     if let Some(ref mock_rawfile) = resolved_rules.mock_rawfile {
@@ -1744,7 +1801,26 @@ async fn handle_intercepted_request_with_protocol(
             );
         }
         let status_code = resolved_rules.status_code.unwrap_or(200);
-        return Ok(serve_mock_file(mock_rawfile, status_code, None).await);
+        let response = serve_mock_file(mock_rawfile, status_code, None).await;
+        if let Some(ref state) = admin_state {
+            record_mock_traffic(
+                state,
+                req_id,
+                &method_str,
+                &original_uri,
+                original_host,
+                &start_time,
+                has_rules,
+                &resolved_rules,
+                &response,
+                &req,
+                &client_ip,
+                client_app.as_deref(),
+                client_pid,
+                client_path.as_deref(),
+            );
+        }
+        return Ok(response);
     }
 
     let (parts, body) = req.into_parts();
@@ -3838,6 +3914,67 @@ pub fn parse_connect_authority(authority: &str) -> Result<(String, u16)> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn record_mock_traffic(
+    state: &Arc<AdminState>,
+    req_id: &str,
+    method: &str,
+    url: &str,
+    host: &str,
+    start_time: &Instant,
+    has_rules: bool,
+    resolved_rules: &ResolvedRules,
+    response: &Response<BoxBody>,
+    request: &Request<Incoming>,
+    client_ip: &str,
+    client_app: Option<&str>,
+    client_pid: Option<u32>,
+    client_path: Option<&str>,
+) {
+    let total_ms = start_time.elapsed().as_millis() as u64;
+    let traffic_type = TrafficType::Https;
+
+    state
+        .metrics_collector
+        .add_bytes_sent_by_type(traffic_type, 0);
+    state
+        .metrics_collector
+        .increment_requests_by_type(traffic_type);
+
+    let req_headers_pairs = super::headers_to_pairs(request.headers());
+    let mock_status = response.status().as_u16();
+    let mock_res_headers = super::headers_to_pairs(response.headers());
+
+    let mut record = TrafficRecord::new(req_id.to_string(), method.to_string(), url.to_string());
+    record.status = mock_status;
+    record.duration_ms = total_ms;
+    record.host = host.to_string();
+    record.timing = Some(RequestTiming {
+        dns_ms: None,
+        connect_ms: None,
+        tls_ms: None,
+        send_ms: None,
+        wait_ms: Some(total_ms),
+        first_byte_ms: None,
+        receive_ms: None,
+        total_ms,
+    });
+    record.request_headers = Some(req_headers_pairs);
+    record.original_response_headers = Some(mock_res_headers);
+    record.has_rule_hit = has_rules;
+    record.matched_rules = crate::utils::build_matched_rules(resolved_rules);
+    record.client_ip = client_ip.to_string();
+    record.client_app = client_app.map(|s| s.to_string());
+    record.client_pid = client_pid;
+    record.client_path = client_path.map(|s| s.to_string());
+    record.response_size = calculate_response_size(
+        mock_status,
+        record.original_response_headers.as_deref().unwrap_or(&[]),
+        0,
+    );
+    state.record_traffic(record);
+}
+
 struct TemplateVars {
     url: String,
     method: String,
@@ -3871,34 +4008,46 @@ fn process_template(content: &str, vars: &TemplateVars) -> String {
         .replace("${random}", &random.to_string())
 }
 
+use crate::utils::mock::{guess_content_type, is_text_mime};
+
 async fn serve_mock_file(
     file_path: &str,
     status_code: u16,
     template_vars: Option<&TemplateVars>,
 ) -> Response<BoxBody> {
-    match tokio::fs::read_to_string(file_path).await {
-        Ok(content) => {
-            let body = if let Some(vars) = template_vars {
-                process_template(&content, vars)
+    match tokio::fs::read(file_path).await {
+        Ok(raw_bytes) => {
+            let content_type = guess_content_type(file_path);
+
+            let should_process_as_text = template_vars.is_some() || is_text_mime(&content_type);
+
+            let body_bytes = if should_process_as_text {
+                match String::from_utf8(raw_bytes) {
+                    Ok(text) => {
+                        let processed = if let Some(vars) = template_vars {
+                            process_template(&text, vars)
+                        } else {
+                            text
+                        };
+                        processed.into_bytes()
+                    }
+                    Err(e) => e.into_bytes(),
+                }
             } else {
-                content
+                raw_bytes
             };
 
-            let content_type = if file_path.ends_with(".json") || body.trim_start().starts_with('{')
+            let effective_content_type = if template_vars.is_some() && !is_text_mime(&content_type)
             {
-                "application/json"
-            } else if file_path.ends_with(".html") {
-                "text/html; charset=utf-8"
-            } else if file_path.ends_with(".xml") {
-                "application/xml"
+                "application/json; charset=utf-8".to_string()
             } else {
-                "text/plain; charset=utf-8"
+                content_type
             };
 
             Response::builder()
                 .status(status_code)
-                .header(hyper::header::CONTENT_TYPE, content_type)
-                .body(full_body(body.into_bytes()))
+                .header(hyper::header::CONTENT_TYPE, &effective_content_type)
+                .body(full_body(body_bytes))
                 .unwrap()
         }
         Err(e) => {
@@ -4861,5 +5010,212 @@ mod tests {
         assert!(!is_ip_matched("invalid-ip", &["10.0.0.1".to_string()]));
         assert!(is_ip_matched("fe80::1", &["fe80::/10".to_string()]));
         assert!(!is_ip_matched("::1", &["fe80::/10".to_string()]));
+    }
+
+    #[test]
+    fn test_guess_content_type_common_extensions() {
+        assert!(guess_content_type("photo.png").starts_with("image/png"));
+        assert!(guess_content_type("photo.jpg").starts_with("image/jpeg"));
+        assert!(guess_content_type("style.css").starts_with("text/css"));
+        assert!(guess_content_type("data.json").starts_with("application/json"));
+        assert!(guess_content_type("page.html").starts_with("text/html"));
+        assert!(guess_content_type("app.js").contains("javascript"));
+        assert!(guess_content_type("doc.pdf").starts_with("application/pdf"));
+        assert!(guess_content_type("archive.zip").starts_with("application/zip"));
+        assert_eq!(
+            guess_content_type("unknown.xyz123"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_guess_content_type_text_has_charset() {
+        let ct = guess_content_type("page.html");
+        assert!(
+            ct.contains("charset=utf-8"),
+            "text types should include charset: {}",
+            ct
+        );
+        let ct = guess_content_type("style.css");
+        assert!(
+            ct.contains("charset=utf-8"),
+            "text types should include charset: {}",
+            ct
+        );
+    }
+
+    #[test]
+    fn test_guess_content_type_binary_no_charset() {
+        let ct = guess_content_type("photo.png");
+        assert!(
+            !ct.contains("charset"),
+            "binary types should not include charset: {}",
+            ct
+        );
+        let ct = guess_content_type("video.mp4");
+        assert!(
+            !ct.contains("charset"),
+            "binary types should not include charset: {}",
+            ct
+        );
+    }
+
+    #[test]
+    fn test_is_text_mime_classification() {
+        assert!(is_text_mime("text/plain; charset=utf-8"));
+        assert!(is_text_mime("text/html; charset=utf-8"));
+        assert!(is_text_mime("application/json"));
+        assert!(is_text_mime("application/xml"));
+        assert!(is_text_mime("application/javascript"));
+        assert!(is_text_mime("application/vnd.api+json"));
+        assert!(is_text_mime("application/atom+xml"));
+
+        assert!(!is_text_mime("image/png"));
+        assert!(!is_text_mime("application/octet-stream"));
+        assert!(!is_text_mime("application/pdf"));
+        assert!(!is_text_mime("video/mp4"));
+    }
+
+    #[tokio::test]
+    async fn test_serve_mock_file_binary_png() {
+        let dir = create_test_dir();
+        let png_path = dir.join("test.png");
+        let fake_png_bytes: Vec<u8> =
+            vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0x00];
+        fs::write(&png_path, &fake_png_bytes).unwrap();
+
+        let resp = serve_mock_file(png_path.to_str().unwrap(), 200, None).await;
+        assert_eq!(resp.status(), 200);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.starts_with("image/png"),
+            "expected image/png, got: {}",
+            ct
+        );
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), &fake_png_bytes);
+        cleanup_test_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_serve_mock_file_text_json() {
+        let dir = create_test_dir();
+        let json_path = dir.join("data.json");
+        fs::write(&json_path, r#"{"key":"value"}"#).unwrap();
+
+        let resp = serve_mock_file(json_path.to_str().unwrap(), 200, None).await;
+        assert_eq!(resp.status(), 200);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.starts_with("application/json"),
+            "expected application/json, got: {}",
+            ct
+        );
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), br#"{"key":"value"}"#);
+        cleanup_test_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_serve_mock_file_template_substitution() {
+        let dir = create_test_dir();
+        let tpl_path = dir.join("tpl.json");
+        fs::write(&tpl_path, r#"{"host":"${host}","method":"${method}"}"#).unwrap();
+
+        let vars = TemplateVars {
+            url: "https://example.com/api".to_string(),
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            pathname: "/api".to_string(),
+            search: "".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+            req_id: "test-123".to_string(),
+        };
+        let resp = serve_mock_file(tpl_path.to_str().unwrap(), 200, Some(&vars)).await;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            body_str.contains("example.com"),
+            "template host not substituted: {}",
+            body_str
+        );
+        assert!(
+            body_str.contains("GET"),
+            "template method not substituted: {}",
+            body_str
+        );
+        cleanup_test_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_serve_mock_file_template_substitution_tpl_ext() {
+        let dir = create_test_dir();
+        let tpl_path = dir.join("response.tpl");
+        fs::write(
+            &tpl_path,
+            r#"{"host":"${host}","method":"${method}","url":"${url}"}"#,
+        )
+        .unwrap();
+
+        let vars = TemplateVars {
+            url: "https://example.com/api".to_string(),
+            method: "POST".to_string(),
+            host: "example.com".to_string(),
+            pathname: "/api".to_string(),
+            search: "".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+            req_id: "test-456".to_string(),
+        };
+        let resp = serve_mock_file(tpl_path.to_str().unwrap(), 200, Some(&vars)).await;
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            ct.contains("json"),
+            ".tpl with template_vars should get json content type, got: {}",
+            ct
+        );
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !body_str.contains("${"),
+            "template variables should be substituted in .tpl file: {}",
+            body_str
+        );
+        assert!(
+            body_str.contains("example.com"),
+            "template host not substituted: {}",
+            body_str
+        );
+        assert!(
+            body_str.contains("POST"),
+            "template method not substituted: {}",
+            body_str
+        );
+        cleanup_test_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_serve_mock_file_not_found() {
+        let resp = serve_mock_file("/nonexistent/path/file.txt", 200, None).await;
+        assert_eq!(resp.status(), 500);
     }
 }

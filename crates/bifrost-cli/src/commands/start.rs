@@ -1117,6 +1117,11 @@ pub fn run_foreground(
             log_startup_phase("replay_db_store.init", phase_started_at);
 
             let access_control = ProxyServer::new(config.clone()).access_control().clone();
+            {
+                let subnets = bifrost_admin::network::get_local_subnets();
+                let ac = access_control.read().await;
+                ac.set_local_subnets(subnets);
+            }
             let (port_rebind_manager, mut port_rebind_rx) = PortRebindManager::channel(8);
 
             let shared_config_manager = Arc::new(config_manager);
@@ -1194,6 +1199,8 @@ pub fn run_foreground(
 
             let unsafe_ssl = config.unsafe_ssl;
             let admin_state_arc = Arc::new(admin_state);
+            let _total_disk_cleanup_task =
+                bifrost_admin::start_total_disk_cleanup_task(admin_state_arc.clone());
 
             let phase_started_at = Instant::now();
             let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
@@ -1870,6 +1877,9 @@ pub fn run_daemon(
                         .admin_state()
                         .cloned()
                         .expect("admin_state should be set");
+                    std::mem::drop(bifrost_admin::start_total_disk_cleanup_task(
+                        admin_state_arc.clone(),
+                    ));
 
                     let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
                         admin_state_arc.clone(),

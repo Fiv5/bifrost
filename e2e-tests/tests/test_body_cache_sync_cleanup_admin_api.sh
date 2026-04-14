@@ -80,8 +80,11 @@ for i in $(seq 1 "$request_count"); do
 done
 
 for i in $(seq 1 60); do
-  traffic_response=$(admin_get "/api/traffic?limit=20")
-  record_count=$(echo "$traffic_response" | jq -r '.records | length')
+  traffic_response=$(admin_get "/api/traffic?limit=1")
+  record_count=$(echo "$traffic_response" | jq -r '.total')
+  if ! [[ "$record_count" =~ ^[0-9]+$ ]]; then
+    record_count="$request_count"
+  fi
   if [ "$record_count" -lt "$request_count" ]; then
     break
   fi

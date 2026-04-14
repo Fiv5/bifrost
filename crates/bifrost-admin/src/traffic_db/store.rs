@@ -24,7 +24,9 @@ use crate::traffic::TrafficRecord;
 
 const DEFAULT_CACHE_SIZE: usize = 500;
 const CLEANUP_CHECK_INTERVAL: u64 = 100;
-const CLEANUP_LOW_WATERMARK_PERCENT: usize = 95;
+const CLEANUP_TRIGGER_OVERFLOW_PERCENT: usize = 15;
+const CLEANUP_TRIGGER_OVERFLOW_MAX: usize = 2000;
+const CLEANUP_TARGET_PERCENT: usize = 80;
 const METRICS_CACHE_TTL: Duration = Duration::from_secs(5);
 const READ_POOL_SIZE: usize = 4;
 
@@ -528,31 +530,33 @@ impl TrafficDbStore {
             let _ = self.tx.send(TrafficStoreEvent::Inserted(record.clone()));
         }
 
-        let mut conn = self.write_conn.lock();
-        let result = (|| -> rusqlite::Result<()> {
-            let tx = conn.transaction()?;
-            Self::insert_record_tx(&tx, seq, &record)?;
-            tx.commit()
-        })();
+        {
+            let mut conn = self.write_conn.lock();
+            let result = (|| -> rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+                Self::insert_record_tx(&tx, seq, &record)?;
+                tx.commit()
+            })();
 
-        if let Err(e) = result {
-            tracing::error!(error = %e, id = %record.id, "[TRAFFIC_DB] Failed to insert record");
-        } else if Self::should_keep_in_cache(&record) {
-            self.increase_record_count(1);
-            self.invalidate_metrics_cache();
-            let mut cache = self.recent_cache.write();
-            cache.put(
-                record.id.clone(),
-                TrafficSummaryCompact::from_record(&record),
-            );
-        } else {
-            self.increase_record_count(1);
-            self.invalidate_metrics_cache();
+            if let Err(e) = result {
+                tracing::error!(error = %e, id = %record.id, "[TRAFFIC_DB] Failed to insert record");
+            } else if Self::should_keep_in_cache(&record) {
+                self.increase_record_count(1);
+                self.invalidate_metrics_cache();
+                let mut cache = self.recent_cache.write();
+                cache.put(
+                    record.id.clone(),
+                    TrafficSummaryCompact::from_record(&record),
+                );
+            } else {
+                self.increase_record_count(1);
+                self.invalidate_metrics_cache();
+            }
         }
 
-        let count = self.write_count.fetch_add(1, Ordering::Relaxed);
-        if count.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
-            self.maybe_cleanup(&conn);
+        let old = self.write_count.fetch_add(1, Ordering::Relaxed);
+        if old / CLEANUP_CHECK_INTERVAL != (old + 1) / CLEANUP_CHECK_INTERVAL {
+            self.maybe_cleanup();
         }
     }
 
@@ -572,18 +576,22 @@ impl TrafficDbStore {
             records_with_seq.push((seq, record));
         }
 
-        let mut conn = self.write_conn.lock();
-        let result = (|| -> rusqlite::Result<()> {
-            let tx = conn.transaction()?;
-            for (seq, record) in &records_with_seq {
-                Self::insert_record_tx(&tx, *seq, record)?;
-            }
-            tx.commit()
-        })();
+        let batch_len = records_with_seq.len();
 
-        if let Err(e) = result {
-            tracing::error!(error = %e, batch_size = records_with_seq.len(), "[TRAFFIC_DB] Failed to insert record batch");
-            return;
+        {
+            let mut conn = self.write_conn.lock();
+            let result = (|| -> rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+                for (seq, record) in &records_with_seq {
+                    Self::insert_record_tx(&tx, *seq, record)?;
+                }
+                tx.commit()
+            })();
+
+            if let Err(e) = result {
+                tracing::error!(error = %e, batch_size = batch_len, "[TRAFFIC_DB] Failed to insert record batch");
+                return;
+            }
         }
 
         let mut cache = self.recent_cache.write();
@@ -597,14 +605,15 @@ impl TrafficDbStore {
         }
         drop(cache);
 
-        self.increase_record_count(records_with_seq.len());
+        self.increase_record_count(batch_len);
         self.invalidate_metrics_cache();
 
-        let count = self
+        let old = self
             .write_count
-            .fetch_add(records_with_seq.len() as u64, Ordering::Relaxed);
-        if count.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
-            self.maybe_cleanup(&conn);
+            .fetch_add(batch_len as u64, Ordering::Relaxed);
+        let new = old + batch_len as u64;
+        if old / CLEANUP_CHECK_INTERVAL != new / CLEANUP_CHECK_INTERVAL {
+            self.maybe_cleanup();
         }
     }
 
@@ -1424,59 +1433,92 @@ impl TrafficDbStore {
         self.remove_from_cache(ids);
     }
 
-    fn cleanup_low_watermark(max: usize) -> usize {
-        let low = max.saturating_mul(CLEANUP_LOW_WATERMARK_PERCENT) / 100;
-        low.max(1).min(max)
+    fn cleanup_trigger_threshold(max: usize) -> usize {
+        let overflow =
+            (max * CLEANUP_TRIGGER_OVERFLOW_PERCENT / 100).min(CLEANUP_TRIGGER_OVERFLOW_MAX);
+        max + overflow
     }
 
-    fn maybe_cleanup(&self, conn: &Connection) {
+    fn cleanup_target_count(max: usize) -> usize {
+        (max * CLEANUP_TARGET_PERCENT / 100).max(1)
+    }
+
+    const SIZE_CLEANUP_MAX_DELETE_PERCENT: usize = 20;
+
+    fn maybe_cleanup(&self) {
         let max = self.max_records.load(Ordering::Relaxed);
         let count = self.record_count.load(Ordering::Relaxed);
 
-        if count > max {
-            let target = Self::cleanup_low_watermark(max);
-            let delete_count = count.saturating_sub(target);
-            let deleted = self.delete_oldest_by_limit(conn, delete_count);
-            if deleted > 0 {
-                self.decrease_record_count(deleted);
-                self.invalidate_metrics_cache();
-                tracing::debug!(
-                    deleted = deleted,
-                    max = max,
-                    target = target,
-                    "[TRAFFIC_DB] Cleaned up old records"
-                );
-                Self::compact_with_conn(conn, false);
+        let trigger = Self::cleanup_trigger_threshold(max);
+        let needs_record_cleanup = count > trigger;
+
+        let max_db_size_bytes = self.max_db_size_bytes.load(Ordering::Relaxed);
+        let needs_size_cleanup = max_db_size_bytes > 0 && {
+            let db_size = fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
+            db_size > max_db_size_bytes
+        };
+
+        if !needs_record_cleanup && !needs_size_cleanup {
+            return;
+        }
+
+        let conn = self.write_conn.lock();
+
+        let mut did_record_cleanup = false;
+
+        if needs_record_cleanup {
+            let current_count = self.record_count.load(Ordering::Relaxed);
+            if current_count > trigger {
+                let target = Self::cleanup_target_count(max);
+                let delete_count = current_count.saturating_sub(target);
+                let deleted = self.delete_oldest_by_limit(&conn, delete_count);
+                if deleted > 0 {
+                    self.decrease_record_count(deleted);
+                    self.invalidate_metrics_cache();
+                    did_record_cleanup = true;
+                    tracing::info!(
+                        deleted = deleted,
+                        max = max,
+                        trigger = trigger,
+                        target = target,
+                        current = current_count,
+                        "[TRAFFIC_DB] Cleaned up old records (trigger: {}%, target: {}%)",
+                        CLEANUP_TRIGGER_OVERFLOW_PERCENT,
+                        CLEANUP_TARGET_PERCENT,
+                    );
+                    Self::compact_with_conn(&conn, false);
+                }
             }
         }
 
-        let max_db_size_bytes = self.max_db_size_bytes.load(Ordering::Relaxed);
-        if max_db_size_bytes > 0 {
+        if needs_size_cleanup && !did_record_cleanup {
             let db_size = fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
             if db_size > max_db_size_bytes {
-                let target_size = max_db_size_bytes.saturating_sub(max_db_size_bytes / 4);
-                let avg_bytes_per_record = if count > 0 {
-                    (db_size / count as u64).max(1)
-                } else {
-                    1
-                };
-                let bytes_to_remove = db_size.saturating_sub(target_size);
-                let mut to_remove = bytes_to_remove.div_ceil(avg_bytes_per_record) as i64;
-                if to_remove < 1 {
-                    to_remove = 1;
+                let current_count = self.record_count.load(Ordering::Relaxed);
+                if current_count == 0 {
+                    return;
                 }
-                let deleted = self.delete_oldest_by_limit(conn, to_remove as usize);
+                let target_size = max_db_size_bytes.saturating_sub(max_db_size_bytes / 4);
+                let avg_bytes_per_record = (db_size / current_count as u64).max(1);
+                let bytes_to_remove = db_size.saturating_sub(target_size);
+                let estimated_remove = bytes_to_remove.div_ceil(avg_bytes_per_record) as usize;
+                let max_allowed =
+                    (current_count * Self::SIZE_CLEANUP_MAX_DELETE_PERCENT / 100).max(1);
+                let to_remove = estimated_remove.min(max_allowed);
+                let deleted = self.delete_oldest_by_limit(&conn, to_remove);
                 if deleted > 0 {
                     self.decrease_record_count(deleted);
                     self.invalidate_metrics_cache();
                     tracing::info!(
                         deleted = deleted,
+                        estimated = estimated_remove,
+                        capped_at = max_allowed,
                         db_size = db_size,
                         max_db_size_bytes = max_db_size_bytes,
                         target_size = target_size,
                         "[TRAFFIC_DB] Cleaned up records due to DB size limit"
                     );
-                    Self::compact_with_conn(conn, false);
+                    Self::compact_with_conn(&conn, false);
                 }
             }
         }
@@ -1683,8 +1725,7 @@ impl TrafficDbStore {
                 new = normalized,
                 "[TRAFFIC_DB] Max records updated"
             );
-            let conn = self.write_conn.lock();
-            self.maybe_cleanup(&conn);
+            self.maybe_cleanup();
         }
     }
 
@@ -1696,8 +1737,7 @@ impl TrafficDbStore {
                 new = max,
                 "[TRAFFIC_DB] Max db size bytes updated"
             );
-            let conn = self.write_conn.lock();
-            self.maybe_cleanup(&conn);
+            self.maybe_cleanup();
         }
     }
 
@@ -2149,12 +2189,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_drops_to_low_watermark_instead_of_exact_limit() {
+    fn test_cleanup_drops_to_target_after_trigger() {
         let dir = create_test_dir();
         let max_records = MIN_TRAFFIC_MAX_RECORDS;
         let store = TrafficDbStore::new(dir.clone(), max_records, 0, None).unwrap();
 
-        for i in 0..=max_records {
+        let trigger = TrafficDbStore::cleanup_trigger_threshold(max_records);
+        let total = trigger + 1;
+        for i in 0..total {
             store.record(TrafficRecord::new(
                 format!("req-{}", i),
                 "GET".to_string(),
@@ -2162,8 +2204,19 @@ mod tests {
             ));
         }
 
-        let expected_count = max_records * CLEANUP_LOW_WATERMARK_PERCENT / 100;
-        assert_eq!(store.count(), expected_count);
+        assert_eq!(store.count(), total);
+
+        store.maybe_cleanup();
+
+        let expected_count = TrafficDbStore::cleanup_target_count(max_records);
+        assert_eq!(
+            store.count(),
+            expected_count,
+            "after cleanup, count should be {}% of max ({}), got {}",
+            CLEANUP_TARGET_PERCENT,
+            expected_count,
+            store.count()
+        );
 
         cleanup_test_dir(&dir);
     }
@@ -2224,6 +2277,170 @@ mod tests {
         store.clear_with_active_ids(&active_ids);
         assert_eq!(store.count(), 1);
         assert!(store.get_by_id("active-1").is_some());
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_no_cleanup_below_trigger_threshold() {
+        let dir = create_test_dir();
+        let max_records = MIN_TRAFFIC_MAX_RECORDS;
+        let store = TrafficDbStore::new(dir.clone(), max_records, 0, None).unwrap();
+
+        let trigger = TrafficDbStore::cleanup_trigger_threshold(max_records);
+        for i in 0..trigger {
+            store.record(TrafficRecord::new(
+                format!("req-{}", i),
+                "GET".to_string(),
+                format!("https://a.com/{}", i),
+            ));
+        }
+
+        assert_eq!(store.count(), trigger);
+
+        store.maybe_cleanup();
+
+        assert_eq!(
+            store.count(),
+            trigger,
+            "no cleanup should happen below trigger threshold"
+        );
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_maybe_cleanup_record_count_only_deletes_to_target() {
+        let dir = create_test_dir();
+        let max_records = MIN_TRAFFIC_MAX_RECORDS;
+        let store = TrafficDbStore::new(dir.clone(), max_records, 0, None).unwrap();
+
+        let trigger = TrafficDbStore::cleanup_trigger_threshold(max_records);
+        let target = TrafficDbStore::cleanup_target_count(max_records);
+        let total = trigger + 1;
+        for i in 0..total {
+            store.record(TrafficRecord::new(
+                format!("req-{}", i),
+                "GET".to_string(),
+                format!("https://a.com/{}", i),
+            ));
+        }
+
+        store.maybe_cleanup();
+
+        assert_eq!(
+            store.count(),
+            target,
+            "record count cleanup should drop to target ({}% = {}), got {}",
+            CLEANUP_TARGET_PERCENT,
+            target,
+            store.count()
+        );
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_maybe_cleanup_size_after_record_cleanup_skips_size_cleanup() {
+        let dir = create_test_dir();
+        let max_records = MIN_TRAFFIC_MAX_RECORDS;
+        let store = TrafficDbStore::new(dir.clone(), max_records, 0, None).unwrap();
+
+        let trigger = TrafficDbStore::cleanup_trigger_threshold(max_records);
+        let target = TrafficDbStore::cleanup_target_count(max_records);
+        let total = trigger + 1;
+        for i in 0..total {
+            store.record(TrafficRecord::new(
+                format!("req-{}", i),
+                "GET".to_string(),
+                format!("https://a.com/{}", i),
+            ));
+        }
+
+        store.max_db_size_bytes.store(1024, Ordering::SeqCst);
+
+        store.maybe_cleanup();
+
+        let remaining = store.count();
+        assert_eq!(
+            remaining, target,
+            "when record cleanup triggers, size cleanup should be skipped. expected target={}, got {}",
+            target, remaining,
+        );
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_maybe_cleanup_size_only_respects_max_delete_cap() {
+        let dir = create_test_dir();
+        let max_records = MIN_TRAFFIC_MAX_RECORDS;
+        let store = TrafficDbStore::new(dir.clone(), max_records, 1, None).unwrap();
+
+        for i in 0..max_records {
+            store.record(TrafficRecord::new(
+                format!("req-{}", i),
+                "GET".to_string(),
+                format!("https://a.com/{}", i),
+            ));
+        }
+
+        let before = store.count();
+
+        store.maybe_cleanup();
+
+        let after = store.count();
+        let max_delete = before * TrafficDbStore::SIZE_CLEANUP_MAX_DELETE_PERCENT / 100;
+        let deleted = before.saturating_sub(after);
+        assert!(
+            deleted <= max_delete + 1,
+            "size cleanup should not delete more than {}% of records: deleted {} out of {} (max allowed {})",
+            TrafficDbStore::SIZE_CLEANUP_MAX_DELETE_PERCENT,
+            deleted,
+            before,
+            max_delete,
+        );
+        assert!(after > 0, "size cleanup should never delete all records");
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_record_batch_cleanup_preserves_reasonable_count() {
+        let dir = create_test_dir();
+        let max_records = MIN_TRAFFIC_MAX_RECORDS;
+        let store = TrafficDbStore::new(dir.clone(), max_records, 0, None).unwrap();
+
+        let trigger = TrafficDbStore::cleanup_trigger_threshold(max_records);
+        let total_batches = (trigger + 500) / 64 + 1;
+        for batch_idx in 0..total_batches {
+            let batch: Vec<TrafficRecord> = (0..64)
+                .map(|i| {
+                    let id = batch_idx * 64 + i;
+                    TrafficRecord::new(
+                        format!("req-{}", id),
+                        "GET".to_string(),
+                        format!("https://a.com/{}", id),
+                    )
+                })
+                .collect();
+            store.record_batch(batch);
+        }
+
+        let target = TrafficDbStore::cleanup_target_count(max_records);
+        let count = store.count();
+        assert!(
+            count <= trigger + 128,
+            "after batch inserts, count should not significantly exceed trigger ({}), got {}",
+            trigger,
+            count,
+        );
+        assert!(
+            count >= target / 2,
+            "after batch inserts with cleanup, count ({}) should not be below half of target ({})",
+            count,
+            target,
+        );
 
         cleanup_test_dir(&dir);
     }

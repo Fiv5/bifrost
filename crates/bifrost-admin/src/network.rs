@@ -1,5 +1,7 @@
 use std::net::IpAddr;
 
+use ipnet::IpNet;
+
 #[derive(Debug, Clone)]
 pub struct LocalIpInfo {
     pub ip: String,
@@ -98,6 +100,9 @@ fn detect_preferred_ip() -> Option<String> {
     if ip.is_loopback() || ip.is_unspecified() {
         return None;
     }
+    if !is_routable_private_ip(&ip) {
+        return None;
+    }
     Some(ip.to_string())
 }
 
@@ -107,7 +112,8 @@ fn is_routable_private_ip(ip: &IpAddr) -> bool {
             if ipv4.is_loopback() || ipv4.is_link_local() || ipv4.is_unspecified() {
                 return false;
             }
-            ipv4.is_private()
+            let octets = ipv4.octets();
+            ipv4.is_private() || (octets[0] == 100 && (64..=127).contains(&octets[1]))
         }
         IpAddr::V6(_) => false,
     }
@@ -160,6 +166,65 @@ fn is_virtual_interface_name(name: &str) -> bool {
     ];
     let lower = name.to_lowercase();
     VIRTUAL_PREFIXES.iter().any(|p| lower.starts_with(p))
+}
+
+pub fn get_local_subnets() -> Vec<IpNet> {
+    let mut subnets = Vec::new();
+
+    #[cfg(unix)]
+    {
+        if let Ok(ifaddrs) = nix::ifaddrs::getifaddrs() {
+            for ifaddr in ifaddrs {
+                if !is_usable_interface(&ifaddr) {
+                    continue;
+                }
+                let Some(addr) = ifaddr.address else {
+                    continue;
+                };
+                let ip = if let Some(sockaddr) = addr.as_sockaddr_in() {
+                    IpAddr::V4(sockaddr.ip())
+                } else {
+                    continue;
+                };
+                if ip.is_loopback() || ip.is_unspecified() {
+                    continue;
+                }
+                let prefix_len = ifaddr
+                    .netmask
+                    .and_then(|m| m.as_sockaddr_in().map(|s| s.ip()))
+                    .map(|mask| u32::from(mask).count_ones() as u8)
+                    .unwrap_or(24);
+                if let Ok(subnet) = IpNet::new(ip, prefix_len) {
+                    let network = subnet.trunc();
+                    if !subnets.contains(&network) {
+                        subnets.push(network);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(netifas) = local_ip_address::list_afinet_netifas() {
+            for (name, ip) in netifas {
+                if !ip.is_ipv4() || ip.is_loopback() || ip.is_unspecified() {
+                    continue;
+                }
+                if is_virtual_interface_name(&name) {
+                    continue;
+                }
+                if let Ok(subnet) = IpNet::new(ip, 24) {
+                    let network = subnet.trunc();
+                    if !subnets.contains(&network) {
+                        subnets.push(network);
+                    }
+                }
+            }
+        }
+    }
+
+    subnets
 }
 
 #[cfg(test)]
@@ -248,6 +313,24 @@ mod tests {
     #[test]
     fn test_is_routable_private_ip_rejects_link_local() {
         let ip: IpAddr = "169.254.1.1".parse().unwrap();
+        assert!(!is_routable_private_ip(&ip));
+    }
+
+    #[test]
+    fn test_is_routable_private_ip_accepts_cgn() {
+        let ip: IpAddr = "100.64.0.1".parse().unwrap();
+        assert!(is_routable_private_ip(&ip));
+        let ip: IpAddr = "100.86.178.33".parse().unwrap();
+        assert!(is_routable_private_ip(&ip));
+        let ip: IpAddr = "100.127.255.255".parse().unwrap();
+        assert!(is_routable_private_ip(&ip));
+    }
+
+    #[test]
+    fn test_is_routable_private_ip_rejects_non_cgn_100() {
+        let ip: IpAddr = "100.63.255.255".parse().unwrap();
+        assert!(!is_routable_private_ip(&ip));
+        let ip: IpAddr = "100.128.0.1".parse().unwrap();
         assert!(!is_routable_private_ip(&ip));
     }
 

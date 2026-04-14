@@ -1602,6 +1602,36 @@ pub fn start_push_tasks(manager: SharedPushManager) -> Vec<tokio::task::JoinHand
         }
     }));
 
+    if let Some(ac) = manager.state.access_control.clone() {
+        let manager_subnet = manager.clone();
+        handles.push(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let new_subnets = crate::network::get_local_subnets();
+                let guard = ac.read().await;
+                let current = guard.local_subnets();
+                if current != new_subnets {
+                    tracing::info!(
+                        target: "bifrost::network",
+                        old = ?current.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        new = ?new_subnets.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        "Local network changed, refreshing subnets"
+                    );
+                    guard.set_local_subnets(new_subnets);
+                    drop(guard);
+                    manager_subnet
+                        .broadcast_settings_scope(SETTINGS_SCOPE_PROXY_ADDRESS)
+                        .await;
+                    manager_subnet
+                        .broadcast_settings_scope(SETTINGS_SCOPE_CERT_INFO)
+                        .await;
+                }
+            }
+        }));
+    }
+
     handles
 }
 

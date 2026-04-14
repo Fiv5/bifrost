@@ -11,7 +11,7 @@ mod frame_store;
 mod handlers;
 pub mod ip_tls_pending;
 mod metrics;
-pub(crate) mod network;
+pub mod network;
 mod port_rebind;
 pub mod push;
 pub mod replay_db;
@@ -71,8 +71,9 @@ pub use sse::{
     SseEvent, SseHub, MAX_OPENAI_LIKE_SSE_ASSEMBLY_INPUT_BYTES,
 };
 pub use state::{
-    AdminState, RuntimeConfig, SharedAccessControl, SharedIpTlsPendingManager, SharedRuntimeConfig,
-    SharedScriptManager, SharedSystemProxyManager, SharedValuesStorage,
+    start_total_disk_cleanup_task, AdminState, RuntimeConfig, SharedAccessControl,
+    SharedIpTlsPendingManager, SharedRuntimeConfig, SharedScriptManager, SharedSystemProxyManager,
+    SharedValuesStorage,
 };
 pub use traffic::{
     FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,

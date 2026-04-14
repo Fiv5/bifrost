@@ -14,7 +14,9 @@ pub use logging::{
     build_matched_rules, format_rules_detail, format_rules_summary, generate_request_id,
     truncate_body, RequestContext,
 };
-pub use mock::{generate_mock_response, should_intercept_response};
+pub use mock::{
+    generate_mock_response, guess_content_type, is_text_mime, should_intercept_response,
+};
 pub use process_info::{
     app_policy_process_resolution_retry_config, format_client_info, resolve_client_process,
     resolve_client_process_async, resolve_client_process_async_for_connection,

@@ -142,13 +142,9 @@ pub async fn generate_mock_response(
     }
 
     if let Some(template) = &rules.mock_template {
-        return Some(build_template_response(
-            template,
-            rules,
-            request_uri,
-            verbose_logging,
-            ctx,
-        ));
+        return Some(
+            build_template_response(template, rules, request_uri, verbose_logging, ctx).await,
+        );
     }
 
     None
@@ -407,7 +403,7 @@ async fn load_rawfile_response(
     }
 }
 
-fn build_template_response(
+async fn build_template_response(
     template: &str,
     rules: &ResolvedRules,
     request_uri: &hyper::Uri,
@@ -450,13 +446,35 @@ fn build_template_response(
         ctx.url.clone()
     };
 
-    let template = if template.starts_with('(') && template.ends_with(')') {
-        &template[1..template.len() - 1]
+    let template_content = if template.starts_with('(') && template.ends_with(')') {
+        template[1..template.len() - 1].to_string()
     } else {
-        template
+        let normalized = normalize_file_path(template);
+        match tokio::fs::read_to_string(&normalized).await {
+            Ok(content) => {
+                if verbose_logging {
+                    debug!(
+                        "[{}] [TPL] loaded template file {} ({} bytes)",
+                        ctx.id_str(),
+                        normalized,
+                        content.len()
+                    );
+                }
+                content
+            }
+            Err(e) => {
+                warn!(
+                    "[{}] [TPL] failed to read template file {}: {}",
+                    ctx.id_str(),
+                    normalized,
+                    e
+                );
+                return build_error_response(404, "Template file not found");
+            }
+        }
     };
     let rendered = TemplateEngine::expand_with_context(
-        template,
+        &template_content,
         &bifrost_core::RequestContext::builder()
             .url(&url_string)
             .host(host)
@@ -555,13 +573,29 @@ fn build_error_response(status: u16, message: &str) -> Response<BoxBody> {
         .unwrap()
 }
 
-fn guess_content_type(file_path: &str) -> &'static str {
-    let ext = Path::new(file_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+pub fn guess_content_type(file_path: &str) -> String {
+    mime_guess::from_path(file_path)
+        .first()
+        .map(|m| {
+            let essence = m.essence_str().to_string();
+            if is_text_mime(&essence) && m.get_param("charset").is_none() {
+                format!("{}; charset=utf-8", essence)
+            } else {
+                essence
+            }
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string())
+}
 
-    ext_to_content_type(ext)
+pub fn is_text_mime(content_type: &str) -> bool {
+    let ct = content_type.split(';').next().unwrap_or("").trim();
+    ct.starts_with("text/")
+        || ct == "application/json"
+        || ct == "application/xml"
+        || ct == "application/javascript"
+        || ct == "application/x-javascript"
+        || ct.ends_with("+json")
+        || ct.ends_with("+xml")
 }
 
 fn normalize_file_path(file_path: &str) -> String {
@@ -586,43 +620,9 @@ fn normalize_file_path(file_path: &str) -> String {
     }
 }
 
-fn guess_content_type_from_url(url: &str) -> &'static str {
+fn guess_content_type_from_url(url: &str) -> String {
     let path = url.split('?').next().unwrap_or(url);
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-
-    ext_to_content_type(ext)
-}
-
-fn ext_to_content_type(ext: &str) -> &'static str {
-    match ext.to_lowercase().as_str() {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "application/javascript; charset=utf-8",
-        "json" => "application/json; charset=utf-8",
-        "xml" => "application/xml; charset=utf-8",
-        "txt" => "text/plain; charset=utf-8",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "webp" => "image/webp",
-        "ico" => "image/x-icon",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "eot" => "application/vnd.ms-fontobject",
-        "pdf" => "application/pdf",
-        "zip" => "application/zip",
-        "gz" | "gzip" => "application/gzip",
-        "mp3" => "audio/mpeg",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "wasm" => "application/wasm",
-        _ => "application/octet-stream",
-    }
+    guess_content_type(path)
 }
 
 pub fn should_intercept_response(rules: &ResolvedRules) -> bool {
@@ -652,9 +652,11 @@ mod tests {
 
     #[test]
     fn test_guess_content_type_js() {
-        assert_eq!(
-            guess_content_type("/path/to/file.js"),
-            "application/javascript; charset=utf-8"
+        let ct = guess_content_type("/path/to/file.js");
+        assert!(
+            ct.contains("javascript"),
+            "expected javascript content type, got: {}",
+            ct
         );
     }
 
@@ -675,10 +677,6 @@ mod tests {
 
     #[test]
     fn test_guess_content_type_unknown() {
-        assert_eq!(
-            guess_content_type("/path/to/file.xyz"),
-            "application/octet-stream"
-        );
         assert_eq!(
             guess_content_type("/path/to/file"),
             "application/octet-stream"

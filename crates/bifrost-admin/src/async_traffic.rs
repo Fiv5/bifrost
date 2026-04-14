@@ -123,36 +123,53 @@ pub fn start_async_traffic_processor(
                         let batch_size = batch.len();
                         let records: Vec<TrafficRecord> =
                             batch.drain(..).map(|record| *record).collect();
-                        traffic_db_store.record_batch(records);
+                        let store = traffic_db_store.clone();
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            store.record_batch(records);
+                        })
+                        .await
+                        {
+                            error!("Traffic record_batch task panicked: {}", e);
+                        }
                         debug!("Processed {} traffic records", batch_size);
                     }
 
                     if !updates.is_empty() {
                         let update_count = updates.len();
-                        if traffic_db_store.has_traffic_event_subscribers() {
-                            for (id, updater) in updates.drain(..) {
-                                traffic_db_store.update_by_id(&id, |r| updater(r));
-                            }
-                        } else {
-                            let mut grouped: HashMap<String, Vec<TrafficUpdater>> = HashMap::new();
-                            let mut order: Vec<String> = Vec::new();
-                            for (id, updater) in updates.drain(..) {
-                                let bucket = grouped.entry(id.clone()).or_insert_with(|| {
-                                    order.push(id.clone());
-                                    Vec::new()
-                                });
-                                bucket.push(updater);
-                            }
-
-                            for id in order {
-                                if let Some(grouped_updaters) = grouped.remove(&id) {
-                                    traffic_db_store.update_by_id(&id, move |record| {
-                                        for updater in &grouped_updaters {
-                                            updater(record);
-                                        }
+                        let has_subscribers = traffic_db_store.has_traffic_event_subscribers();
+                        let drained = std::mem::take(&mut updates);
+                        let store = traffic_db_store.clone();
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            if has_subscribers {
+                                for (id, updater) in drained {
+                                    store.update_by_id(&id, |r| updater(r));
+                                }
+                            } else {
+                                let mut grouped: HashMap<String, Vec<TrafficUpdater>> =
+                                    HashMap::new();
+                                let mut order: Vec<String> = Vec::new();
+                                for (id, updater) in drained {
+                                    let bucket = grouped.entry(id.clone()).or_insert_with(|| {
+                                        order.push(id.clone());
+                                        Vec::new()
                                     });
+                                    bucket.push(updater);
+                                }
+
+                                for id in order {
+                                    if let Some(grouped_updaters) = grouped.remove(&id) {
+                                        store.update_by_id(&id, move |record| {
+                                            for updater in &grouped_updaters {
+                                                updater(record);
+                                            }
+                                        });
+                                    }
                                 }
                             }
+                        })
+                        .await
+                        {
+                            error!("Traffic update task panicked: {}", e);
                         }
                         debug!("Processed {} traffic updates", update_count);
                     }

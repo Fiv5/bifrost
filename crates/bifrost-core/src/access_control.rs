@@ -143,6 +143,7 @@ pub struct ClientAccessControl {
     pending_authorization: RwLock<Vec<(IpAddr, u64, u32)>>,
     event_sender: broadcast::Sender<PendingAuthEvent>,
     generation: AtomicU64,
+    local_subnets: RwLock<Vec<IpNet>>,
 }
 
 impl ClientAccessControl {
@@ -173,6 +174,7 @@ impl ClientAccessControl {
             pending_authorization: RwLock::new(Vec::new()),
             event_sender,
             generation: AtomicU64::new(1),
+            local_subnets: RwLock::new(Vec::new()),
         }
     }
 
@@ -198,6 +200,7 @@ impl ClientAccessControl {
             pending_authorization: RwLock::new(Vec::new()),
             event_sender,
             generation: AtomicU64::new(1),
+            local_subnets: RwLock::new(Vec::new()),
         }
     }
 
@@ -306,6 +309,18 @@ impl ClientAccessControl {
     }
 
     pub fn is_private_network(&self, ip: &IpAddr) -> bool {
+        if self.is_in_local_subnet(ip) {
+            return true;
+        }
+        Self::is_private_range(ip)
+    }
+
+    fn is_in_local_subnet(&self, ip: &IpAddr) -> bool {
+        let subnets = self.local_subnets.read().unwrap();
+        subnets.iter().any(|subnet| subnet.contains(ip))
+    }
+
+    pub fn is_private_range(ip: &IpAddr) -> bool {
         match ip {
             IpAddr::V4(v4) => {
                 let octets = v4.octets();
@@ -313,12 +328,25 @@ impl ClientAccessControl {
                     || (octets[0] == 172 && (16..=31).contains(&octets[1]))
                     || (octets[0] == 192 && octets[1] == 168)
                     || (octets[0] == 169 && octets[1] == 254)
+                    || (octets[0] == 100 && (64..=127).contains(&octets[1]))
             }
             IpAddr::V6(v6) => {
                 let segments = v6.segments();
                 (segments[0] & 0xfe00) == 0xfc00 || (segments[0] == 0xfe80)
             }
         }
+    }
+
+    pub fn set_local_subnets(&self, subnets: Vec<IpNet>) {
+        info!(
+            "Updating local subnets: {:?}",
+            subnets.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+        *self.local_subnets.write().unwrap() = subnets;
+    }
+
+    pub fn local_subnets(&self) -> Vec<IpNet> {
+        self.local_subnets.read().unwrap().clone()
     }
 
     pub fn is_in_whitelist(&self, ip: &IpAddr) -> bool {
@@ -811,8 +839,125 @@ mod tests {
         assert!(ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
         assert!(ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1))));
 
+        assert!(ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
+        assert!(ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(100, 86, 178, 33))));
+        assert!(ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255))));
+
         assert!(!ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(!ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1))));
+        assert!(!ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255))));
+        assert!(!ac.is_private_network(&IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1))));
+    }
+
+    #[test]
+    fn test_cgn_address_allowed_with_allow_lan() {
+        let config = AccessControlConfig {
+            mode: AccessMode::Interactive,
+            whitelist: vec![],
+            allow_lan: true,
+            userpass: None,
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let cgn_ip = IpAddr::V4(Ipv4Addr::new(100, 86, 178, 33));
+        assert_eq!(ac.check_access(&cgn_ip), AccessDecision::Allow);
+    }
+
+    #[test]
+    fn test_cgn_address_prompts_without_allow_lan() {
+        let config = AccessControlConfig {
+            mode: AccessMode::Interactive,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: None,
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let cgn_ip = IpAddr::V4(Ipv4Addr::new(100, 86, 178, 33));
+        assert_eq!(ac.check_access(&cgn_ip), AccessDecision::Prompt(cgn_ip));
+    }
+
+    #[test]
+    fn test_local_subnet_detection_allows_same_subnet() {
+        let config = AccessControlConfig {
+            mode: AccessMode::Interactive,
+            whitelist: vec![],
+            allow_lan: true,
+            userpass: None,
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let subnet: IpNet = "203.0.113.0/24".parse().unwrap();
+        ac.set_local_subnets(vec![subnet]);
+
+        let same_subnet_ip: IpAddr = "203.0.113.50".parse().unwrap();
+        assert!(ac.is_private_network(&same_subnet_ip));
+        assert_eq!(ac.check_access(&same_subnet_ip), AccessDecision::Allow);
+
+        let different_subnet_ip: IpAddr = "203.0.114.50".parse().unwrap();
+        assert!(!ac.is_private_network(&different_subnet_ip));
+        assert_eq!(
+            ac.check_access(&different_subnet_ip),
+            AccessDecision::Prompt(different_subnet_ip)
+        );
+    }
+
+    #[test]
+    fn test_local_subnet_detection_any_public_ip_in_same_subnet() {
+        let config = AccessControlConfig {
+            mode: AccessMode::Interactive,
+            whitelist: vec![],
+            allow_lan: true,
+            userpass: None,
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let subnet: IpNet = "100.86.0.0/16".parse().unwrap();
+        ac.set_local_subnets(vec![subnet]);
+
+        let same_subnet_ip: IpAddr = "100.86.178.33".parse().unwrap();
+        assert!(ac.is_private_network(&same_subnet_ip));
+        assert_eq!(ac.check_access(&same_subnet_ip), AccessDecision::Allow);
+
+        let different_subnet_ip: IpAddr = "100.87.0.1".parse().unwrap();
+        assert!(!ac.is_in_local_subnet(&different_subnet_ip));
+    }
+
+    #[test]
+    fn test_subnet_hot_update_changes_access_decision() {
+        let config = AccessControlConfig {
+            mode: AccessMode::Interactive,
+            whitelist: vec![],
+            allow_lan: true,
+            userpass: None,
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let target_ip: IpAddr = "172.20.10.5".parse().unwrap();
+        assert_eq!(ac.check_access(&target_ip), AccessDecision::Allow);
+
+        let target_ip: IpAddr = "203.0.113.50".parse().unwrap();
+        assert_eq!(
+            ac.check_access(&target_ip),
+            AccessDecision::Prompt(target_ip)
+        );
+
+        let subnet: IpNet = "203.0.113.0/24".parse().unwrap();
+        ac.set_local_subnets(vec![subnet]);
+        assert_eq!(ac.check_access(&target_ip), AccessDecision::Allow);
+
+        ac.set_local_subnets(vec![]);
+        assert_eq!(
+            ac.check_access(&target_ip),
+            AccessDecision::Prompt(target_ip)
+        );
+
+        let subnet_a: IpNet = "10.0.0.0/8".parse().unwrap();
+        let subnet_b: IpNet = "203.0.113.0/24".parse().unwrap();
+        ac.set_local_subnets(vec![subnet_a, subnet_b]);
+        assert_eq!(ac.check_access(&target_ip), AccessDecision::Allow);
+        let ip_in_a: IpAddr = "10.1.2.3".parse().unwrap();
+        assert_eq!(ac.check_access(&ip_in_a), AccessDecision::Allow);
     }
 
     #[test]
