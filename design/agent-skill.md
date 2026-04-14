@@ -7,7 +7,9 @@
 目标语义：
 
 - 每次安装都是覆盖式安装（overwrite），确保用户始终获取最新版本的技能文件
-- 支持 4 个目标工具：Claude Code、Codex、Trae、Cursor
+- 支持专用目录与通用 Agent Skills 目录的混合安装：
+  - 专用目录：Claude Code、Trae、Trae CN、Cursor、GitHub Copilot
+  - 通用目录：`.agents/skills`，用于兼容 Codex 以及更多遵循 Agent Skills 标准的运行时
 - 默认安装到全部工具，支持通过 `--tool`（`-t`）参数选择单个工具
 - 支持通过 `--dir`（`-d`）参数自定义安装目录，覆盖默认路径
 - 支持 `-y` 跳过安装确认提示，适用于脚本/自动化场景
@@ -28,14 +30,20 @@ https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/SKILL.md
 
 所有工具统一使用 `skills/bifrost/SKILL.md` 目录结构，遵循 Standard Agent Skills Format 规范：
 
-| 工具名        | 标识         | 全局安装路径                            | 项目级安装路径（--cwd）                 |
+| 工具名 | 标识 | 全局安装路径 | 项目级安装路径（--cwd） |
 | ---------- | ---------- | -------------------------------- | ------------------------------- |
-| Claude Code | claude     | `~/.claude/skills/bifrost/SKILL.md` | `./.claude/skills/bifrost/SKILL.md` |
-| Codex       | codex      | `~/.codex/skills/bifrost/SKILL.md`  | `./.codex/skills/bifrost/SKILL.md`  |
-| Trae        | trae       | `~/.trae/skills/bifrost/SKILL.md` + `~/.trae-cn/skills/bifrost/SKILL.md` | `./.trae/skills/bifrost/SKILL.md` |
-| Cursor      | cursor     | `~/.cursor/skills/bifrost/SKILL.md` | `./.cursor/skills/bifrost/SKILL.md` |
+| Claude Code | `claude-code`, `claude` | `~/.claude/skills/bifrost/SKILL.md` | `./.claude/skills/bifrost/SKILL.md` |
+| Codex / 通用 Agent Skills | `codex`, `openai-codex`, `universal` | `~/.codex/skills/bifrost/SKILL.md` + `~/.agents/skills/bifrost/SKILL.md` | `./.codex/skills/bifrost/SKILL.md` + `./.agents/skills/bifrost/SKILL.md` |
+| Trae | `trae` | `~/.trae/skills/bifrost/SKILL.md` + `~/.trae-cn/skills/bifrost/SKILL.md` | `./.trae/skills/bifrost/SKILL.md` |
+| Cursor | `cursor` | `~/.cursor/skills/bifrost/SKILL.md` | `./.cursor/skills/bifrost/SKILL.md` |
+| GitHub Copilot | `github-copilot`, `copilot` | `~/.copilot/skills/bifrost/SKILL.md` | `./.github/skills/bifrost/SKILL.md` |
 
-Trae 在全局模式下同时安装到 `.trae` 和 `.trae-cn` 两个目录（适配国内外版本），项目级安装仅安装到 `.trae`。
+设计约束：
+
+- Trae 在全局模式下同时安装到 `.trae` 和 `.trae-cn` 两个目录（适配国内外版本），项目级安装仅安装到 `.trae`
+- Codex 保留历史兼容路径 `.codex/skills`，同时补充标准通用目录 `.agents/skills`
+- GitHub Copilot 增加专用目录支持，项目级目录使用 `.github/skills`
+- `all` 模式默认包含以上全部目标，以便在一条命令里覆盖专用 agent 和更多标准兼容 agent
 
 SKILL.md 源文件自带标准 YAML frontmatter（`name` + `description`），下载后直接写入，不做任何额外处理。
 
@@ -51,18 +59,18 @@ bifrost install-skill [OPTIONS]
 
 参数说明：
 
-- `--tool`（`-t`）：指定安装目标工具，可选值为 `claude`、`codex`、`trae`、`cursor`、`all`，默认为 `all`
+- `--tool`（`-t`）：指定安装目标工具，可选值为 `claude-code`、`codex`、`trae`、`cursor`、`github-copilot`、`universal`、`all`，默认为 `all`
 - `--dir`（`-d`）：自定义安装目录，覆盖工具的默认安装路径。指定后文件名保持不变，仅替换父目录
 - `-y`：跳过确认提示，直接执行安装
 
 ### 四、安装流程
 
-1. 解析命令行参数，确定目标工具列表
+1. 解析命令行参数，确定目标工具列表；其中 `all` 会展开为全部专用目标 + 通用目录目标
 2. 从远端下载 SKILL.md 内容
 3. 若未指定 `-y`，展示将要安装的工具与目标路径，等待用户确认
 4. 遍历目标工具列表，逐个执行安装：
    - 创建目标路径的父目录（若不存在）
-   - 根据工具类型处理内容（直接写入或注入 frontmatter）
+   - 一个工具可映射到多个目录（例如 Trae、Codex）
    - 写入目标文件（覆盖已有文件）
 5. 输出安装结果，包含成功/失败的工具及路径
 
@@ -84,7 +92,7 @@ bifrost install-skill [OPTIONS]
 
 未知工具名称：
 
-- `--tool` 传入不支持的工具名时，提示可选值列表
+- `--tool` 传入不支持的工具名时，提示可选值列表，并包含 `github-copilot` 与 `universal`
 
 ### 六、终端输出
 
@@ -108,13 +116,15 @@ bifrost install-skill [OPTIONS]
 
 新增 `bifrost-e2e` 覆盖以下场景：
 
-1. 安装到临时目录验证文件正确写入：使用 `--dir` 指定临时目录，验证各工具文件内容正确
+1. 安装到临时目录验证文件正确写入：使用 `--dir` 指定临时目录，验证新增工具仍能写入正确文件
 2. 覆盖安装验证旧文件被替换：先写入旧内容，再执行安装，验证文件内容更新为最新版本
 3. frontmatter 验证：安装后检查文件是否包含标准 YAML frontmatter（`name` 和 `description` 字段），确保兼容所有工具的 skill 自动发现机制
 4. 未知工具名称的错误处理：传入无效的 `--tool` 参数，验证 CLI 返回正确错误信息
-5. 全部工具安装验证：不指定 `--tool`，验证所有工具均写入文件
-6. `--cwd` 项目级安装验证：验证文件写入到当前目录下的 `.<tool>/skills/bifrost/SKILL.md`
+5. 全部工具安装验证：不指定 `--tool`，验证 `all` 模式会覆盖 `.claude`、`.codex`、`.agents`、`.trae`、`.github` 等目录
+6. `--cwd` 项目级安装验证：验证文件写入到当前目录下的 `.<tool>/skills/bifrost/SKILL.md`，并覆盖 `.agents` 与 `.github`
 7. `--dir` 和 `--cwd` 互斥验证：同时传入两个参数时返回互斥错误
+8. GitHub Copilot 验证：`-t github-copilot` 时安装到 Copilot 专用目录
+9. Universal 验证：`-t universal` 时仅安装到 `.agents/skills/bifrost/SKILL.md`
 
 ## 校验要求
 
@@ -124,5 +134,6 @@ bifrost install-skill [OPTIONS]
 
 ## 文档更新要求
 
-- SKILL.md 已更新，新增第 13 节 install-skill 文档
-- README.md 如涉及 CLI 命令列表需同步更新
+- `docs/agent-skill.md` 同步更新支持的 agent 与路径说明
+- `human_tests/cli-import-export.md` 补充 install-skill 更多 agent 兼容回归用例
+- `human_tests/readme.md` 索引同步更新测试用例数量

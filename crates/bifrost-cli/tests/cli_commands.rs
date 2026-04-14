@@ -516,8 +516,11 @@ fn completions_install_skill_tool_values() {
     let completions = get_zsh_completions();
     assert!(
         completions.contains("claude-code")
+            && completions.contains("codex")
             && completions.contains("cursor")
-            && completions.contains("trae"),
+            && completions.contains("trae")
+            && completions.contains("github-copilot")
+            && completions.contains("universal"),
         "completions should include install-skill tool values"
     );
 }
@@ -710,6 +713,14 @@ fn install_skill_options_parse() {
     assert!(
         help.contains("--yes"),
         "install-skill should have --yes option"
+    );
+    assert!(
+        help.contains("github-copilot"),
+        "install-skill help should include github-copilot target"
+    );
+    assert!(
+        help.contains("universal"),
+        "install-skill help should include universal target"
     );
 }
 

@@ -1,6 +1,6 @@
 # Agent Skill 安装说明
 
-Bifrost 提供 `SKILL.md` 技能文件，可以让 AI 编程助手（Claude Code、Codex、Trae、Cursor 等）自动掌握 bifrost CLI 的完整操作能力。
+Bifrost 提供 `SKILL.md` 技能文件，可以让 AI 编程助手（Claude Code、Codex、Trae、Cursor、GitHub Copilot 等）自动掌握 bifrost CLI 的完整操作能力；同时也兼容更多遵循通用 Agent Skills 目录约定的运行时。
 
 ## 快速安装（推荐）
 
@@ -16,9 +16,11 @@ bifrost install-skill -y
 
 ```bash
 bifrost install-skill -t claude-code -y   # 仅 Claude Code
-bifrost install-skill -t codex -y         # 仅 Codex
+bifrost install-skill -t codex -y         # Codex + 通用 .agents/skills 目录
 bifrost install-skill -t trae -y          # 仅 Trae
 bifrost install-skill -t cursor -y        # 仅 Cursor
+bifrost install-skill -t github-copilot -y # 仅 GitHub Copilot
+bifrost install-skill -t universal -y     # 仅通用 Agent Skills 目录
 ```
 
 ### 安装到当前项目目录
@@ -41,11 +43,16 @@ bifrost install-skill -d /custom/path -y
 | 工具 | 别名 | 全局安装路径 | 项目级安装路径（--cwd） |
 | --- | --- | --- | --- |
 | Claude Code | `claude-code`, `claude` | `~/.claude/skills/bifrost/SKILL.md` | `./.claude/skills/bifrost/SKILL.md` |
-| Codex | `codex`, `openai-codex` | `~/.codex/skills/bifrost/SKILL.md` | `./.codex/skills/bifrost/SKILL.md` |
+| Codex | `codex`, `openai-codex` | `~/.codex/skills/bifrost/SKILL.md` + `~/.agents/skills/bifrost/SKILL.md` | `./.codex/skills/bifrost/SKILL.md` + `./.agents/skills/bifrost/SKILL.md` |
 | Trae | `trae` | `~/.trae/skills/bifrost/SKILL.md` + `~/.trae-cn/skills/bifrost/SKILL.md` | `./.trae/skills/bifrost/SKILL.md` |
 | Cursor | `cursor` | `~/.cursor/skills/bifrost/SKILL.md` | `./.cursor/skills/bifrost/SKILL.md` |
+| GitHub Copilot | `github-copilot`, `copilot` | `~/.copilot/skills/bifrost/SKILL.md` | `./.github/skills/bifrost/SKILL.md` |
+| Universal Agent Skills | `universal` | `~/.agents/skills/bifrost/SKILL.md` | `./.agents/skills/bifrost/SKILL.md` |
 
-> **注意**：Trae 在全局模式下会同时安装到 `.trae` 和 `.trae-cn` 两个目录（适配国内外版本），项目级安装（`--cwd`）仅安装到 `.trae`。
+> **注意**：
+> - Trae 在全局模式下会同时安装到 `.trae` 和 `.trae-cn` 两个目录（适配国内外版本），项目级安装（`--cwd`）仅安装到 `.trae`
+> - `codex` 目标会保留历史 `.codex/skills` 路径，同时补充标准 `.agents/skills` 目录，方便兼容更多 agent
+> - `universal` 目标仅安装到 `.agents/skills`，适合遵循通用 Agent Skills 规范的运行时
 
 安装的文件始终是从远端下载的原始 SKILL.md 内容（含标准 YAML frontmatter），不做任何额外包装或修改。SKILL.md 源文件自带 `name` 和 `description` frontmatter 字段，兼容所有工具的 skill 自动发现机制。
 
@@ -53,7 +60,7 @@ bifrost install-skill -d /custom/path -y
 
 | 参数 | 说明 |
 | --- | --- |
-| `-t, --tool <TOOL>` | 目标工具：`claude-code`、`codex`、`trae`、`cursor`、`all`（默认 `all`） |
+| `-t, --tool <TOOL>` | 目标工具：`claude-code`、`codex`、`trae`、`cursor`、`github-copilot`、`universal`、`all`（默认 `all`） |
 | `-d, --dir <PATH>` | 自定义安装目录（覆盖默认路径，与 `--cwd` 互斥） |
 | `--cwd` | 安装到当前目录（项目级别，与 `--dir` 互斥） |
 | `-y, --yes` | 跳过确认提示 |
@@ -79,6 +86,7 @@ mkdir -p ~/.claude/skills/bifrost && cp ./SKILL.md ~/.claude/skills/bifrost/SKIL
 
 # Codex
 mkdir -p ~/.codex/skills/bifrost && cp ./SKILL.md ~/.codex/skills/bifrost/SKILL.md
+mkdir -p ~/.agents/skills/bifrost && cp ./SKILL.md ~/.agents/skills/bifrost/SKILL.md
 
 # Trae (国际版 + 国内版)
 mkdir -p ~/.trae/skills/bifrost && cp ./SKILL.md ~/.trae/skills/bifrost/SKILL.md
@@ -86,6 +94,9 @@ mkdir -p ~/.trae-cn/skills/bifrost && cp ./SKILL.md ~/.trae-cn/skills/bifrost/SK
 
 # Cursor
 mkdir -p ~/.cursor/skills/bifrost && cp ./SKILL.md ~/.cursor/skills/bifrost/SKILL.md
+
+# GitHub Copilot
+mkdir -p ~/.copilot/skills/bifrost && cp ./SKILL.md ~/.copilot/skills/bifrost/SKILL.md
 ```
 
 ## 安装后验证

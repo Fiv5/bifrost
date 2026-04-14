@@ -780,10 +780,45 @@ rm -rf /tmp/bifrost-test-logs
 
 ---
 
+### TC-CSA-31：daemon 模式继承 --log-level 到文件日志
+
+**操作步骤**：
+1. 清理旧测试数据并创建独立日志目录：
+   ```bash
+   export TEST_DIR="$PWD/.bifrost-test-daemon-log"
+   rm -rf "$TEST_DIR"
+   mkdir -p "$TEST_DIR/logs"
+   ```
+2. 以 daemon 模式启动服务，并显式指定 `debug` 日志级别：
+   ```bash
+   BIFROST_DATA_DIR="$TEST_DIR" cargo run --bin bifrost -- -l debug --log-dir "$TEST_DIR/logs" start -p 8801 --unsafe-ssl --daemon
+   ```
+3. 等待服务启动后，通过代理发起一个请求，触发运行期日志：
+   ```bash
+   curl -x http://127.0.0.1:8801 http://httpbin.org/get
+   ```
+4. 检查 daemon 日志文件内容：
+   ```bash
+   grep -n "DEBUG" "$TEST_DIR/logs/bifrost.log" || grep -n "DEBUG" "$TEST_DIR/logs"/bifrost*.log
+   ```
+5. 停止测试进程：
+   ```bash
+   BIFROST_DATA_DIR="$TEST_DIR" cargo run --bin bifrost -- stop
+   ```
+
+**预期结果**：
+- daemon 服务正常启动，监听 `127.0.0.1:8801`
+- 步骤 3 的代理请求正常返回
+- 步骤 4 的日志文件中存在 `DEBUG` 级别日志，说明 daemon 子进程继承了 CLI 传入的 `--log-level debug`
+- 未显式设置 `RUST_LOG` 时，不会再退回为硬编码 `info`
+
+---
+
 ## 清理
 
 测试完成后清理临时数据：
 ```bash
 rm -rf .bifrost-test
 rm -rf /tmp/bifrost-test-logs
+rm -rf .bifrost-test-daemon-log
 ```

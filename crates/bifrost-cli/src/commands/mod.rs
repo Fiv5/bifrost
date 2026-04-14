@@ -21,6 +21,8 @@ mod upgrade;
 mod value;
 mod whitelist;
 
+use serde_json::Value;
+
 pub use admin::*;
 pub use ca::*;
 pub use config::handle_config_command;
@@ -52,18 +54,98 @@ pub fn handle_version_check(host: &str, port: u16) -> bifrost_core::Result<()> {
         .version_check()
         .map_err(bifrost_core::BifrostError::Config)?;
 
-    if let Some(current) = info.get("current").and_then(|v| v.as_str()) {
-        println!("Current version: {}", current);
+    for line in format_version_check_lines(&info) {
+        println!("{}", line);
     }
-    if let Some(latest) = info.get("latest").and_then(|v| v.as_str()) {
-        println!("Latest version: {}", latest);
-    }
-    if let Some(update) = info.get("update_available").and_then(|v| v.as_bool()) {
-        if update {
-            println!("Update available! Run 'bifrost upgrade' to update.");
-        } else {
-            println!("You are running the latest version.");
-        }
-    }
+
     Ok(())
+}
+
+fn format_version_check_lines(info: &Value) -> Vec<String> {
+    let current = info.get("current_version").and_then(|v| v.as_str());
+    let latest = info.get("latest_version").and_then(|v| v.as_str());
+    let has_update = info.get("has_update").and_then(|v| v.as_bool());
+    let mut lines = Vec::new();
+
+    if let Some(current) = current {
+        lines.push(format!("Current version: {}", current));
+    }
+
+    if let Some(latest) = latest {
+        lines.push(format!("Latest version: {}", latest));
+    }
+
+    match (has_update, latest) {
+        (Some(true), Some(_)) => {
+            lines.push("Update available! Run 'bifrost upgrade' to update.".to_string())
+        }
+        (Some(false), Some(_)) => lines.push("You are running the latest version.".to_string()),
+        (_, None) => lines.push(
+            "Could not determine the latest version. Check your network connection and try again."
+                .to_string(),
+        ),
+        _ => {}
+    }
+
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_version_check_lines;
+    use serde_json::json;
+
+    #[test]
+    fn version_check_formats_update_available_response() {
+        let lines = format_version_check_lines(&json!({
+            "current_version": "1.0.0",
+            "latest_version": "1.1.0",
+            "has_update": true,
+        }));
+
+        assert_eq!(
+            lines,
+            vec![
+                "Current version: 1.0.0".to_string(),
+                "Latest version: 1.1.0".to_string(),
+                "Update available! Run 'bifrost upgrade' to update.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn version_check_formats_latest_response() {
+        let lines = format_version_check_lines(&json!({
+            "current_version": "1.1.0",
+            "latest_version": "1.1.0",
+            "has_update": false,
+        }));
+
+        assert_eq!(
+            lines,
+            vec![
+                "Current version: 1.1.0".to_string(),
+                "Latest version: 1.1.0".to_string(),
+                "You are running the latest version.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn version_check_formats_missing_latest_version_response() {
+        let lines = format_version_check_lines(&json!({
+            "current_version": "1.1.0",
+            "latest_version": null,
+            "has_update": false,
+        }));
+
+        assert_eq!(
+            lines,
+            vec![
+                "Current version: 1.1.0".to_string(),
+                "Could not determine the latest version. Check your network connection and try again."
+                    .to_string(),
+            ]
+        );
+    }
 }
