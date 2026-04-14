@@ -98,6 +98,19 @@ preferred IP 的地址卡片上展示绿色 "Recommended" 标签。
                           (降级路径：覆盖无法获取 netmask 的场景)
 ```
 
+### 子网信息周期刷新
+
+启动时通过 `get_local_subnets()` 获取本机子网快照并设置到 `access_control` 中。服务运行过程中，如果本地网络环境发生变化（VPN 连接/断开、WiFi 切换、网卡 IP 变更等），子网快照会过时，导致访问控制判定和 WebUI IP 列表展示可能不准确。
+
+为此，在 `start_push_tasks` 中添加了子网周期刷新后台任务：
+
+- **刷新周期**：每 30 秒检测一次
+- **变更检测**：对比当前子网快照与最新 `get_local_subnets()` 结果，仅在发生变化时更新
+- **热更新**：通过 `RwLock<Vec<IpNet>>` 实现运行时原子替换，对正在处理的请求无影响
+- **WebUI 实时推送**：检测到子网变化后，自动广播 `proxy_address` 和 `cert_info` 两个 settings scope，已连接的 WebUI 客户端会立即收到最新的 IP 列表和证书下载地址，无需手动刷新页面
+- **日志记录**：子网变化时输出 info 级别日志，包含 old/new 子网列表
+- **自动覆盖**：由于在 `start_push_tasks` 中实现，rebind 等重启路径也自动获得刷新能力
+
 ## 测试方案
 
 ### 单元测试
@@ -112,6 +125,7 @@ preferred IP 的地址卡片上展示绿色 "Recommended" 标签。
 - `test_cgn_address_prompts_without_allow_lan` — 验证 CGN IP 在 allow_lan=false 时触发 Prompt
 - `test_local_subnet_detection_allows_same_subnet` — 验证同子网的公网 IP 被视为局域网
 - `test_local_subnet_detection_any_public_ip_in_same_subnet` — 验证 CGN 子网精确匹配
+- `test_subnet_hot_update_changes_access_decision` — 验证运行时更新子网后访问决策实时变化
 
 ### E2E 测试
 - `admin_api_proxy_address_with_preferred_ip` — 验证 API 返回含 `is_preferred` 字段、preferred IP 排在首位

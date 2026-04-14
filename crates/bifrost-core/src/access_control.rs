@@ -924,6 +924,43 @@ mod tests {
     }
 
     #[test]
+    fn test_subnet_hot_update_changes_access_decision() {
+        let config = AccessControlConfig {
+            mode: AccessMode::Interactive,
+            whitelist: vec![],
+            allow_lan: true,
+            userpass: None,
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let target_ip: IpAddr = "172.20.10.5".parse().unwrap();
+        assert_eq!(ac.check_access(&target_ip), AccessDecision::Allow);
+
+        let target_ip: IpAddr = "203.0.113.50".parse().unwrap();
+        assert_eq!(
+            ac.check_access(&target_ip),
+            AccessDecision::Prompt(target_ip)
+        );
+
+        let subnet: IpNet = "203.0.113.0/24".parse().unwrap();
+        ac.set_local_subnets(vec![subnet]);
+        assert_eq!(ac.check_access(&target_ip), AccessDecision::Allow);
+
+        ac.set_local_subnets(vec![]);
+        assert_eq!(
+            ac.check_access(&target_ip),
+            AccessDecision::Prompt(target_ip)
+        );
+
+        let subnet_a: IpNet = "10.0.0.0/8".parse().unwrap();
+        let subnet_b: IpNet = "203.0.113.0/24".parse().unwrap();
+        ac.set_local_subnets(vec![subnet_a, subnet_b]);
+        assert_eq!(ac.check_access(&target_ip), AccessDecision::Allow);
+        let ip_in_a: IpAddr = "10.1.2.3".parse().unwrap();
+        assert_eq!(ac.check_access(&ip_in_a), AccessDecision::Allow);
+    }
+
+    #[test]
     fn test_local_only_mode() {
         let ac = ClientAccessControl::with_mode(AccessMode::LocalOnly);
 
