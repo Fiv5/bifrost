@@ -11,7 +11,7 @@
 | 文件 | 功能模块 | 测试用例数 | 说明 |
 |------|---------|-----------|------|
 | [cli-start-stop-status.md](./cli-start-stop-status.md) | CLI 服务管理 | 24 | start/stop/status 命令，含守护进程、自定义端口、TLS 选项、规则加载、SOCKS5、LAN 访问、代理认证等 |
-| [cli-start-advanced.md](./cli-start-advanced.md) | CLI Start 高级参数 | 30 | TLS 拦截域名/应用排除与白名单、系统代理、CLI 代理环境变量、访问控制模式、Badge 注入、证书检查跳过、日志配置 |
+| [cli-start-advanced.md](./cli-start-advanced.md) | CLI Start 高级参数 | 31 | TLS 拦截域名/应用排除与白名单、系统代理、CLI 代理环境变量、访问控制模式、Badge 注入、证书检查跳过、日志配置 |
 | [cli-rule-management.md](./cli-rule-management.md) | CLI 规则管理 | 45 | rule 子命令全覆盖：list/add/show/get/update/enable/disable/delete/rename/reorder/active/sync，含过滤器和 lineProps |
 | [cli-traffic-search.md](./cli-traffic-search.md) | CLI 流量与搜索 | 36 | traffic list/get/search/clear 命令，含多维度过滤器、搜索范围控制、交互式搜索 |
 | [cli-ca-cert.md](./cli-ca-cert.md) | CLI CA 证书管理 | 12 | ca generate/export/info/install 命令，含强制重新生成、指定路径导出、证书格式验证 |
@@ -21,8 +21,9 @@
 | [cli-config.md](./cli-config.md) | CLI 配置管理 | 22 | config show/get/set/add/remove/reset/clear-cache/disconnect/export/connections/memory |
 | [cli-system-proxy.md](./cli-system-proxy.md) | CLI 系统代理 | 10 | system-proxy status/enable/disable，含自定义 host/port/bypass |
 | [cli-group.md](./cli-group.md) | CLI Group 管理 | 14 | group list/show、group rule list/show/add/update/enable/disable/delete |
-| [cli-import-export.md](./cli-import-export.md) | CLI 导入导出与杂项 | 22 | export/import、metrics、sync、version-check、upgrade、completions、install-skill |
+| [cli-import-export.md](./cli-import-export.md) | CLI 导入导出与杂项 | 22 | export/import、metrics、sync、version-check、upgrade、completions、install-skill，含 version-check 空输出回归验证 |
 | [port-conflict-restart.md](./port-conflict-restart.md) | 端口冲突检测与自动重启 | 5 | 端口占用检测、进程信息显示、交互式终止确认、--yes 自动确认、PID 检测兼容性 |
+| [cli-log-output-default.md](./cli-log-output-default.md) | CLI 日志输出默认行为 | 6 | --log-output 默认值修复回归：非 start 命令不写文件、start 前台不写文件、daemon 写文件、显式指定覆盖 |
 
 ### Web UI 测试
 
@@ -84,7 +85,7 @@
 
 ---
 
-**总计：50 个测试文件，1014 个测试用例**
+**总计：51 个测试文件，1021 个测试用例**
 
 ## 工作流程
 

@@ -748,6 +748,7 @@ pub fn run_start(
                 config_manager,
                 log_dir.clone(),
                 log_retention_days,
+                log_level,
             )?;
         }
         #[cfg(not(unix))]
@@ -1519,6 +1520,7 @@ pub fn run_daemon(
     config_manager: ConfigManager,
     log_dir: PathBuf,
     log_retention_days: u32,
+    log_level: &str,
 ) -> bifrost_core::Result<()> {
     use nix::unistd::{chdir, dup2, fork, setsid, ForkResult};
     use std::os::unix::io::AsRawFd;
@@ -1589,7 +1591,9 @@ pub fn run_daemon(
             let _ = dup2(log_file.as_raw_fd(), 1);
             let _ = dup2(err_file.as_raw_fd(), 2);
 
-            if let Err(e) = bifrost_core::reinit_logging_for_daemon(&log_dir, log_retention_days) {
+            if let Err(e) =
+                bifrost_core::reinit_logging_for_daemon(&log_dir, log_retention_days, log_level)
+            {
                 eprintln!("Warning: Failed to initialize logging for daemon: {}", e);
             }
 

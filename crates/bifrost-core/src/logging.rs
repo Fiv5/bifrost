@@ -371,7 +371,11 @@ pub fn init_logging_with_config(config: &LogConfig) -> Result<LogGuard> {
     })
 }
 
-pub fn reinit_logging_for_daemon(log_dir: &std::path::Path, retention_days: u32) -> Result<()> {
+pub fn reinit_logging_for_daemon(
+    log_dir: &std::path::Path,
+    retention_days: u32,
+    level: &str,
+) -> Result<()> {
     std::fs::create_dir_all(log_dir).map_err(|e| {
         BifrostError::Config(format!(
             "Failed to create log directory '{}': {}",
@@ -380,7 +384,7 @@ pub fn reinit_logging_for_daemon(log_dir: &std::path::Path, retention_days: u32)
         ))
     })?;
 
-    let filter = build_env_filter("info")?;
+    let filter = build_env_filter(level)?;
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix("bifrost")

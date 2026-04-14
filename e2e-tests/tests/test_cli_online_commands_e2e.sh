@@ -989,10 +989,10 @@ test_version_check_verify() {
 
     if echo "$result" | grep -qi "panic"; then
         fail "version-check panic: $result"
-    elif echo "$result" | grep -qi "version\|latest\|current\|up.to.date\|upgrade\|available\|error\|timeout\|network"; then
-        pass "version-check 返回了版本信息或网络状态"
     elif [[ -z "$result" ]]; then
-        pass "version-check 执行成功 (空输出表示已是最新或无网络)"
+        fail "version-check 不应为空输出"
+    elif echo "$result" | grep -qi "version\|latest\|current\|up.to.date\|upgrade\|available\|error\|timeout\|network\|could not determine"; then
+        pass "version-check 返回了版本信息或网络状态"
     else
         fail "version-check 返回了异常内容: $result"
     fi

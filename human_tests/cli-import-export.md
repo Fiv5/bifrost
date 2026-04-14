@@ -248,8 +248,11 @@
    ```
 
 **预期结果**：
-- 如果当前已是最新版本，输出包含 `You're already on the latest version` 或类似信息
-- 如果有新版本可用，输出包含新版本号、更新说明，以及 `To upgrade, run: bifrost upgrade` 提示
+- 命令标准输出不为空，这是本次回归修复的核心校验点
+- 输出至少包含 `Current version:` 当前版本信息
+- 如果当前已是最新版本，输出包含 `You are running the latest version.` 或等价提示
+- 如果有新版本可用，输出包含最新版本号，以及 `Run 'bifrost upgrade' to update.` 提示
+- 如果暂时无法获取最新版本，输出包含 `Could not determine the latest version` 或等价网络提示
 - 命令退出码为 0
 
 ---

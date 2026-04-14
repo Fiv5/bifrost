@@ -48,6 +48,14 @@
   - `Requested (applying asynchronously)`
 - 端口重绑时仍只在“system proxy 已成功启用”的前提下尝试同步更新；该路径不是常规启动热路径
 
+### 2.2 Daemon 日志级别继承 CLI 参数
+
+- `main.rs` 在 `start --daemon` 模式下不再提前初始化 tracing，避免父进程持有前台日志输出状态
+- daemon 子进程在 `fork` 后调用 `reinit_logging_for_daemon(...)` 时，会显式继承 CLI 传入的 `--log-level`
+- 若设置 `RUST_LOG`，仍保持 `RUST_LOG` 高于 `--log-level` 的优先级
+- 未显式传参时，默认值仍为 `info`，与 CLI 参数默认行为一致
+- 这样 daemon 模式下的 `bifrost_cli::startup`、规则加载和运行期 tracing 日志不再被硬编码为 `info`
+
 ### 3. Frame metadata 落入 SQLite 独立表
 
 - `FrameStore metadata` 不再存储/读取 `frames/*.meta.json`
@@ -94,7 +102,8 @@ CREATE INDEX idx_frame_metadata_closed_updated
 1. 使用临时数据目录执行 `BIFROST_DATA_DIR=./.bifrost-test-<run-id> cargo run --bin bifrost -- start -p <PORT> --unsafe-ssl`
 2. 确认服务可以正常监听，且更新提示不会阻塞启动
 3. 使用 `RUST_LOG=info` 观察 `bifrost_cli::startup` 日志，确认能看到阶段耗时与总耗时
-4. 执行与启动链路相关的 E2E / 校验命令，确认无回归
+4. 使用 daemon 模式执行 `BIFROST_DATA_DIR=./.bifrost-test-<run-id> cargo run --bin bifrost -- -l debug start -p <PORT> --unsafe-ssl --daemon`，确认文件日志中出现 `DEBUG` 级别输出
+5. 执行与启动链路相关的 E2E / 校验命令，确认无回归
 
 ## 校验要求（含 rust-project-validate）
 
