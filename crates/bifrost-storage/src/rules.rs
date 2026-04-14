@@ -879,6 +879,38 @@ mod tests {
     }
 
     #[test]
+    fn test_load_all_skips_invalid_legacy_rule_file() {
+        let (temp_dir, storage) = setup();
+        storage
+            .save(&RuleFile::new("valid", "example.com host://127.0.0.1:3000"))
+            .unwrap();
+
+        let broken_legacy =
+            r#"{"content":"broken.example.com host://127.0.0.1:4000","enabled":true}"#;
+        fs::write(temp_dir.path().join("broken.json"), broken_legacy).unwrap();
+
+        let rules = storage.load_all().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "valid");
+    }
+
+    #[test]
+    fn test_list_summaries_skips_invalid_legacy_rule_file() {
+        let (temp_dir, storage) = setup();
+        storage
+            .save(&RuleFile::new("valid", "example.com host://127.0.0.1:3000"))
+            .unwrap();
+
+        let broken_legacy =
+            r#"{"content":"broken.example.com host://127.0.0.1:4000","enabled":true}"#;
+        fs::write(temp_dir.path().join("broken.json"), broken_legacy).unwrap();
+
+        let summaries = storage.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "valid");
+    }
+
+    #[test]
     fn test_synced_rule_becomes_modified_after_local_change() {
         let (_temp_dir, storage) = setup();
         let mut rule = RuleFile::new("demo", "example.com host://127.0.0.1:3000");
