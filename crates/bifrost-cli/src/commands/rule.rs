@@ -22,15 +22,14 @@ fn handle_rule_local(action: RuleCommands) -> bifrost_core::Result<()> {
 
     match action {
         RuleCommands::List => {
-            let rules = storage.list()?;
+            let rules = storage.list_summaries()?;
             if rules.is_empty() {
                 println!("No rules found.");
             } else {
                 println!("Rules ({}):", rules.len());
-                for name in rules {
-                    let rule = storage.load(&name)?;
+                for rule in rules {
                     let status = if rule.enabled { "enabled" } else { "disabled" };
-                    println!("  {} [{}]", name, status);
+                    println!("  {} [{}]", rule.name, status);
                 }
             }
         }
@@ -233,37 +232,38 @@ fn handle_rule_reorder(names: &[String]) -> bifrost_core::Result<()> {
 }
 
 #[derive(Debug, Deserialize)]
-struct ActiveRuleItem {
-    name: String,
-    rule_count: usize,
-    group_id: Option<String>,
-    group_name: Option<String>,
+pub(crate) struct ActiveRuleItem {
+    pub(crate) name: String,
+    pub(crate) rule_count: usize,
+    pub(crate) group_id: Option<String>,
+    pub(crate) group_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct VariableDefinition {
-    rule_name: String,
-    value_preview: String,
+pub(crate) struct VariableDefinition {
+    pub(crate) rule_name: String,
+    pub(crate) value_preview: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct VariableConflict {
-    variable_name: String,
-    definitions: Vec<VariableDefinition>,
+pub(crate) struct VariableConflict {
+    pub(crate) variable_name: String,
+    pub(crate) definitions: Vec<VariableDefinition>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ActiveSummaryResponse {
-    total: usize,
-    rules: Vec<ActiveRuleItem>,
+pub(crate) struct ActiveSummaryResponse {
+    pub(crate) total: usize,
+    pub(crate) rules: Vec<ActiveRuleItem>,
     #[serde(default)]
-    variable_conflicts: Vec<VariableConflict>,
+    pub(crate) variable_conflicts: Vec<VariableConflict>,
     #[serde(default)]
-    merged_content: String,
+    pub(crate) merged_content: String,
 }
 
-fn handle_rule_active() -> bifrost_core::Result<()> {
-    let port = crate::process::read_runtime_port().unwrap_or(9900);
+pub(crate) fn fetch_active_summary_from_api(
+    port: u16,
+) -> bifrost_core::Result<ActiveSummaryResponse> {
     let url = format!(
         "http://127.0.0.1:{}/_bifrost/api/rules/active-summary",
         port
@@ -275,7 +275,7 @@ fn handle_rule_active() -> bifrost_core::Result<()> {
         .call();
 
     let resp: ActiveSummaryResponse = match response {
-        Ok(r) => r.into_json().map_err(|e| {
+        Ok(r) => r.into_json::<ActiveSummaryResponse>().map_err(|e| {
             bifrost_core::BifrostError::Config(format!("Failed to parse response: {e}"))
         })?,
         Err(e) => {
@@ -285,17 +285,23 @@ fn handle_rule_active() -> bifrost_core::Result<()> {
         }
     };
 
-    println!("Active Rules Summary");
-    println!("====================");
-    println!();
+    Ok(resp)
+}
+
+pub(crate) fn format_active_summary_lines(resp: &ActiveSummaryResponse) -> Vec<String> {
+    let mut lines = vec![
+        "Active Rules Summary".to_string(),
+        "====================".to_string(),
+        String::new(),
+    ];
 
     if resp.total == 0 {
-        println!("No active rules.");
-        return Ok(());
+        lines.push("No active rules.".to_string());
+        return lines;
     }
 
-    println!("Total active: {} rule file(s)", resp.total);
-    println!();
+    lines.push(format!("Total active: {} rule file(s)", resp.total));
+    lines.push(String::new());
 
     let own_rules: Vec<_> = resp.rules.iter().filter(|r| r.group_id.is_none()).collect();
     let mut group_map: std::collections::BTreeMap<String, (String, Vec<&ActiveRuleItem>)> =
@@ -310,11 +316,11 @@ fn handle_rule_active() -> bifrost_core::Result<()> {
     }
 
     if !own_rules.is_empty() {
-        println!("My Rules ({}):", own_rules.len());
+        lines.push(format!("My Rules ({}):", own_rules.len()));
         for rule in &own_rules {
-            println!("  ⚡ {} ({} rules)", rule.name, rule.rule_count);
+            lines.push(format!("  ⚡ {} ({} rules)", rule.name, rule.rule_count));
         }
-        println!();
+        lines.push(String::new());
     }
 
     for (gid, (group_name, rules)) in &group_map {
@@ -323,33 +329,47 @@ fn handle_rule_active() -> bifrost_core::Result<()> {
         } else {
             gid.clone()
         };
-        println!("Group: {} ({} file(s)):", label, rules.len());
+        lines.push(format!("Group: {} ({} file(s)):", label, rules.len()));
         for rule in rules {
-            println!("  ⚡ {} ({} rules)", rule.name, rule.rule_count);
+            lines.push(format!("  ⚡ {} ({} rules)", rule.name, rule.rule_count));
         }
-        println!();
+        lines.push(String::new());
     }
 
     if !resp.variable_conflicts.is_empty() {
-        println!("⚠  Variable Conflicts ({}):", resp.variable_conflicts.len());
+        lines.push(format!(
+            "⚠  Variable Conflicts ({}):",
+            resp.variable_conflicts.len()
+        ));
         for conflict in &resp.variable_conflicts {
-            println!("  {{{}}}", conflict.variable_name);
+            lines.push(format!("  {{{}}}", conflict.variable_name));
             for def in &conflict.definitions {
-                println!("    - {}: {}", def.rule_name, def.value_preview);
+                lines.push(format!("    - {}: {}", def.rule_name, def.value_preview));
             }
         }
-        println!();
+        lines.push(String::new());
     }
 
-    println!("Merged Rules (in parsing order)");
-    println!("-------------------------------");
+    lines.push("Merged Rules (in parsing order)".to_string());
+    lines.push("-------------------------------".to_string());
     let content = resp.merged_content.trim();
     if content.is_empty() {
-        println!("(empty)");
+        lines.push("(empty)".to_string());
     } else {
-        println!("{}", content);
+        lines.push(content.to_string());
     }
-    println!();
+    lines.push(String::new());
+
+    lines
+}
+
+fn handle_rule_active() -> bifrost_core::Result<()> {
+    let port = crate::process::read_runtime_port().unwrap_or(9900);
+    let resp = fetch_active_summary_from_api(port)?;
+
+    for line in format_active_summary_lines(&resp) {
+        println!("{}", line);
+    }
 
     Ok(())
 }

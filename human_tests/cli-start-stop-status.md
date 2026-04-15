@@ -518,10 +518,47 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- stop
 
 ---
 
+### TC-CSS-25：status 在运行时追加展示活跃规则合并摘要
+
+**前置条件**：服务未运行
+
+**操作步骤**：
+1. 清理旧测试数据：
+   ```bash
+   rm -rf ./.bifrost-test
+   ```
+2. 创建并启用两条本地规则：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- rule add status-active-1 -c "status-active-1.example.com statusCode://200"
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- rule add status-active-2 -c "status-active-2.example.com reqHeaders://(X-Status-Test: 1)"
+   ```
+3. 启动服务：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 -d --unsafe-ssl
+   ```
+4. 执行状态命令：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- status
+   ```
+5. 停止服务后再次执行状态命令：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- stop
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- status
+   ```
+
+**预期结果**：
+- 步骤 4 输出包含 `Active Rules Summary`
+- 步骤 4 输出包含 `Merged Rules (in parsing order)`
+- 步骤 4 输出包含 `status-active-1.example.com statusCode://200`
+- 步骤 4 输出包含 `status-active-2.example.com reqHeaders://(X-Status-Test: 1)`
+- 步骤 5 的停止态 `status` 输出不包含 `Active Rules Summary`
+
+---
+
+
 ## 清理
 
 测试完成后清理临时数据和规则文件：
 ```bash
-rm -rf .bifrost-test
 rm -f /tmp/bifrost-test-rules.txt
 ```

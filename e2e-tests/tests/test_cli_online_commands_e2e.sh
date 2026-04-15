@@ -172,6 +172,24 @@ test_status() {
     else
         fail "status 未返回预期内容: $result"
     fi
+
+    if echo "$result" | grep -q "Active Rules Summary"; then
+        pass "status 追加展示活跃规则摘要"
+    else
+        fail "status 未展示活跃规则摘要: $result"
+    fi
+
+    if echo "$result" | grep -q "Merged Rules (in parsing order)"; then
+        pass "status 展示合并规则标题"
+    else
+        fail "status 未展示合并规则标题: $result"
+    fi
+
+    if echo "$result" | grep -q "e2e1.example.com statusCode://200"; then
+        pass "status 展示合并后的规则内容"
+    else
+        fail "status 未展示预期的合并规则内容: $result"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════
