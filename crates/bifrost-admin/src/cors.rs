@@ -6,6 +6,7 @@ pub fn is_allowed_origin(origin: &str) -> bool {
     let host = origin_lower
         .strip_prefix("http://")
         .or_else(|| origin_lower.strip_prefix("https://"))
+        .or_else(|| origin_lower.strip_prefix("tauri://"))
         .unwrap_or(&origin_lower);
 
     let host_without_port = if let Some(bracket_end) = host.find(']') {
@@ -79,6 +80,7 @@ mod tests {
         assert!(is_allowed_origin("https://tauri.localhost"));
         assert!(is_allowed_origin("http://bifrost.local"));
         assert!(is_allowed_origin("http://bifrost.local:8800"));
+        assert!(is_allowed_origin("tauri://localhost"));
     }
 
     #[test]

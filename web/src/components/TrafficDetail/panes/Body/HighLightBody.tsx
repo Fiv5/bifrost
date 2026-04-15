@@ -17,6 +17,7 @@ import {
   DEFAULT_SHOW_MAX_SIZE,
   shouldDisableJsonStructuredView,
 } from '../../helper/contentType';
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 hljs.registerLanguage('json', json);
 hljs.registerLanguage('xml', xml);
@@ -31,15 +32,6 @@ const formatJsonContent = (text: string): { formatted: string; isJson: boolean }
     return { formatted: JSON.stringify(parsed, null, 2), isJson: true };
   } catch {
     return { formatted: text, isJson: false };
-  }
-};
-
-const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
   }
 };
 

@@ -10,6 +10,7 @@ import {
 } from "@ant-design/icons";
 import type { TrafficRecord, TrafficSummary } from "../../../types";
 import { generateCurl } from "../../../utils/curl";
+import { copyToClipboard } from "../../../utils/clipboard";
 import { useTrafficStore } from "../../../stores/useTrafficStore";
 
 const { Text } = Typography;
@@ -190,7 +191,7 @@ const HeaderContent = memo(function HeaderContent({
   }, [url]);
 
   const handleCopyUrl = useCallback(() => {
-    navigator.clipboard.writeText(url);
+    copyToClipboard(url);
     message.success("URL copied");
   }, [url]);
 
@@ -199,7 +200,7 @@ const HeaderContent = memo(function HeaderContent({
       ...record,
       request_body: requestBody,
     });
-    navigator.clipboard.writeText(curl);
+    copyToClipboard(curl);
     message.success("cURL copied");
   }, [record, requestBody]);
 

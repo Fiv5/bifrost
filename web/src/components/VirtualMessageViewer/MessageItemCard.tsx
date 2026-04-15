@@ -14,6 +14,7 @@ import json from 'highlight.js/lib/languages/json';
 import '../../styles/hljs-github-theme.css';
 import type { MessageItem } from './types';
 import { highlightText } from './useMessageSearch';
+import { copyToClipboard } from '../../utils/clipboard';
 
 hljs.registerLanguage('json', json);
 
@@ -36,15 +37,6 @@ function highlightJson(text: string): string {
     return result.value;
   } catch {
     return text;
-  }
-}
-
-async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
   }
 }
 

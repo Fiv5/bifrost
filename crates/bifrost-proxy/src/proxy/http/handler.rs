@@ -2064,6 +2064,7 @@ pub async fn handle_http_request(
     };
 
     if inject_bifrost_badge {
+        let badge_rules_json = build_badge_rules_json(admin_state.as_deref());
         let final_res_content_type = get_content_type(&res_parts);
         if final_res_content_type.starts_with("text/html") {
             if let Some(content_encoding) = response_content_encoding(&res_parts) {
@@ -2073,8 +2074,10 @@ pub async fn handle_http_request(
                     max_decompress_output_bytes,
                 ) {
                     Ok(decompressed) => {
-                        let (injected_body, injected) =
-                            maybe_inject_bifrost_badge_html(Bytes::from(decompressed));
+                        let (injected_body, injected) = maybe_inject_bifrost_badge_html(
+                            Bytes::from(decompressed),
+                            &badge_rules_json,
+                        );
                         if injected {
                             match compress_body(injected_body.as_ref(), &content_encoding) {
                                 Ok(compressed) => {
@@ -2102,7 +2105,7 @@ pub async fn handle_http_request(
                 }
             } else {
                 let (injected_body, injected) =
-                    maybe_inject_bifrost_badge_html(final_res_body.clone());
+                    maybe_inject_bifrost_badge_html(final_res_body.clone(), &badge_rules_json);
                 if injected {
                     final_res_body = injected_body;
                 }
@@ -2909,6 +2912,13 @@ pub fn parse_and_record_sse_events(body: &[u8]) -> usize {
     }
 
     count
+}
+
+pub(crate) fn build_badge_rules_json(admin_state: Option<&AdminState>) -> String {
+    match admin_state {
+        Some(s) => s.badge_rules_json(),
+        None => r#"{"rules":[],"merged_content":"","admin_port":0}"#.to_string(),
+    }
 }
 
 #[cfg(test)]

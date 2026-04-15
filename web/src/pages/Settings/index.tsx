@@ -45,6 +45,7 @@ import {
   type SyncStatus,
 } from "../../api/sync";
 import { isConnectionIssueError } from "../../api/client";
+import { copyToClipboard } from "../../utils/clipboard";
 import { useSyncStore } from "../../stores/useSyncStore";
 import {
   getCertInfo,
@@ -748,7 +749,7 @@ export default function Settings() {
   const copyProxyConfig = () => {
     const config = `HTTP Proxy: 127.0.0.1:${overview?.server.port || 9900}
 HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
-    navigator.clipboard.writeText(config);
+    copyToClipboard(config);
     message.success("Proxy config copied to clipboard");
   };
 

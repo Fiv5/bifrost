@@ -117,6 +117,7 @@ pub struct AdminState {
     pub ip_tls_pending_manager: Option<Arc<IpTlsPendingManager>>,
     group_name_cache: parking_lot::Mutex<HashMap<String, String>>,
     group_cache_resolved: AtomicBool,
+    badge_rules_cache: parking_lot::RwLock<String>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -157,6 +158,9 @@ impl AdminState {
             ip_tls_pending_manager: None,
             group_name_cache: parking_lot::Mutex::new(HashMap::new()),
             group_cache_resolved: AtomicBool::new(false),
+            badge_rules_cache: parking_lot::RwLock::new(
+                r#"{"rules":[],"merged_content":""}"#.to_string(),
+            ),
         }
     }
 
@@ -925,6 +929,85 @@ impl AdminState {
             target: "bifrost_admin::state",
             "group name cache cleared"
         );
+    }
+
+    pub fn badge_rules_json(&self) -> String {
+        self.badge_rules_cache.read().clone()
+    }
+
+    pub fn refresh_badge_rules_cache(&self) {
+        let mut items = Vec::new();
+        let mut content_parts = Vec::new();
+
+        if let Ok(rules) = self.rules_storage.load_enabled() {
+            for rule in rules {
+                let rule_count = rule
+                    .content
+                    .lines()
+                    .filter(|l| {
+                        let t = l.trim();
+                        !t.is_empty() && !t.starts_with('#')
+                    })
+                    .count();
+                content_parts.push(rule.content.clone());
+                items.push(format!(
+                    r#"{{"name":{},"rule_count":{},"group_id":null,"group_name":null}}"#,
+                    serde_json::to_string(&rule.name).unwrap_or_else(|_| "\"\"".to_string()),
+                    rule_count,
+                ));
+            }
+        }
+
+        let base_dir = self.rules_storage.base_dir();
+        if let Ok(entries) = std::fs::read_dir(base_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                let group_name = {
+                    let cache = self.group_name_cache();
+                    cache
+                        .reverse_lookup(&dir_name)
+                        .unwrap_or_else(|| dir_name.clone())
+                };
+                if let Ok(sub_storage) = RulesStorage::with_dir(path) {
+                    if let Ok(sub_rules) = sub_storage.load_enabled() {
+                        for rule in sub_rules {
+                            let rule_count = rule
+                                .content
+                                .lines()
+                                .filter(|l| {
+                                    let t = l.trim();
+                                    !t.is_empty() && !t.starts_with('#')
+                                })
+                                .count();
+                            content_parts.push(rule.content.clone());
+                            items.push(format!(
+                                r#"{{"name":{},"rule_count":{},"group_id":{},"group_name":{}}}"#,
+                                serde_json::to_string(&rule.name)
+                                    .unwrap_or_else(|_| "\"\"".to_string()),
+                                rule_count,
+                                serde_json::to_string(&dir_name)
+                                    .unwrap_or_else(|_| "\"\"".to_string()),
+                                serde_json::to_string(&group_name)
+                                    .unwrap_or_else(|_| "\"\"".to_string()),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        let merged = content_parts.join("\n");
+        let json = format!(
+            r#"{{"rules":[{}],"merged_content":{},"admin_port":{}}}"#,
+            items.join(","),
+            serde_json::to_string(&merged).unwrap_or_else(|_| "\"\"".to_string()),
+            self.port(),
+        );
+        *self.badge_rules_cache.write() = json;
     }
 }
 

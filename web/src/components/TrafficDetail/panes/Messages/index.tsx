@@ -41,6 +41,7 @@ import {
   type MessageItem,
 } from "../../../VirtualMessageViewer";
 import { useTrafficStore } from "../../../../stores/useTrafficStore";
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 hljs.registerLanguage("json", json);
 hljs.registerLanguage("plaintext", plaintext);
@@ -367,15 +368,6 @@ const highlightContent = (text: string): string => {
     return result.value;
   } catch {
     return formatted;
-  }
-};
-
-const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
   }
 };
 

@@ -3,6 +3,7 @@ import { editor as MonacoEditor } from "monaco-editor";
 import { theme, Button, Tooltip, Space, message } from "antd";
 import { FormatPainterOutlined, CopyOutlined } from "@ant-design/icons";
 import { useThemeStore } from "../../../stores/useThemeStore";
+import { copyToClipboard } from "../../../utils/clipboard";
 
 interface CodeEditorProps {
   value: string;
@@ -150,7 +151,7 @@ export default function CodeEditor({
     if (!editorRef.current) return;
     const currentValue = editorRef.current.getValue();
     try {
-      await navigator.clipboard.writeText(currentValue);
+      await copyToClipboard(currentValue);
       message.success("Copied");
     } catch {
       message.error("Failed to copy");

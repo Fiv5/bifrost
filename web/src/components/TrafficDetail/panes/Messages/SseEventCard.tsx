@@ -10,6 +10,7 @@ import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
 import '../../../../styles/hljs-github-theme.css';
 import type { SSEEvent } from '../../../../types';
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 hljs.registerLanguage('json', json);
 
@@ -66,15 +67,6 @@ const highlightText = (text: string, search?: string): string => {
     idx = hit + lowerSearch.length;
   }
   return result;
-};
-
-const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
 };
 
 interface SseEventCardProps {

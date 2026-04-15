@@ -14,6 +14,7 @@ import {
 import { useValuesStore } from "../../../stores/useValuesStore";
 import { ImportBifrostButton } from "../../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../../hooks/useExportBifrost";
+import { copyToClipboard } from "../../../utils/clipboard";
 import styles from "./index.module.css";
 
 type ValueSortMode = "created_desc" | "updated_desc" | "name_asc";
@@ -154,7 +155,7 @@ export default function ValueList() {
 
   const handleCopy = async (name: string, value: string) => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyToClipboard(value);
       message.success(`Copied "${name}" to clipboard`);
     } catch {
       message.error("Failed to copy");

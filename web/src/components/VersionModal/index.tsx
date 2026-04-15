@@ -8,6 +8,7 @@ import {
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
 import { useMemo, useCallback } from "react";
+import { copyToClipboard } from "../../utils/clipboard";
 import { useVersionStore } from "../../stores/useVersionStore";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 
@@ -30,7 +31,7 @@ export default function VersionModal() {
 
   const handleCopyCommand = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText("bifrost upgrade");
+      await copyToClipboard("bifrost upgrade");
       message.success("Command copied to clipboard");
     } catch {
       message.error("Failed to copy command");

@@ -3008,6 +3008,7 @@ async fn handle_intercepted_request_with_protocol(
     );
 
     let final_body = if inject_bifrost_badge {
+        let badge_rules_json = super::handler::build_badge_rules_json(admin_state.as_deref());
         let final_res_content_type = res_parts
             .headers
             .get(hyper::header::CONTENT_TYPE)
@@ -3022,8 +3023,10 @@ async fn handle_intercepted_request_with_protocol(
                     10 * 1024 * 1024,
                 ) {
                     Ok(decompressed) => {
-                        let (injected_body, injected) =
-                            maybe_inject_bifrost_badge_html(Bytes::from(decompressed));
+                        let (injected_body, injected) = maybe_inject_bifrost_badge_html(
+                            Bytes::from(decompressed),
+                            &badge_rules_json,
+                        );
                         if injected {
                             match compress_body(injected_body.as_ref(), &content_encoding) {
                                 Ok(compressed) => Bytes::from(compressed),
@@ -3039,7 +3042,8 @@ async fn handle_intercepted_request_with_protocol(
                     Err(_) => final_body,
                 }
             } else {
-                let (injected_body, injected) = maybe_inject_bifrost_badge_html(final_body.clone());
+                let (injected_body, injected) =
+                    maybe_inject_bifrost_badge_html(final_body.clone(), &badge_rules_json);
                 if injected {
                     injected_body
                 } else {
