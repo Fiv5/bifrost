@@ -47,7 +47,7 @@ pub fn init_database(conn: &mut Connection) -> Result<(), InitError> {
         "
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
-        PRAGMA cache_size = 10000;
+        PRAGMA cache_size = 2000;
         PRAGMA temp_store = MEMORY;
         PRAGMA mmap_size = 268435456;
         PRAGMA foreign_keys = ON;

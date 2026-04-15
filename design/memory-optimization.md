@@ -25,6 +25,31 @@
 - SSE 解析缓冲的统一上限、parse_error 截断语义，仍需要以具体实现逐项核对，不能只沿用旧设计表述。
 - “启动期帧元数据加载按保留时间过滤”也不应在未逐项核实前写成全部完成。
 
+## SQLite cache_size 与连接池优化（2026-04-16）
+
+### 问题
+空闲状态（无搜索操作）RSS 达到 300MB。根因是 9 个 SQLite 连接的 `cache_size` PRAGMA 配置过大，理论上限合计 176MB 堆内存页面缓存，叠加 macOS malloc 40% 碎片率导致实际占用远超预期。
+
+### 优化措施
+
+| 连接 | 变更前 cache_size | 变更后 cache_size | 节省上限 |
+|------|-------------------|-------------------|----------|
+| traffic.db 写 | 10000 (~40MB) | 2000 (~8MB) | -32MB |
+| traffic.db 读 ×4→×2 | 5000×4 (~80MB) | 1000×2 (~8MB) | -72MB |
+| frame metadata 写 | 5000 (~20MB) | 1000 (~4MB) | -16MB |
+| frame metadata 读 | 2000 (~8MB) | 500 (~2MB) | -6MB |
+| replay.db 写 | 5000 (~20MB) | 1000 (~4MB) | -16MB |
+| replay.db 读 | 2000 (~8MB) | 500 (~2MB) | -6MB |
+| **合计** | **176MB** | **28MB** | **-148MB** |
+
+### 其他优化
+- `frame_store.metadata_cache` 从无界 `HashMap` 改为 `LruCache`（上限 1000 条），避免长时间运行后条目无限增长
+- traffic.db 读连接池从 4 降到 2，减少空闲连接的 cache 占用
+
+### 性能影响
+- cache_size 降低后，SQLite page cache miss 率会略微上升，但已有 mmap 层兜底（OS 级文件缓存），对用户无感知延迟
+- metadata_cache LRU 驱逐后自动回退到 SQLite 查询，延迟增加 ~0.1ms
+
 ## 结论
 
 - 当前项目已经有一套明确的 body 读取消峰措施。
