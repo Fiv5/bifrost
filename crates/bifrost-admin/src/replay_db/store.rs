@@ -49,7 +49,7 @@ impl ReplayDbStore {
 
         let read_conn = Connection::open(&db_path)?;
         read_conn.execute_batch(
-            "PRAGMA query_only = true; PRAGMA cache_size = 2000; PRAGMA mmap_size = 67108864;",
+            "PRAGMA query_only = true; PRAGMA cache_size = 500; PRAGMA mmap_size = 67108864;",
         )?;
 
         tracing::info!("[REPLAY_DB] SQLite replay store initialized");

@@ -28,7 +28,7 @@ const CLEANUP_TRIGGER_OVERFLOW_PERCENT: usize = 15;
 const CLEANUP_TRIGGER_OVERFLOW_MAX: usize = 2000;
 const CLEANUP_TARGET_PERCENT: usize = 80;
 const METRICS_CACHE_TTL: Duration = Duration::from_secs(5);
-const READ_POOL_SIZE: usize = 4;
+const READ_POOL_SIZE: usize = 2;
 
 struct ReadPool {
     conns: Vec<Mutex<Connection>>,
@@ -42,7 +42,7 @@ impl ReadPool {
             let conn = Connection::open(db_path)?;
             conn.execute_batch(
                 "PRAGMA query_only = true; \
-                 PRAGMA cache_size = 5000; \
+                 PRAGMA cache_size = 1000; \
                  PRAGMA mmap_size = 134217728; \
                  PRAGMA foreign_keys = ON;",
             )?;

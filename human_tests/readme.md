@@ -90,6 +90,12 @@
 |------|---------|-----------|------|
 | [badge-hover-panel.md](./badge-hover-panel.md) | Badge Hover 规则详情面板 | 7 | Badge hover 展开面板、规则列表展示、Merged Rules 折叠、规则行跳转编辑页、暗色模式、缓存性能、禁用验证 |
 
+### 性能与内存优化测试
+
+| 文件 | 功能模块 | 测试用例数 | 说明 |
+|------|---------|-----------|------|
+| [memory-sqlite-cache-optimization.md](./memory-sqlite-cache-optimization.md) | SQLite Cache Size 与内存优化 | 6 | SQLite cache_size 降低、读连接池缩减、metadata_cache LRU 化后的功能回归与内存验证 |
+
 ---
 
 **总计：52 个测试文件，1024 个测试用例**

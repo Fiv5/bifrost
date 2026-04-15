@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use lru::LruCache;
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,7 @@ const TRAFFIC_DB_SUBDIR: &str = "traffic";
 const FRAME_METADATA_TABLE: &str = "frame_connection_metadata";
 const BATCH_FLUSH_INTERVAL_MS: u64 = 500;
 const BATCH_SIZE_THRESHOLD: usize = 50;
+const METADATA_CACHE_CAP: usize = 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameStoreMetadata {
@@ -64,7 +67,7 @@ pub struct FrameStore {
     retention_hours: u64,
     write_conn: Mutex<Connection>,
     read_conn: Mutex<Connection>,
-    metadata_cache: RwLock<HashMap<String, FrameStoreMetadata>>,
+    metadata_cache: RwLock<LruCache<String, FrameStoreMetadata>>,
     pending_frames: Mutex<PendingFrames>,
 }
 
@@ -98,7 +101,9 @@ impl FrameStore {
             retention_hours: retention_hours.unwrap_or(DEFAULT_RETENTION_HOURS),
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
-            metadata_cache: RwLock::new(HashMap::new()),
+            metadata_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(METADATA_CACHE_CAP).unwrap(),
+            )),
             pending_frames: Mutex::new(PendingFrames::default()),
         }
     }
@@ -137,7 +142,7 @@ impl FrameStore {
     fn init_metadata_database(conn: &Connection, query_only: bool) -> rusqlite::Result<()> {
         if !query_only {
             conn.execute_batch(
-                "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728;",
+                "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = 1000; PRAGMA mmap_size = 134217728;",
             )?;
 
             conn.execute_batch(&format!(
@@ -158,7 +163,7 @@ impl FrameStore {
             ))?;
         } else {
             conn.execute_batch(
-                "PRAGMA query_only = true; PRAGMA cache_size = 2000; PRAGMA mmap_size = 67108864;",
+                "PRAGMA query_only = true; PRAGMA cache_size = 500; PRAGMA mmap_size = 67108864;",
             )?;
         }
 
@@ -231,7 +236,7 @@ impl FrameStore {
 
         self.metadata_cache
             .write()
-            .insert(metadata.connection_id.clone(), metadata.clone());
+            .put(metadata.connection_id.clone(), metadata.clone());
     }
 
     fn delete_metadata_rows(&self, ids: &[String]) {
@@ -390,9 +395,13 @@ impl FrameStore {
             let _ = writer.flush();
 
             let mut cache = self.metadata_cache.write();
-            let metadata = cache
-                .entry(connection_id.clone())
-                .or_insert_with(|| FrameStoreMetadata::new(&connection_id));
+            if cache.get(&connection_id).is_none() {
+                cache.put(
+                    connection_id.clone(),
+                    FrameStoreMetadata::new(&connection_id),
+                );
+            }
+            let metadata = cache.get_mut(&connection_id).unwrap();
 
             metadata.frame_count += frame_count;
             metadata.last_frame_id = last_frame_id;
@@ -511,14 +520,14 @@ impl FrameStore {
     }
 
     pub fn get_metadata(&self, connection_id: &str) -> Option<FrameStoreMetadata> {
-        if let Some(metadata) = self.metadata_cache.read().get(connection_id).cloned() {
+        if let Some(metadata) = self.metadata_cache.write().get(connection_id).cloned() {
             return Some(metadata);
         }
 
         let metadata = self.load_metadata_from_db(connection_id)?;
         self.metadata_cache
             .write()
-            .insert(connection_id.to_string(), metadata.clone());
+            .put(connection_id.to_string(), metadata.clone());
         Some(metadata)
     }
 
@@ -539,12 +548,15 @@ impl FrameStore {
                         let _ = writer.flush();
 
                         let mut cache = self.metadata_cache.write();
-                        let metadata =
-                            cache.entry(connection_id.to_string()).or_insert_with(|| {
+                        if cache.get(connection_id).is_none() {
+                            cache.put(
+                                connection_id.to_string(),
                                 existing_metadata
                                     .clone()
-                                    .unwrap_or_else(|| FrameStoreMetadata::new(connection_id))
-                            });
+                                    .unwrap_or_else(|| FrameStoreMetadata::new(connection_id)),
+                            );
+                        }
+                        let metadata = cache.get_mut(connection_id).unwrap();
                         metadata.frame_count += frames.len() as u64;
                         if let Some(last_frame) = frames.last() {
                             metadata.last_frame_id = last_frame.frame_id;
@@ -556,9 +568,13 @@ impl FrameStore {
         }
 
         let mut cache = self.metadata_cache.write();
-        let metadata = cache.entry(connection_id.to_string()).or_insert_with(|| {
-            existing_metadata.unwrap_or_else(|| FrameStoreMetadata::new(connection_id))
-        });
+        if cache.get(connection_id).is_none() {
+            cache.put(
+                connection_id.to_string(),
+                existing_metadata.unwrap_or_else(|| FrameStoreMetadata::new(connection_id)),
+            );
+        }
+        let metadata = cache.get_mut(connection_id).unwrap();
         metadata.is_closed = true;
         metadata.updated_at = Self::now_ms();
         let m = metadata.clone();
@@ -605,7 +621,7 @@ impl FrameStore {
             fs::remove_file(&frame_path)?;
         }
 
-        self.metadata_cache.write().remove(connection_id);
+        self.metadata_cache.write().pop(connection_id);
         self.delete_metadata_rows(&[connection_id.to_string()]);
         Ok(())
     }
@@ -669,7 +685,7 @@ impl FrameStore {
         {
             let mut metadata_cache = self.metadata_cache.write();
             for id in ids {
-                metadata_cache.remove(id);
+                metadata_cache.pop(id);
             }
         }
         self.delete_metadata_rows(ids);
