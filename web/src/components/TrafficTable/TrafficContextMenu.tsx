@@ -332,6 +332,12 @@ export default function TrafficContextMenu({
   const menuItems: MenuProps['items'] = hasMultipleSelected
     ? [
         {
+          key: 'download-har',
+          icon: <DownloadOutlined />,
+          label: `Download ${selectedRecords.length} requests as HAR`,
+          onClick: downloadAsHAR,
+        },
+        {
           key: 'export-bifrost',
           icon: <ExportOutlined />,
           label: `Export ${selectedRecords.length} requests as .bifrost`,
