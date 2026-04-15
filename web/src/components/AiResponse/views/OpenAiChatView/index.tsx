@@ -32,6 +32,7 @@ import json from 'highlight.js/lib/languages/json';
 import '../../../../styles/hljs-github-theme.css';
 import type { OpenAiRequestParsed } from '../../parsers/openAiLikeRequest';
 import { stringifyContent, formatToolArgs } from '../../parsers/openAiLikeRequest';
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 hljs.registerLanguage('json', json);
 
@@ -119,15 +120,6 @@ const DEFAULT_ROLE_STYLE = { color: '#8c8c8c', label: 'Unknown', bg: 'rgba(140,1
 
 const getRoleStyle = (role: string) => ROLE_STYLES[role] ?? { ...DEFAULT_ROLE_STYLE, label: role };
 const getRoleIcon = (role: string) => ROLE_ICONS[role] ?? MessageOutlined;
-
-const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const formatCharCount = (n: number): string => {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

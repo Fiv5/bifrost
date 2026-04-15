@@ -14,6 +14,7 @@ import {
 import type { TrafficRecord, TrafficSummary } from '../../types';
 import { generateCurl } from '../../utils/curl';
 import { downloadHAR } from '../../utils/har';
+import { copyToClipboard } from '../../utils/clipboard';
 import { getTrafficDetail, getRequestBody, getResponseBody } from '../../api/traffic';
 import { isNotFoundError } from '../../api/client';
 import { useReplayStore } from '../../stores/useReplayStore';
@@ -127,7 +128,7 @@ export default function TrafficContextMenu({
   const copyUrl = useCallback(async () => {
     if (!record) return;
     try {
-      await navigator.clipboard.writeText(record.url);
+      await copyToClipboard(record.url);
       message.success('URL copied to clipboard');
     } catch {
       message.error('Failed to copy URL');
@@ -161,7 +162,7 @@ export default function TrafficContextMenu({
         }
       }
       const curl = generateCurl(fullRecord);
-      await navigator.clipboard.writeText(curl);
+      await copyToClipboard(curl);
       message.success('cURL command copied to clipboard');
     } catch (error) {
       message.error('Failed to generate cURL command');

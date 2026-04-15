@@ -8,6 +8,7 @@ import hljs from "highlight.js/lib/core";
 import json from "highlight.js/lib/languages/json";
 import xml from "highlight.js/lib/languages/xml";
 import javascript from "highlight.js/lib/languages/javascript";
+import { copyToClipboard } from "../../../utils/clipboard";
 import css from "highlight.js/lib/languages/css";
 import plaintext from "highlight.js/lib/languages/plaintext";
 import "../../../styles/hljs-github-theme.css";
@@ -114,7 +115,7 @@ export default function CodeViewer({
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(content);
+      await copyToClipboard(content);
       message.success("Copied to clipboard");
     } catch {
       message.error("Failed to copy");

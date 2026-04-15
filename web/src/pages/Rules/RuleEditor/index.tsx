@@ -4,6 +4,7 @@ import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
 import { Empty, Spin, message, Button, Space, Modal } from "antd";
 import { SaveOutlined, CopyOutlined, DeleteOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import { copyToClipboard } from "../../../utils/clipboard";
 import BifrostEditor, {
   THEME_DARK,
   THEME_LIGHT,
@@ -127,7 +128,7 @@ export default function RuleEditor() {
     if (!modelRef.current || modelRef.current.isDisposed()) return;
     const content = modelRef.current.getValue();
     try {
-      await navigator.clipboard.writeText(content);
+      await copyToClipboard(content);
       message.success("Copied");
     } catch {
       message.error("Failed to copy");

@@ -15,6 +15,7 @@ import {
 } from "@ant-design/icons";
 import { useValuesStore } from "../../../stores/useValuesStore";
 import { useThemeStore } from "../../../stores/useThemeStore";
+import { copyToClipboard } from "../../../utils/clipboard";
 import styles from "./index.module.css";
 
 function detectLanguage(content: string): "json" | "xml" | "plaintext" {
@@ -243,7 +244,7 @@ export default function ValueEditor() {
     if (!editorRef.current) return;
     const content = editorRef.current.getValue();
     try {
-      await navigator.clipboard.writeText(content);
+      await copyToClipboard(content);
       message.success("Copied");
     } catch {
       message.error("Failed to copy");

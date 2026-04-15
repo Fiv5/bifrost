@@ -27,21 +27,13 @@ import {
 import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
 import '../../../../styles/hljs-github-theme.css';
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 hljs.registerLanguage('json', json);
 
 const { Text, Paragraph } = Typography;
 
 type Msg = Record<string, unknown>;
-
-const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const formatCharCount = (n: number): string => {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

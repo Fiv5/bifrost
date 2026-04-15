@@ -123,7 +123,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_desktop_runtime,
             update_desktop_proxy_port,
-            notify_main_window_ready
+            notify_main_window_ready,
+            write_clipboard
         ])
         .setup(|app| {
             let host_window = create_host_window(app.handle())?;
@@ -1417,6 +1418,48 @@ fn notify_main_window_ready(app: AppHandle) -> Result<(), String> {
     );
 
     start_main_window_handoff(&app, "frontend ready handshake").map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn write_clipboard(text: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::NSString;
+
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        let ns_string = NSString::from_str(&text);
+        let ok = unsafe { pb.setString_forType(&ns_string, objc2_app_kit::NSPasteboardTypeString) };
+        if !ok {
+            return Err("NSPasteboard setString failed".into());
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use std::io::Write as _;
+        #[cfg(target_os = "windows")]
+        let mut child = std::process::Command::new("clip")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to spawn clip: {e}"))?;
+        #[cfg(target_os = "linux")]
+        let mut child = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to spawn xclip: {e}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("failed to write to clipboard process: {e}"))?;
+        }
+        child
+            .wait()
+            .map_err(|e| format!("clipboard process failed: {e}"))?;
+        Ok(())
+    }
 }
 
 fn restart_backend_on_port(
