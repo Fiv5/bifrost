@@ -1181,6 +1181,7 @@ pub fn run_foreground(
             let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
             admin_state.load_group_name_cache();
+            admin_state.refresh_badge_rules_cache();
 
             let phase_started_at = Instant::now();
             let valid_dirs = resolve_valid_group_dirs(&admin_state);
@@ -1848,6 +1849,7 @@ pub fn run_daemon(
                     let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
                     admin_state.load_group_name_cache();
+                    admin_state.refresh_badge_rules_cache();
 
                     let valid_dirs = resolve_valid_group_dirs(&admin_state);
                     let (stored_rules, inline_values) =
@@ -2117,6 +2119,7 @@ fn spawn_rules_watcher_task(
                         }
 
                         resolver.update_stored_rules(new_stored_rules, new_values);
+                        admin_state.refresh_badge_rules_cache();
 
                         if matches!(event, ConfigChangeEvent::RulesChanged) {
                             let should_disconnect = {

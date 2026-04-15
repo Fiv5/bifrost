@@ -902,6 +902,7 @@ pub(crate) fn notify_rules_changed_pub(state: &SharedAdminState) {
 }
 
 fn notify_rules_changed(state: &SharedAdminState) {
+    state.refresh_badge_rules_cache();
     if let Some(ref config_manager) = state.config_manager {
         match config_manager.notify(ConfigChangeEvent::RulesChanged) {
             Ok(count) => {
