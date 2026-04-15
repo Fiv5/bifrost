@@ -15,6 +15,7 @@ import type { TrafficRecord, TrafficSummary } from '../../types';
 import { generateCurl } from '../../utils/curl';
 import { downloadHAR } from '../../utils/har';
 import { getTrafficDetail, getRequestBody, getResponseBody } from '../../api/traffic';
+import { isNotFoundError } from '../../api/client';
 import { useReplayStore } from '../../stores/useReplayStore';
 import { useExportBifrost } from '../../hooks/useExportBifrost';
 import { useTlsConfigStore } from '../../stores/useTlsConfigStore';
@@ -137,12 +138,28 @@ export default function TrafficContextMenu({
   const copyAsCurl = useCallback(async () => {
     if (!record) return;
     try {
-      const detail = await getTrafficDetail(record.id);
-      const requestBody = await getRequestBody(record.id);
-      const fullRecord: TrafficRecord = {
-        ...detail,
-        request_body: requestBody,
-      };
+      let fullRecord: TrafficRecord;
+      try {
+        const [detail, requestBody] = await Promise.all([
+          getTrafficDetail(record.id),
+          getRequestBody(record.id).catch(() => null),
+        ]);
+        fullRecord = { ...detail, request_body: requestBody };
+      } catch (fetchError) {
+        if (isNotFoundError(fetchError)) {
+          fullRecord = {
+            ...record,
+            request_headers: null,
+            response_headers: null,
+            request_body: null,
+            response_body: null,
+            matched_rules: null,
+            request_content_type: null,
+          };
+        } else {
+          throw fetchError;
+        }
+      }
       const curl = generateCurl(fullRecord);
       await navigator.clipboard.writeText(curl);
       message.success('cURL command copied to clipboard');
