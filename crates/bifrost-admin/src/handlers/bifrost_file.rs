@@ -814,8 +814,8 @@ async fn handle_export_scripts(
         .unwrap_or_default();
     let all_scripts: Vec<_> = request_scripts
         .into_iter()
-        .chain(response_scripts.into_iter())
-        .chain(decode_scripts.into_iter())
+        .chain(response_scripts)
+        .chain(decode_scripts)
         .collect();
 
     for name in &request.script_names {

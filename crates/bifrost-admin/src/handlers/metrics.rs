@@ -120,7 +120,7 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
     }
 
     let mut result: Vec<AppMetrics> = app_stats.into_values().collect();
-    result.sort_by(|a, b| b.requests.cmp(&a.requests));
+    result.sort_by_key(|a| std::cmp::Reverse(a.requests));
 
     json_response(&result)
 }
@@ -201,7 +201,7 @@ async fn get_host_metrics(state: SharedAdminState) -> Response<BoxBody> {
     }
 
     let mut result: Vec<HostMetrics> = host_stats.into_values().collect();
-    result.sort_by(|a, b| b.requests.cmp(&a.requests));
+    result.sort_by_key(|a| std::cmp::Reverse(a.requests));
 
     json_response(&result)
 }

@@ -716,29 +716,21 @@ impl SearchEngine {
                             break;
                         }
                     }
-                    "2xx" => {
-                        if (200..300).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "2xx" if (200..300).contains(&status) => {
+                        matched = true;
+                        break;
                     }
-                    "3xx" => {
-                        if (300..400).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "3xx" if (300..400).contains(&status) => {
+                        matched = true;
+                        break;
                     }
-                    "4xx" => {
-                        if (400..500).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "4xx" if (400..500).contains(&status) => {
+                        matched = true;
+                        break;
                     }
-                    "5xx" => {
-                        if (500..600).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "5xx" if (500..600).contains(&status) => {
+                        matched = true;
+                        break;
                     }
                     _ => {}
                 }
