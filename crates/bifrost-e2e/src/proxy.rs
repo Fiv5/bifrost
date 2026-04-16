@@ -697,11 +697,15 @@ fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
                 "method" | "methods" => cors.methods = Some(raw_value),
                 "headers" => cors.headers = Some(raw_value),
                 "expose" | "exposeheaders" => cors.expose_headers = Some(raw_value),
-                "credentials" if let Ok(enabled) = raw_value.parse::<bool>() => {
-                    cors.credentials = Some(enabled);
+                "credentials" => {
+                    if let Ok(enabled) = raw_value.parse::<bool>() {
+                        cors.credentials = Some(enabled);
+                    }
                 }
-                "maxage" | "max_age" if let Ok(age) = raw_value.parse::<u64>() => {
-                    cors.max_age = Some(age);
+                "maxage" | "max_age" => {
+                    if let Ok(age) = raw_value.parse::<u64>() {
+                        cors.max_age = Some(age);
+                    }
                 }
                 _ => {}
             }
