@@ -421,6 +421,44 @@
 
 ---
 
+### TC-CIE-25：version-check redirect 优先验证（upgrade 命令）
+
+**操作步骤**：
+1. 清除 version check 缓存以强制重新请求：
+   ```bash
+   rm -rf .bifrost-test
+   ```
+2. 使用 debug 日志级别执行 upgrade 观察请求路径：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test RUST_LOG=bifrost_core::version_check=debug ./target/debug/bifrost upgrade 2>&1
+   ```
+
+**预期结果**：
+- debug 日志中出现 `fetching latest version via redirect` 表明走了 redirect 路径
+- debug 日志中出现 `redirect followed, extracting version from final URL` 且 final_url 包含 `/tag/vX.Y.Z`
+- debug 日志中出现 `extracted version from redirect` 表明版本号成功提取
+- 标准输出不包含 `GitHub API rate limit` 错误
+- 命令退出码为 0
+
+---
+
+### TC-CIE-26：highlights 获取失败不阻塞版本检测
+
+**操作步骤**：
+1. 执行 upgrade 验证整体流程在 API 限流时仍然正常工作：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test RUST_LOG=bifrost_core::version_check=debug ./target/debug/bifrost upgrade 2>&1
+   ```
+2. 确认代码中 `fetch_latest_release_sync` 的降级逻辑：API highlights 失败 → HTML 兜底 → 空 vec（不影响版本号返回）
+
+**预期结果**：
+- 无论 highlights 获取路径如何，版本号都能成功获取
+- 如果 API highlights 为空，debug 日志出现 `API highlights empty or rate limited, trying HTML page fallback`
+- 所有 highlights 获取函数的错误都不会阻塞版本号返回（仅返回空 vec）
+- 命令退出码为 0
+
+---
+
 ## 清理
 
 测试完成后清理临时数据和测试文件：

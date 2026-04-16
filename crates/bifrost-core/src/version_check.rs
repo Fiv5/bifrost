@@ -9,6 +9,7 @@ pub const GITHUB_RELEASES_API_URL: &str =
 pub const GITHUB_TAGS_API_URL: &str = "https://api.github.com/repos/bifrost-proxy/bifrost/tags";
 pub const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/tag";
 pub const REQUEST_TIMEOUT_SECS: u64 = 10;
+const HIGHLIGHTS_TIMEOUT_SECS: u64 = 5;
 pub const MAX_RETRIES: u32 = 2;
 pub const RETRY_DELAY_MS: u64 = 500;
 const MAX_RELEASE_HIGHLIGHTS: usize = 5;
@@ -204,10 +205,9 @@ pub fn fetch_with_retry(
 }
 
 pub fn fetch_version_via_redirect_sync() -> Result<String, FetchError> {
-    let no_redirect_agent = crate::direct_ureq_agent_builder()
+    let agent = crate::direct_ureq_agent_builder()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("bifrost-cli")
-        .redirects(0)
         .build();
 
     debug!(
@@ -215,19 +215,11 @@ pub fn fetch_version_via_redirect_sync() -> Result<String, FetchError> {
         GITHUB_RELEASES_LATEST_URL
     );
 
-    match no_redirect_agent.get(GITHUB_RELEASES_LATEST_URL).call() {
+    match agent.head(GITHUB_RELEASES_LATEST_URL).call() {
         Ok(resp) => {
-            let url = resp.get_url().to_string();
-            extract_version_from_redirect_url(&url)
-        }
-        Err(ureq::Error::Status(301 | 302 | 303 | 307 | 308, resp)) => {
-            if let Some(location) = resp.header("location") {
-                extract_version_from_redirect_url(location)
-            } else {
-                Err(FetchError::Parse(
-                    "redirect response missing Location header".to_string(),
-                ))
-            }
+            let final_url = resp.get_url().to_string();
+            debug!(final_url = %final_url, "redirect followed, extracting version from final URL");
+            extract_version_from_redirect_url(&final_url)
         }
         Err(e) => {
             let reason = classify_ureq_error(&e);
@@ -236,13 +228,132 @@ pub fn fetch_version_via_redirect_sync() -> Result<String, FetchError> {
     }
 }
 
-pub fn fetch_release_body_for_version_sync(agent: &ureq::Agent, version: &str) -> Vec<String> {
+pub fn release_page_url(version: &str) -> String {
+    let tag = make_release_tag(version);
+    format!("{}/{}", GITHUB_RELEASE_URL, tag)
+}
+
+fn extract_highlights_from_html(html: &str) -> Vec<String> {
+    let body_content = if let Some(start) = html.find("data-test-selector=\"body-content\"") {
+        let chunk = &html[start..];
+        if let Some(div_start) = chunk.find('>') {
+            let inner = &chunk[div_start + 1..];
+            if let Some(end) = find_closing_div(inner) {
+                &inner[..end]
+            } else {
+                inner
+            }
+        } else {
+            return Vec::new();
+        }
+    } else {
+        return Vec::new();
+    };
+
+    let mut items = Vec::new();
+    let mut search_from = 0;
+    while let Some(li_start) = body_content[search_from..].find("<li>") {
+        let content_start = search_from + li_start + 4;
+        if let Some(li_end) = body_content[content_start..].find("</li>") {
+            let raw = &body_content[content_start..content_start + li_end];
+            let text = strip_html_tags(raw).trim().to_string();
+            if !text.is_empty() {
+                items.push(text);
+            }
+            search_from = content_start + li_end + 5;
+        } else {
+            break;
+        }
+    }
+
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let markdown_lines: Vec<String> = items.iter().map(|item| format!("- {}", item)).collect();
+    let pseudo_body = markdown_lines.join("\n");
+    parse_release_highlights(Some(&pseudo_body))
+}
+
+fn find_closing_div(html: &str) -> Option<usize> {
+    let mut depth = 1i32;
+    let bytes = html.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0;
+    while pos < len {
+        if pos + 6 <= len && &bytes[pos..pos + 6] == b"</div>" {
+            depth -= 1;
+            if depth == 0 {
+                return Some(pos);
+            }
+            pos += 6;
+        } else if pos + 4 <= len && &bytes[pos..pos + 4] == b"<div" {
+            depth += 1;
+            pos += 4;
+        } else {
+            pos += 1;
+        }
+    }
+    None
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut inside_tag = false;
+    for ch in html.chars() {
+        if ch == '<' {
+            inside_tag = true;
+        } else if ch == '>' {
+            inside_tag = false;
+        } else if !inside_tag {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+pub fn fetch_highlights_from_html_sync(version: &str) -> Vec<String> {
+    let url = release_page_url(version);
+    debug!(url = %url, "fetching release highlights from HTML page");
+
+    let agent = crate::direct_ureq_agent_builder()
+        .timeout(std::time::Duration::from_secs(HIGHLIGHTS_TIMEOUT_SECS))
+        .user_agent("bifrost-cli")
+        .build();
+
+    match agent.get(&url).call() {
+        Ok(resp) => match resp.into_string() {
+            Ok(html) => {
+                let highlights = extract_highlights_from_html(&html);
+                if highlights.is_empty() {
+                    debug!("no highlights extracted from HTML page");
+                }
+                highlights
+            }
+            Err(e) => {
+                debug!(error = %e, "failed to read HTML response body");
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            debug!(error = %e, "failed to fetch release page HTML (non-critical)");
+            Vec::new()
+        }
+    }
+}
+
+pub fn fetch_release_body_for_version_sync(version: &str) -> Vec<String> {
     let tag = make_release_tag(version);
     let url = release_api_url_for_tag(&tag);
 
-    debug!(url = %url, "fetching release body for highlights");
+    debug!(url = %url, "fetching release body via API (fallback)");
 
-    match fetch_with_retry(agent, &url) {
+    let agent = crate::direct_ureq_agent_builder()
+        .timeout(std::time::Duration::from_secs(HIGHLIGHTS_TIMEOUT_SECS))
+        .user_agent("bifrost-cli")
+        .build();
+
+    match agent.get(&url).call() {
         Ok(response) => match response.into_json::<GitHubRelease>() {
             Ok(release) => parse_release_highlights(release.body.as_deref()),
             Err(e) => {
@@ -251,7 +362,7 @@ pub fn fetch_release_body_for_version_sync(agent: &ureq::Agent, version: &str) -
             }
         },
         Err(e) => {
-            debug!(error = %e, "failed to fetch release body (non-critical)");
+            debug!(error = %e, "failed to fetch release body via API (non-critical)");
             Vec::new()
         }
     }
@@ -265,7 +376,11 @@ pub fn fetch_latest_release_sync() -> Result<(String, Vec<String>), FetchError> 
 
     match fetch_version_via_redirect_sync() {
         Ok(version) => {
-            let highlights = fetch_release_body_for_version_sync(&agent, &version);
+            let mut highlights = fetch_release_body_for_version_sync(&version);
+            if highlights.is_empty() {
+                debug!("API highlights empty or rate limited, trying HTML page fallback");
+                highlights = fetch_highlights_from_html_sync(&version);
+            }
             return Ok((version, highlights));
         }
         Err(e) => {
@@ -295,8 +410,15 @@ pub fn fetch_latest_release_sync() -> Result<(String, Vec<String>), FetchError> 
     }
 
     let response = fetch_with_retry(&agent, GITHUB_TAGS_API_URL).map_err(|e| {
-        let reason = classify_ureq_error(&e);
-        FetchError::Network(format!("{}: {}", reason, e))
+        let is_rate_limit = matches!(&*e, ureq::Error::Status(403, _));
+        if is_rate_limit {
+            FetchError::Network(
+                "all version detection methods failed (redirect + GitHub API rate limited). Check your network connection to github.com".to_string()
+            )
+        } else {
+            let reason = classify_ureq_error(&e);
+            FetchError::Network(format!("{}: {}", reason, e))
+        }
     })?;
 
     let tags: Vec<GitHubTag> = response
@@ -315,49 +437,67 @@ pub async fn fetch_version_via_redirect_async() -> Option<String> {
         GITHUB_RELEASES_LATEST_URL
     );
 
-    let no_redirect_client = crate::direct_reqwest_client_builder()
-        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .user_agent("bifrost-admin")
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .ok()?;
-
-    let resp = no_redirect_client
-        .get(GITHUB_RELEASES_LATEST_URL)
-        .send()
-        .await
-        .ok()?;
-
-    if resp.status().is_redirection() {
-        if let Some(location) = resp.headers().get(reqwest::header::LOCATION) {
-            let url = location.to_str().ok()?;
-            return extract_version_from_redirect_url(url).ok();
-        }
-    }
-
-    let follow_client = crate::direct_reqwest_client_builder()
+    let client = crate::direct_reqwest_client_builder()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("bifrost-admin")
         .build()
         .ok()?;
 
-    let resp = follow_client
-        .get(GITHUB_RELEASES_LATEST_URL)
-        .send()
-        .await
-        .ok()?;
+    let resp = client.head(GITHUB_RELEASES_LATEST_URL).send().await.ok()?;
+
     let final_url = resp.url().to_string();
+    debug!(final_url = %final_url, "redirect followed (async), extracting version from final URL");
     extract_version_from_redirect_url(&final_url).ok()
 }
 
-pub async fn fetch_release_body_for_version_async(
-    client: &reqwest::Client,
-    version: &str,
-) -> Vec<String> {
+pub async fn fetch_highlights_from_html_async(version: &str) -> Vec<String> {
+    let url = release_page_url(version);
+    debug!(url = %url, "fetching release highlights from HTML page (async)");
+
+    let client = match crate::direct_reqwest_client_builder()
+        .timeout(std::time::Duration::from_secs(HIGHLIGHTS_TIMEOUT_SECS))
+        .user_agent("bifrost-admin")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(html) => {
+                let highlights = extract_highlights_from_html(&html);
+                if highlights.is_empty() {
+                    debug!("no highlights extracted from HTML page (async)");
+                }
+                highlights
+            }
+            Err(e) => {
+                debug!(error = %e, "failed to read HTML response body (async)");
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            debug!(error = %e, "failed to fetch release page HTML (async, non-critical)");
+            Vec::new()
+        }
+    }
+}
+
+pub async fn fetch_release_body_for_version_async(version: &str) -> Vec<String> {
     let tag = make_release_tag(version);
     let url = release_api_url_for_tag(&tag);
 
-    debug!(url = %url, "fetching release body for highlights");
+    debug!(url = %url, "fetching release body via API (async fallback)");
+
+    let client = match crate::direct_reqwest_client_builder()
+        .timeout(std::time::Duration::from_secs(HIGHLIGHTS_TIMEOUT_SECS))
+        .user_agent("bifrost-admin")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
 
     match client.get(&url).send().await {
         Ok(response) => match response.json::<GitHubRelease>().await {
@@ -368,7 +508,7 @@ pub async fn fetch_release_body_for_version_async(
             }
         },
         Err(e) => {
-            debug!(error = %e, "failed to fetch release body (non-critical)");
+            debug!(error = %e, "failed to fetch release body via API (async, non-critical)");
             Vec::new()
         }
     }
@@ -382,7 +522,11 @@ pub async fn fetch_latest_release_async() -> Option<(String, Vec<String>)> {
         .ok()?;
 
     if let Some(version) = fetch_version_via_redirect_async().await {
-        let highlights = fetch_release_body_for_version_async(&client, &version).await;
+        let mut highlights = fetch_release_body_for_version_async(&version).await;
+        if highlights.is_empty() {
+            debug!("API highlights empty or rate limited (async), trying HTML page fallback");
+            highlights = fetch_highlights_from_html_async(&version).await;
+        }
         return Some((version, highlights));
     }
 
@@ -940,5 +1084,87 @@ without proper structure
         let highlights = parse_release_highlights(Some(body));
         assert_eq!(highlights.len(), 6, "Should show top 5 + '... and N more'");
         assert!(highlights[5].contains("... and 2 more"));
+    }
+
+    #[test]
+    fn test_strip_html_tags() {
+        assert_eq!(strip_html_tags("<b>bold</b>"), "bold");
+        assert_eq!(strip_html_tags("no tags"), "no tags");
+        assert_eq!(
+            strip_html_tags(r#"<a href="url">link text</a>"#),
+            "link text"
+        );
+        assert_eq!(strip_html_tags("<li>item</li>"), "item");
+        assert_eq!(strip_html_tags(""), "");
+    }
+
+    #[test]
+    fn test_find_closing_div() {
+        assert_eq!(find_closing_div("hello</div>"), Some(5));
+        assert_eq!(find_closing_div("<div>inner</div></div>"), Some(16));
+        assert_eq!(find_closing_div("<div>no close"), None);
+    }
+
+    #[test]
+    fn test_extract_highlights_from_html_real_structure() {
+        let html = r#"<div data-pjax="true" data-test-selector="body-content" class="markdown-body"><h2>What's Changed</h2>
+<h3>📝 Other Changes</h3>
+<ul>
+<li>chore: bump version to 0.0.53-beta (<a href="https://github.com/example"><tt>afbfdf8</tt></a>)</li>
+<li>perf: 优化数据库缓存大小和内存使用 (<a href="https://github.com/example"><tt>bedd423</tt></a>)</li>
+</ul>
+<p><strong>Full Changelog</strong>: <a href="https://example.com"><tt>v0.0.52-beta...v0.0.53-beta</tt></a></p></div>"#;
+        let highlights = extract_highlights_from_html(html);
+        assert!(
+            !highlights.is_empty(),
+            "should extract highlights from real GitHub HTML"
+        );
+        assert!(highlights.iter().any(|h| h.contains("bump version")));
+        assert!(highlights.iter().any(|h| h.contains("优化数据库缓存")));
+    }
+
+    #[test]
+    fn test_extract_highlights_from_html_with_features() {
+        let html = r#"<div data-test-selector="body-content" class="markdown-body"><h2>What's Changed</h2>
+<h3>🚀 Features</h3>
+<ul>
+<li>feat: add proxy support (<a><tt>abc123</tt></a>)</li>
+<li>feat(cli): improve startup time (<a><tt>def456</tt></a>)</li>
+</ul>
+<h3>🐛 Bug Fixes</h3>
+<ul>
+<li>fix: resolve memory leak (<a><tt>ghi789</tt></a>)</li>
+</ul></div>"#;
+        let highlights = extract_highlights_from_html(html);
+        assert!(
+            !highlights.is_empty(),
+            "should extract highlights from features section"
+        );
+    }
+
+    #[test]
+    fn test_extract_highlights_from_html_no_body_content() {
+        let html = r#"<div class="other">no release body here</div>"#;
+        let highlights = extract_highlights_from_html(html);
+        assert!(highlights.is_empty());
+    }
+
+    #[test]
+    fn test_extract_highlights_from_html_empty_list() {
+        let html = r#"<div data-test-selector="body-content" class="markdown-body"><p>No list items</p></div>"#;
+        let highlights = extract_highlights_from_html(html);
+        assert!(highlights.is_empty());
+    }
+
+    #[test]
+    fn test_release_page_url() {
+        assert_eq!(
+            release_page_url("0.0.53-beta"),
+            "https://github.com/bifrost-proxy/bifrost/releases/tag/v0.0.53-beta"
+        );
+        assert_eq!(
+            release_page_url("1.0.0"),
+            "https://github.com/bifrost-proxy/bifrost/releases/tag/v1.0.0"
+        );
     }
 }
