@@ -196,7 +196,7 @@ impl ConfigApiClient {
     }
 
     pub fn version_check(&self) -> Result<serde_json::Value, String> {
-        self.get("/system/version-check")
+        self.get("/system/version-check?refresh=true")
     }
 
     pub fn get_websocket_connections(&self) -> Result<serde_json::Value, String> {

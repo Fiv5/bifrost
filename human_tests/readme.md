@@ -22,7 +22,7 @@
 | [cli-config.md](./cli-config.md) | CLI 配置管理 | 22 | config show/get/set/add/remove/reset/clear-cache/disconnect/export/connections/memory |
 | [cli-system-proxy.md](./cli-system-proxy.md) | CLI 系统代理 | 10 | system-proxy status/enable/disable，含自定义 host/port/bypass |
 | [cli-group.md](./cli-group.md) | CLI Group 管理 | 14 | group list/show、group rule list/show/add/update/enable/disable/delete |
-| [cli-import-export.md](./cli-import-export.md) | CLI 导入导出与杂项 | 24 | export/import、metrics、sync、version-check、upgrade、completions、install-skill，含 version-check 空输出与 install-skill 更多 agent 兼容回归验证 |
+| [cli-import-export.md](./cli-import-export.md) | CLI 导入导出与杂项 | 26 | export/import、metrics、sync、version-check、upgrade、completions、install-skill，含 version-check 空输出与 install-skill 更多 agent 兼容回归验证，以及 version-check redirect 优先与 HTML highlights 降级验证 |
 | [port-conflict-restart.md](./port-conflict-restart.md) | 端口冲突检测与自动重启 | 5 | 端口占用检测、进程信息显示、交互式终止确认、--yes 自动确认、PID 检测兼容性 |
 | [cli-log-output-default.md](./cli-log-output-default.md) | CLI 日志输出默认行为 | 6 | --log-output 默认值修复回归：非 start 命令不写文件、start 前台不写文件、daemon 写文件、显式指定覆盖 |
 
