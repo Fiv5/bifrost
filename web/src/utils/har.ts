@@ -145,10 +145,21 @@ function calculateHeadersSize(headers: [string, string][] | null): number {
   return size;
 }
 
+function effectiveHeaders(
+  primary: [string, string][] | null | undefined,
+  fallback: [string, string][] | null | undefined,
+): [string, string][] | null {
+  if (primary && primary.length > 0) return primary;
+  return fallback ?? null;
+}
+
 export function recordToHAREntry(record: TrafficRecord): HAREntry {
-  const requestContentType = getContentType(record.request_headers);
-  const responseContentType = getContentType(record.response_headers);
-  
+  const requestHeaders = effectiveHeaders(record.request_headers, record.original_request_headers);
+  const responseHeaders = effectiveHeaders(record.response_headers, record.original_response_headers);
+
+  const requestContentType = getContentType(requestHeaders);
+  const responseContentType = getContentType(responseHeaders);
+
   const timing = record.timing;
   const sendTime = timing?.send_ms ?? 0;
   const waitTime = timing?.wait_ms ?? 0;
@@ -161,8 +172,8 @@ export function recordToHAREntry(record: TrafficRecord): HAREntry {
       method: record.method,
       url: record.url,
       httpVersion: record.protocol || 'HTTP/1.1',
-      cookies: parseCookies(record.request_headers, 'cookie'),
-      headers: convertHeaders(record.request_headers),
+      cookies: parseCookies(requestHeaders, 'cookie'),
+      headers: convertHeaders(requestHeaders),
       queryString: parseQueryString(record.url),
       ...(record.request_body ? {
         postData: {
@@ -170,22 +181,22 @@ export function recordToHAREntry(record: TrafficRecord): HAREntry {
           text: record.request_body,
         },
       } : {}),
-      headersSize: calculateHeadersSize(record.request_headers),
+      headersSize: calculateHeadersSize(requestHeaders),
       bodySize: record.request_size,
     },
     response: {
       status: record.status,
       statusText: getStatusText(record.status),
       httpVersion: record.protocol || 'HTTP/1.1',
-      cookies: parseCookies(record.response_headers, 'set-cookie'),
-      headers: convertHeaders(record.response_headers),
+      cookies: parseCookies(responseHeaders, 'set-cookie'),
+      headers: convertHeaders(responseHeaders),
       content: {
         size: record.response_size,
         mimeType: responseContentType,
         ...(record.response_body ? { text: record.response_body } : {}),
       },
       redirectURL: '',
-      headersSize: calculateHeadersSize(record.response_headers),
+      headersSize: calculateHeadersSize(responseHeaders),
       bodySize: record.response_size,
     },
     cache: {},
