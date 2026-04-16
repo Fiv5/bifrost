@@ -1079,7 +1079,7 @@ fn print_headers_section(
                 Some((arr.first()?.as_str()?, arr.get(1)?.as_str()?))
             })
             .collect();
-        sorted.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        sorted.sort_by_key(|a| a.0.to_lowercase());
 
         if has_modifications {
             let orig_map: std::collections::HashMap<String, Vec<&str>> =
@@ -1174,7 +1174,7 @@ fn print_headers_section(
                     Some((arr.first()?.as_str()?, arr.get(1)?.as_str()?))
                 })
                 .collect();
-            sorted.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+            sorted.sort_by_key(|a| a.0.to_lowercase());
             for (name, value) in &sorted {
                 println!("    {dim}{}{reset}: {}", name, value);
             }

@@ -349,15 +349,11 @@ impl SystemProxyManager {
                     "HTTPEnable" => http_enable = value == "1",
                     "HTTPSEnable" => https_enable = value == "1",
                     "SOCKSEnable" => socks_enable = value == "1",
-                    "HTTPProxy" | "HTTPSProxy" | "SOCKSProxy" => {
-                        if host.is_empty() {
-                            host = value.to_string();
-                        }
+                    "HTTPProxy" | "HTTPSProxy" | "SOCKSProxy" if host.is_empty() => {
+                        host = value.to_string();
                     }
-                    "HTTPPort" | "HTTPSPort" | "SOCKSPort" => {
-                        if port == 0 {
-                            port = value.parse().unwrap_or(0);
-                        }
+                    "HTTPPort" | "HTTPSPort" | "SOCKSPort" if port == 0 => {
+                        port = value.parse().unwrap_or(0);
                     }
                     _ => {}
                 }

@@ -342,11 +342,11 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
             | Protocol::Http
             | Protocol::Https
             | Protocol::Ws
-            | Protocol::Wss => {
-                if !result.ignored.host {
-                    result.host = Some(value.to_string());
-                    result.host_protocol = Some(protocol);
-                }
+            | Protocol::Wss
+                if !result.ignored.host =>
+            {
+                result.host = Some(value.to_string());
+                result.host_protocol = Some(protocol);
             }
             Protocol::Redirect => {
                 let (status, location) = parse_redirect_target(value);

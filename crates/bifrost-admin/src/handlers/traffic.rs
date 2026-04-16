@@ -919,29 +919,25 @@ fn parse_updates_params(query: &str) -> UpdatesParams {
         if let Some((key, value)) = pair.split_once('=') {
             let value = decode_query_value(value);
             match key {
-                "after_id" => {
-                    if !value.is_empty() {
-                        params.after_id = Some(value.to_string());
-                    }
+                "after_id" if !value.is_empty() => {
+                    params.after_id = Some(value.to_string());
                 }
                 "after_seq" | "cursor" => {
                     params.after_seq = value.parse().ok();
                 }
-                "pending_ids" => {
-                    if !value.is_empty() {
-                        params.pending_ids = value
-                            .split(',')
-                            .take(MAX_SUBSCRIBED_IDS)
-                            .filter_map(|s: &str| {
-                                let id = s.to_string();
-                                if id.is_empty() || id.len() > MAX_ID_LEN {
-                                    None
-                                } else {
-                                    Some(id)
-                                }
-                            })
-                            .collect();
-                    }
+                "pending_ids" if !value.is_empty() => {
+                    params.pending_ids = value
+                        .split(',')
+                        .take(MAX_SUBSCRIBED_IDS)
+                        .filter_map(|s: &str| {
+                            let id = s.to_string();
+                            if id.is_empty() || id.len() > MAX_ID_LEN {
+                                None
+                            } else {
+                                Some(id)
+                            }
+                        })
+                        .collect();
                 }
                 "limit" => {
                     params.limit = value.parse().ok();
@@ -963,10 +959,8 @@ fn parse_query_params_from_query_string(query: &str) -> QueryParams {
             match key {
                 "cursor" => params.cursor = value.parse().ok(),
                 "limit" => params.limit = value.parse().ok(),
-                "direction" => {
-                    if value == "forward" {
-                        params.direction = crate::traffic_db::Direction::Forward;
-                    }
+                "direction" if value == "forward" => {
+                    params.direction = crate::traffic_db::Direction::Forward;
                 }
                 "method" => params.method = Some(value),
                 "status" => params.status = value.parse().ok(),

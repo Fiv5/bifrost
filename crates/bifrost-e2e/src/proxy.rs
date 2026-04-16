@@ -213,10 +213,8 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
             });
 
             match protocol {
-                Protocol::Host => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                    }
+                Protocol::Host if !result.ignored.host => {
+                    result.host = Some(value.to_string());
                 }
                 Protocol::ReqHeaders => {
                     if let Some(headers) = parse_header_value(value) {
@@ -409,34 +407,24 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::Dns => {
                     result.dns_servers.push(value.to_string());
                 }
-                Protocol::XHost => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                    }
+                Protocol::XHost if !result.ignored.host => {
+                    result.host = Some(value.to_string());
                 }
-                Protocol::Http => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Http);
-                    }
+                Protocol::Http if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Http);
                 }
-                Protocol::Https => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Https);
-                    }
+                Protocol::Https if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Https);
                 }
-                Protocol::Ws => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Ws);
-                    }
+                Protocol::Ws if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Ws);
                 }
-                Protocol::Wss => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Wss);
-                    }
+                Protocol::Wss if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Wss);
                 }
                 Protocol::TlsIntercept => {
                     result.tls_intercept = Some(true);
@@ -709,15 +697,11 @@ fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
                 "method" | "methods" => cors.methods = Some(raw_value),
                 "headers" => cors.headers = Some(raw_value),
                 "expose" | "exposeheaders" => cors.expose_headers = Some(raw_value),
-                "credentials" => {
-                    if let Ok(enabled) = raw_value.parse::<bool>() {
-                        cors.credentials = Some(enabled);
-                    }
+                "credentials" if let Ok(enabled) = raw_value.parse::<bool>() => {
+                    cors.credentials = Some(enabled);
                 }
-                "maxage" | "max_age" => {
-                    if let Ok(age) = raw_value.parse::<u64>() {
-                        cors.max_age = Some(age);
-                    }
+                "maxage" | "max_age" if let Ok(age) = raw_value.parse::<u64>() => {
+                    cors.max_age = Some(age);
                 }
                 _ => {}
             }

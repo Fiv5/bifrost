@@ -2429,13 +2429,8 @@ fn get_default_port(host_protocol: &Option<Protocol>, is_https: bool) -> u16 {
     match host_protocol {
         Some(Protocol::Http) | Some(Protocol::Ws) => 80,
         Some(Protocol::Https) | Some(Protocol::Wss) => 443,
-        None | Some(Protocol::Host) => {
-            if is_https {
-                443
-            } else {
-                80
-            }
-        }
+        None | Some(Protocol::Host) if is_https => 443,
+        None | Some(Protocol::Host) => 80,
         _ => 80,
     }
 }
