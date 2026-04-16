@@ -62,7 +62,7 @@
 
 8. **更新文档**：如涉及新功能 / API / 配置变更，同步更新相关文档（见"文档更新要求"）
 9. **项目校验**：提交前必须执行 rust-project-validate，并至少执行一次 `cargo test --workspace --all-features`
-10. **本地 CI 验证（强制）**：提交前必须执行 `bash scripts/ci/local-ci.sh` 完成静态检查 + 单元测试验证 + E2E 测试（详见"本地 CI 验证要求"）
+10. **本地 CI 验证（按需执行）**：提交前根据修改范围选择性执行 `scripts/ci/local-ci.sh`（详见"本地 CI 验证要求"）
 11. **收尾清理**：清理临时数据目录，避免资源膨胀
 12. **检查 TodoWrite**：确认所有验证任务均已标记为 completed，无遗漏
 13. **检查 human_tests（强制门禁）**：逐项确认以下所有条件，任一不满足则任务不得标记为完成：
@@ -166,7 +166,7 @@
 - [ ] **`human_tests/readme.md` 索引表已同步更新**
 - [ ] **已按 `human_tests/` 用例文档逐条真实执行场景测试，所有用例通过（禁止跳过、禁止假设通过）**
 - [ ] `cargo test --workspace --all-features` 全部通过
-- [ ] **`bash scripts/ci/local-ci.sh` 全部通过（fmt + clippy + test + e2e）**
+- [ ] **本地 CI 验证已按修改范围执行对应检查项并通过（详见"本地 CI 验证要求"）**
 
 > **最终门禁**：如果以上 human_tests 相关的三项（加粗项）任一未完成，整个任务不得标记为 completed，不得进入收尾阶段。
 
@@ -280,9 +280,37 @@ let verbose_logging = matches!(log_level.as_str(), "debug" | "trace");
 
 如果涉及新的需求需要修改数据库表，请直接修改表协议，我们不考虑对旧数据兼容，当协议更新版本时，直接删除旧版本数据库，重建数据即可。
 
-## 本地 CI 验证要求（强制）
+## 本地 CI 验证要求（按需执行）
 
-**提交前必须执行本地 CI 验证脚本，确保代码通过与 GitHub Actions 一致的检查。脚本位于 `scripts/ci/local-ci.sh`。**
+**提交前必须根据修改范围选择性执行本地 CI 检查，避免全量执行带来的不必要开销。脚本位于 `scripts/ci/local-ci.sh`。**
+
+### 按修改范围选择执行策略
+
+| 修改范围 | 必须执行的检查 | 命令 |
+| --- | --- | --- |
+| 仅修改 Rust 代码（非 E2E 测试模块） | fmt + clippy + 单元测试 | `bash scripts/ci/local-ci.sh --skip-e2e` |
+| 仅修改 E2E 测试代码 | 对应的 E2E 套件 | `bash scripts/ci/local-ci.sh --skip-static --e2e-only <suite>` |
+| 修改了代理核心逻辑（规则匹配/请求转发/协议处理） | fmt + clippy + 单元测试 + 相关 E2E | `bash scripts/ci/local-ci.sh --e2e-only rules` |
+| 修改了 Shell/CLI 相关代码 | fmt + clippy + 单元测试 + shell E2E | `bash scripts/ci/local-ci.sh --e2e-only shell` |
+| 修改了平台集成相关代码 | fmt + clippy + 单元测试 + platform E2E | `bash scripts/ci/local-ci.sh --e2e-only platform` |
+| 大范围重构或不确定影响面 | 全量执行 | `bash scripts/ci/local-ci.sh` |
+
+### 最小必须执行项
+
+无论修改范围多小，以下两项始终必须执行：
+1. `cargo fmt --all -- --check`
+2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+这两项可通过 `bash scripts/ci/local-ci.sh --skip-e2e` 快速完成（包含 fmt + clippy + 单元测试）。
+
+### E2E 套件对照表
+
+| 套件名 | 对应脚本 | 覆盖范围 |
+| --- | --- | --- |
+| `rules` | `scripts/ci/run-e2e-rules.sh` | 规则匹配、请求转发、Header 修改等 |
+| `shell` | `scripts/ci/run-e2e-shell.sh` | CLI 命令、Shell 交互 |
+| `runner` | `scripts/ci/run-e2e-runner.sh` | 服务启停、生命周期管理 |
+| `platform` | `scripts/ci/run-e2e-platform.sh` | 平台集成、跨端能力 |
 
 
 ## 禁用searchAgent

@@ -266,8 +266,14 @@ impl Matcher for DomainMatcher {
 
         if self.path_pattern.is_some() {
             priority += match &self.path_pattern {
-                Some(PathPattern::Exact(_)) => 15,
-                Some(PathPattern::Prefix(_)) => 10,
+                Some(PathPattern::Exact(path)) => {
+                    let segments = path.split('/').filter(|s| !s.is_empty()).count() as i32;
+                    15 + segments
+                }
+                Some(PathPattern::Prefix(prefix)) => {
+                    let segments = prefix.split('/').filter(|s| !s.is_empty()).count() as i32;
+                    10 + segments
+                }
                 None => 0,
             };
         }
@@ -484,19 +490,52 @@ mod tests {
     #[test]
     fn test_priority_with_exact_path() {
         let with_path = DomainMatcher::new("example.com/api/users");
-        assert_eq!(with_path.priority(), 115);
+        assert_eq!(with_path.priority(), 117);
     }
 
     #[test]
     fn test_priority_with_path_prefix() {
         let with_prefix = DomainMatcher::new("example.com/api/*");
-        assert_eq!(with_prefix.priority(), 110);
+        assert_eq!(with_prefix.priority(), 111);
     }
 
     #[test]
     fn test_priority_full() {
         let full = DomainMatcher::new("https://example.com:8443/api/users");
-        assert_eq!(full.priority(), 130);
+        assert_eq!(full.priority(), 132);
+    }
+
+    #[test]
+    fn test_priority_path_depth_exact() {
+        let root = DomainMatcher::new("example.com/");
+        let shallow = DomainMatcher::new("example.com/api");
+        let deep = DomainMatcher::new("example.com/api/v1/");
+
+        assert_eq!(root.priority(), 115);
+        assert_eq!(shallow.priority(), 116);
+        assert_eq!(deep.priority(), 117);
+        assert!(deep.priority() > shallow.priority());
+        assert!(shallow.priority() > root.priority());
+    }
+
+    #[test]
+    fn test_priority_path_depth_prefix() {
+        let shallow = DomainMatcher::new("example.com/api/*");
+        let deep = DomainMatcher::new("example.com/api/v1/*");
+
+        assert_eq!(shallow.priority(), 111);
+        assert_eq!(deep.priority(), 112);
+        assert!(deep.priority() > shallow.priority());
+    }
+
+    #[test]
+    fn test_priority_specific_path_beats_root_with_protocol() {
+        let root_with_proto = DomainMatcher::new("https://example.com/");
+        let deep_with_proto = DomainMatcher::new("https://example.com/api/v1/");
+
+        assert_eq!(root_with_proto.priority(), 120);
+        assert_eq!(deep_with_proto.priority(), 122);
+        assert!(deep_with_proto.priority() > root_with_proto.priority());
     }
 
     #[test]
