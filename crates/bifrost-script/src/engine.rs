@@ -319,7 +319,7 @@ impl ScriptEngine {
         let mut scripts = Vec::new();
         Self::collect_scripts_recursive(&dir, &dir, script_type, &mut scripts)?;
 
-        scripts.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        scripts.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
         Ok(scripts)
     }
 

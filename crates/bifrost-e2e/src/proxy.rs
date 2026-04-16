@@ -213,10 +213,8 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
             });
 
             match protocol {
-                Protocol::Host => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                    }
+                Protocol::Host if !result.ignored.host => {
+                    result.host = Some(value.to_string());
                 }
                 Protocol::ReqHeaders => {
                     if let Some(headers) = parse_header_value(value) {
@@ -409,34 +407,24 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::Dns => {
                     result.dns_servers.push(value.to_string());
                 }
-                Protocol::XHost => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                    }
+                Protocol::XHost if !result.ignored.host => {
+                    result.host = Some(value.to_string());
                 }
-                Protocol::Http => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Http);
-                    }
+                Protocol::Http if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Http);
                 }
-                Protocol::Https => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Https);
-                    }
+                Protocol::Https if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Https);
                 }
-                Protocol::Ws => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Ws);
-                    }
+                Protocol::Ws if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Ws);
                 }
-                Protocol::Wss => {
-                    if !result.ignored.host {
-                        result.host = Some(value.to_string());
-                        result.host_protocol = Some(Protocol::Wss);
-                    }
+                Protocol::Wss if !result.ignored.host => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Wss);
                 }
                 Protocol::TlsIntercept => {
                     result.tls_intercept = Some(true);

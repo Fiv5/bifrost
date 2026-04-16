@@ -399,25 +399,17 @@ impl SearchEngine {
 
         for condition in &filters.conditions {
             match condition.field.as_str() {
-                "host" => {
-                    if condition.operator == "contains" || condition.operator == "equals" {
-                        params.host_contains = Some(condition.value.clone());
-                    }
+                "host" if condition.operator == "contains" || condition.operator == "equals" => {
+                    params.host_contains = Some(condition.value.clone());
                 }
-                "path" => {
-                    if condition.operator == "contains" || condition.operator == "equals" {
-                        params.path_contains = Some(condition.value.clone());
-                    }
+                "path" if condition.operator == "contains" || condition.operator == "equals" => {
+                    params.path_contains = Some(condition.value.clone());
                 }
-                "url" => {
-                    if condition.operator == "contains" || condition.operator == "equals" {
-                        params.url_contains = Some(condition.value.clone());
-                    }
+                "url" if condition.operator == "contains" || condition.operator == "equals" => {
+                    params.url_contains = Some(condition.value.clone());
                 }
-                "method" => {
-                    if condition.operator == "equals" {
-                        params.method = Some(condition.value.clone());
-                    }
+                "method" if condition.operator == "equals" => {
+                    params.method = Some(condition.value.clone());
                 }
                 "client_app" => match condition.operator.as_str() {
                     "equals" => {
@@ -644,50 +636,37 @@ impl SearchEngine {
 
             for p in &filters.protocols {
                 match p.to_uppercase().as_str() {
-                    "HTTP" => {
+                    "HTTP"
                         if protocol_upper == "HTTP"
                             || protocol_upper == "HTTP/1.0"
-                            || protocol_upper == "HTTP/1.1"
-                        {
-                            matched = true;
-                            break;
-                        }
+                            || protocol_upper == "HTTP/1.1" =>
+                    {
+                        matched = true;
+                        break;
                     }
-                    "HTTPS" => {
-                        if protocol_upper == "HTTPS" || protocol_upper == "HTTP/2" {
-                            matched = true;
-                            break;
-                        }
+                    "HTTPS" if protocol_upper == "HTTPS" || protocol_upper == "HTTP/2" => {
+                        matched = true;
+                        break;
                     }
-                    "H2" => {
-                        if protocol_upper.contains("HTTP/2") {
-                            matched = true;
-                            break;
-                        }
+                    "H2" if protocol_upper.contains("HTTP/2") => {
+                        matched = true;
+                        break;
                     }
-                    "WS" => {
-                        if is_websocket && protocol_upper == "WS" {
-                            matched = true;
-                            break;
-                        }
+                    "WS" if is_websocket && protocol_upper == "WS" => {
+                        matched = true;
+                        break;
                     }
-                    "WSS" => {
-                        if is_websocket && protocol_upper == "WSS" {
-                            matched = true;
-                            break;
-                        }
+                    "WSS" if is_websocket && protocol_upper == "WSS" => {
+                        matched = true;
+                        break;
                     }
-                    "H3" => {
-                        if is_h3 || protocol_upper == "H3" {
-                            matched = true;
-                            break;
-                        }
+                    "H3" if is_h3 || protocol_upper == "H3" => {
+                        matched = true;
+                        break;
                     }
-                    "SSE" => {
-                        if is_sse {
-                            matched = true;
-                            break;
-                        }
+                    "SSE" if is_sse => {
+                        matched = true;
+                        break;
                     }
                     _ => {}
                 }
@@ -704,41 +683,29 @@ impl SearchEngine {
 
             for range in &filters.status_ranges {
                 match range.as_str() {
-                    "error" => {
-                        if status == 0 || status >= 500 {
-                            matched = true;
-                            break;
-                        }
+                    "error" if status == 0 || status >= 500 => {
+                        matched = true;
+                        break;
                     }
-                    "1xx" => {
-                        if (100..200).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "1xx" if (100..200).contains(&status) => {
+                        matched = true;
+                        break;
                     }
-                    "2xx" => {
-                        if (200..300).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "2xx" if (200..300).contains(&status) => {
+                        matched = true;
+                        break;
                     }
-                    "3xx" => {
-                        if (300..400).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "3xx" if (300..400).contains(&status) => {
+                        matched = true;
+                        break;
                     }
-                    "4xx" => {
-                        if (400..500).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "4xx" if (400..500).contains(&status) => {
+                        matched = true;
+                        break;
                     }
-                    "5xx" => {
-                        if (500..600).contains(&status) {
-                            matched = true;
-                            break;
-                        }
+                    "5xx" if (500..600).contains(&status) => {
+                        matched = true;
+                        break;
                     }
                     _ => {}
                 }

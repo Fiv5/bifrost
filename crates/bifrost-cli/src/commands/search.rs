@@ -1108,12 +1108,10 @@ fn run_tui_loop<B: ratatui::backend::Backend>(
                             app.selected_index = 0;
                             app.scroll_offset = 0;
                         }
-                        KeyCode::End | KeyCode::Char('G') => {
-                            if !app.results.is_empty() {
-                                app.selected_index = app.results.len() - 1;
-                                if app.selected_index >= app.visible_height {
-                                    app.scroll_offset = app.selected_index - app.visible_height + 1;
-                                }
+                        KeyCode::End | KeyCode::Char('G') if !app.results.is_empty() => {
+                            app.selected_index = app.results.len() - 1;
+                            if app.selected_index >= app.visible_height {
+                                app.scroll_offset = app.selected_index - app.visible_height + 1;
                             }
                         }
                         KeyCode::Enter => app.load_detail(),

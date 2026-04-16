@@ -89,26 +89,19 @@ fn parse_subscription_from_query(query: &str) -> (String, ClientSubscription) {
         if let Some((key, value)) = pair.split_once('=') {
             let value = urlencoding::decode(value).unwrap_or_default();
             match key {
-                "x_client_id" => {
-                    if !value.is_empty() {
-                        client_key = Some(value.to_string());
-                    }
+                "x_client_id" if !value.is_empty() => {
+                    client_key = Some(value.to_string());
                 }
-                "last_traffic_id" => {
-                    if !value.is_empty() {
-                        subscription.last_traffic_id = Some(value.to_string());
-                    }
+                "last_traffic_id" if !value.is_empty() => {
+                    subscription.last_traffic_id = Some(value.to_string());
                 }
                 "last_sequence" => {
                     if let Ok(sequence) = value.parse() {
                         subscription.last_sequence = Some(sequence);
                     }
                 }
-                "pending_ids" => {
-                    if !value.is_empty() {
-                        subscription.pending_ids =
-                            value.split(',').map(|s| s.to_string()).collect();
-                    }
+                "pending_ids" if !value.is_empty() => {
+                    subscription.pending_ids = value.split(',').map(|s| s.to_string()).collect();
                 }
                 "need_traffic" => {
                     subscription.need_traffic = value == "true" || value == "1";
@@ -134,11 +127,9 @@ fn parse_subscription_from_query(query: &str) -> (String, ClientSubscription) {
                 "need_replay_groups" => {
                     subscription.need_replay_groups = value == "true" || value == "1";
                 }
-                "settings_scopes" => {
-                    if !value.is_empty() {
-                        subscription.settings_scopes =
-                            value.split(',').map(|s| s.to_string()).collect();
-                    }
+                "settings_scopes" if !value.is_empty() => {
+                    subscription.settings_scopes =
+                        value.split(',').map(|s| s.to_string()).collect();
                 }
                 "history_limit" => {
                     if let Ok(limit) = value.parse() {

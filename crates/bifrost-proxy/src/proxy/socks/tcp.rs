@@ -1352,16 +1352,14 @@ impl SocksHandler {
                         }
                     }
                 }
-                Some(crate::protocol::TransportProtocol::Http1) => {
-                    if self.rules.is_some() {
-                        debug!(
-                            "SOCKS5: HTTP interception for {}:{}",
-                            target_host, target_port
-                        );
-                        return self
-                            .relay_with_http_intercept(target_stream, target_host, target_port)
-                            .await;
-                    }
+                Some(crate::protocol::TransportProtocol::Http1) if self.rules.is_some() => {
+                    debug!(
+                        "SOCKS5: HTTP interception for {}:{}",
+                        target_host, target_port
+                    );
+                    return self
+                        .relay_with_http_intercept(target_stream, target_host, target_port)
+                        .await;
                 }
                 _ => {}
             }

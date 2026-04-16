@@ -80,7 +80,7 @@ pub fn get_local_ips() -> Vec<LocalIpInfo> {
         }
     }
 
-    results.sort_by(|a, b| b.is_preferred.cmp(&a.is_preferred));
+    results.sort_by_key(|b| std::cmp::Reverse(b.is_preferred));
 
     if results.is_empty() {
         results.push(LocalIpInfo {

@@ -38,48 +38,38 @@ pub fn build_applied_rules(core_rules: &CoreResolvedRules) -> AppliedRules {
 
     for rule in &core_rules.rules {
         match rule.rule.protocol {
-            Protocol::Http | Protocol::Https | Protocol::Ws | Protocol::Wss => {
-                if applied.forward_url.is_none() {
-                    let scheme = match rule.rule.protocol {
-                        Protocol::Http => "http",
-                        Protocol::Https => "https",
-                        Protocol::Ws => "ws",
-                        Protocol::Wss => "wss",
-                        _ => continue,
-                    };
-                    let value = rule.resolved_value.trim_end_matches('/');
-                    let forward_url = if value.contains("://") {
-                        value.to_string()
-                    } else {
-                        format!("{}://{}", scheme, value)
-                    };
-                    applied.forward_url = Some(forward_url);
-                }
+            Protocol::Http | Protocol::Https | Protocol::Ws | Protocol::Wss
+                if applied.forward_url.is_none() =>
+            {
+                let scheme = match rule.rule.protocol {
+                    Protocol::Http => "http",
+                    Protocol::Https => "https",
+                    Protocol::Ws => "ws",
+                    Protocol::Wss => "wss",
+                    _ => continue,
+                };
+                let value = rule.resolved_value.trim_end_matches('/');
+                let forward_url = if value.contains("://") {
+                    value.to_string()
+                } else {
+                    format!("{}://{}", scheme, value)
+                };
+                applied.forward_url = Some(forward_url);
             }
-            Protocol::Host | Protocol::XHost => {
-                if applied.host.is_none() {
-                    applied.host = Some(rule.resolved_value.clone());
-                }
+            Protocol::Host | Protocol::XHost if applied.host.is_none() => {
+                applied.host = Some(rule.resolved_value.clone());
             }
-            Protocol::Method => {
-                if applied.method.is_none() {
-                    applied.method = Some(rule.resolved_value.clone());
-                }
+            Protocol::Method if applied.method.is_none() => {
+                applied.method = Some(rule.resolved_value.clone());
             }
-            Protocol::Ua => {
-                if applied.ua.is_none() {
-                    applied.ua = Some(rule.resolved_value.clone());
-                }
+            Protocol::Ua if applied.ua.is_none() => {
+                applied.ua = Some(rule.resolved_value.clone());
             }
-            Protocol::Referer => {
-                if applied.referer.is_none() {
-                    applied.referer = Some(rule.resolved_value.clone());
-                }
+            Protocol::Referer if applied.referer.is_none() => {
+                applied.referer = Some(rule.resolved_value.clone());
             }
-            Protocol::Auth => {
-                if applied.auth.is_none() {
-                    applied.auth = Some(rule.resolved_value.clone());
-                }
+            Protocol::Auth if applied.auth.is_none() => {
+                applied.auth = Some(rule.resolved_value.clone());
             }
             Protocol::ReqHeaders => {
                 if let Some((key, value)) = parse_header_value(&rule.resolved_value) {
@@ -105,23 +95,17 @@ pub fn build_applied_rules(core_rules: &CoreResolvedRules) -> AppliedRules {
                     applied.url_replace.push((from, to));
                 }
             }
-            Protocol::ReqBody => {
-                if applied.req_body.is_none() {
-                    let content = extract_inline_content(&rule.resolved_value);
-                    applied.req_body = Some(Bytes::from(content));
-                }
+            Protocol::ReqBody if applied.req_body.is_none() => {
+                let content = extract_inline_content(&rule.resolved_value);
+                applied.req_body = Some(Bytes::from(content));
             }
-            Protocol::ReqPrepend => {
-                if applied.req_prepend.is_none() {
-                    let content = extract_inline_content(&rule.resolved_value);
-                    applied.req_prepend = Some(Bytes::from(content));
-                }
+            Protocol::ReqPrepend if applied.req_prepend.is_none() => {
+                let content = extract_inline_content(&rule.resolved_value);
+                applied.req_prepend = Some(Bytes::from(content));
             }
-            Protocol::ReqAppend => {
-                if applied.req_append.is_none() {
-                    let content = extract_inline_content(&rule.resolved_value);
-                    applied.req_append = Some(Bytes::from(content));
-                }
+            Protocol::ReqAppend if applied.req_append.is_none() => {
+                let content = extract_inline_content(&rule.resolved_value);
+                applied.req_append = Some(Bytes::from(content));
             }
             Protocol::ReqReplace => {
                 if let Some((from, to)) = parse_replace_value(&rule.resolved_value) {
