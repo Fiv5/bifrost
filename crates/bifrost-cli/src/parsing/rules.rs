@@ -763,4 +763,1456 @@ mod tests {
         assert_eq!(parsed.res_headers, vec!["X-Echo-Server"]);
         assert_eq!(parsed.url_params, vec!["trace"]);
     }
+
+    #[test]
+    fn test_later_reqheaders_rule_should_override_earlier_same_header() {
+        let rules_text = r#"
+`https://bifrost.local/` reqHeaders://{ppe}
+`https://bifrost.local/api/v1/` reqHeaders://{ppe2}
+```ppe
+x-tt-env: ppe_next_agent_new
+x-use-ppe: 1
+```
+```ppe2
+x-tt-env: ppe_fix_disabled_skill_loading
+x-use-ppe: 1
+```
+"#;
+        let parser = bifrost_core::RuleParser::new();
+        let (rules, values) = parser.parse_rules_with_inline_values(rules_text).unwrap();
+
+        let resolver = CoreRulesResolver::new(rules).with_values(values);
+
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://bifrost.local/api/v1/oncall/system/env_info",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let x_tt_env = resolved
+            .req_headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == "x-tt-env")
+            .map(|(_, v)| v.as_str());
+
+        assert_eq!(
+            x_tt_env,
+            Some("ppe_fix_disabled_skill_loading"),
+            "Later reqHeaders rule with more specific path should override earlier rule's same-name header. \
+             Got {:?}, expected 'ppe_fix_disabled_skill_loading'. \
+             Current req_headers: {:?}",
+            x_tt_env,
+            resolved.req_headers
+        );
+    }
+
+    #[test]
+    fn test_merge_host_first_match_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com host://target1:8080\nexample.com host://target2:9090")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target1:8080"));
+    }
+
+    #[test]
+    fn test_merge_host_passthrough_blocks_host() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com passthrough://\nexample.com host://target1:8080")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved.ignored.host);
+        assert_eq!(resolved.host, None);
+    }
+
+    #[test]
+    fn test_merge_xhost_first_match_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com xhost://target1:8080\nexample.com xhost://target2:9090")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target1:8080"));
+    }
+
+    #[test]
+    fn test_merge_http_first_match_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com http://target1:8080\nexample.com http://target2:9090")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target1:8080"));
+    }
+
+    #[test]
+    fn test_merge_https_first_match_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com https://target1:8080\nexample.com https://target2:9090")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target1:8080"));
+    }
+
+    #[test]
+    fn test_merge_ws_first_match_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com ws://target1:8080\nexample.com ws://target2:9090")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "ws://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target1:8080"));
+    }
+
+    #[test]
+    fn test_merge_wss_first_match_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com wss://target1:8080\nexample.com wss://target2:9090")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "wss://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target1:8080"));
+    }
+
+    #[test]
+    fn test_merge_tunnel_assigns_host() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com tunnel://target1:8080")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "tunnel://example.com:443",
+            "CONNECT",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target1:8080"));
+        assert_eq!(resolved.host_protocol, Some(Protocol::Tunnel));
+    }
+
+    #[test]
+    fn test_merge_file_non_multi_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com file://(content_a)\nexample.com file://(content_b)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.mock_file.as_deref(), Some("(content_a)"));
+    }
+
+    #[test]
+    fn test_merge_tpl_non_multi_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com tpl://(tpl_a)\nexample.com tpl://(tpl_b)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.mock_template.as_deref(), Some("(tpl_a)"));
+    }
+
+    #[test]
+    fn test_merge_rawfile_non_multi_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com rawfile://(raw_a)\nexample.com rawfile://(raw_b)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.mock_rawfile.as_deref(), Some("(raw_a)"));
+    }
+
+    #[test]
+    fn test_merge_redirect_non_multi_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com redirect://http://target-a.com\nexample.com redirect://http://target-b.com",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.redirect.as_deref(), Some("http://target-a.com"));
+    }
+
+    #[test]
+    fn test_merge_status_code_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com statusCode://200\nexample.com statusCode://404")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.status_code, Some(200));
+    }
+
+    #[test]
+    fn test_merge_replace_status_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com replaceStatus://201\nexample.com replaceStatus://404")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.replace_status, Some(201));
+    }
+
+    #[test]
+    fn test_merge_method_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com method://POST\nexample.com method://PUT")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.method.as_deref(), Some("POST"));
+    }
+
+    #[test]
+    fn test_merge_ua_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com ua://Agent1\nexample.com ua://Agent2")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.ua.as_deref(), Some("Agent1"));
+    }
+
+    #[test]
+    fn test_merge_referer_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com referer://ref1.example.com\nexample.com referer://ref2.example.com",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.referer.as_deref(), Some("ref1.example.com"));
+    }
+
+    #[test]
+    fn test_merge_proxy_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com proxy://socks5://proxy1:1080\nexample.com proxy://socks5://proxy2:1081",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.proxy.as_deref(), Some("socks5://proxy1:1080"));
+    }
+
+    #[test]
+    fn test_merge_auth_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com auth://user1:pass1\nexample.com auth://user2:pass2")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.auth.as_deref(), Some("user1:pass1"));
+    }
+
+    #[test]
+    fn test_merge_req_delay_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqDelay://1000\nexample.com reqDelay://2000")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.req_delay, Some(1000));
+    }
+
+    #[test]
+    fn test_merge_res_delay_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resDelay://500\nexample.com resDelay://1000")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.res_delay, Some(500));
+    }
+
+    #[test]
+    fn test_merge_req_speed_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqSpeed://100\nexample.com reqSpeed://200")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.req_speed, Some(100 * 1024));
+    }
+
+    #[test]
+    fn test_merge_res_speed_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resSpeed://50\nexample.com resSpeed://100")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.res_speed, Some(50 * 1024));
+    }
+
+    #[test]
+    fn test_merge_req_type_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqType://application/json\nexample.com reqType://text/xml")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.req_type.as_deref(), Some("application/json"));
+    }
+
+    #[test]
+    fn test_merge_res_type_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resType://application/json\nexample.com resType://text/html")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.res_type.as_deref(), Some("application/json"));
+    }
+
+    #[test]
+    fn test_merge_req_charset_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqCharset://utf-8\nexample.com reqCharset://gbk")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.req_charset.as_deref(), Some("utf-8"));
+    }
+
+    #[test]
+    fn test_merge_res_charset_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resCharset://utf-8\nexample.com resCharset://gbk")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.res_charset.as_deref(), Some("utf-8"));
+    }
+
+    #[test]
+    fn test_merge_cache_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com cache://no-cache\nexample.com cache://max-age=3600")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.cache.as_deref(), Some("no-cache"));
+    }
+
+    #[test]
+    fn test_merge_attachment_single_match() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com attachment://file_a.zip\nexample.com attachment://file_b.zip")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.attachment.as_deref(), Some("file_a.zip"));
+    }
+
+    #[test]
+    fn test_merge_http3_flag() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser.parse_rules("example.com http3://").unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved.upstream_http3);
+    }
+
+    #[test]
+    fn test_merge_res_body_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resBody://(body_first)\nexample.com resBody://(body_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved
+                .res_body
+                .as_ref()
+                .map(|b| std::str::from_utf8(b).unwrap()),
+            Some("body_last")
+        );
+    }
+
+    #[test]
+    fn test_merge_req_body_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqBody://(body_first)\nexample.com reqBody://(body_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved
+                .req_body
+                .as_ref()
+                .map(|b| std::str::from_utf8(b).unwrap()),
+            Some("body_last")
+        );
+    }
+
+    #[test]
+    fn test_merge_req_prepend_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com reqPrepend://(prepend_first)\nexample.com reqPrepend://(prepend_last)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved
+                .req_prepend
+                .as_ref()
+                .map(|b| std::str::from_utf8(b).unwrap()),
+            Some("prepend_last")
+        );
+    }
+
+    #[test]
+    fn test_merge_req_append_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com reqAppend://(append_first)\nexample.com reqAppend://(append_last)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved
+                .req_append
+                .as_ref()
+                .map(|b| std::str::from_utf8(b).unwrap()),
+            Some("append_last")
+        );
+    }
+
+    #[test]
+    fn test_merge_res_prepend_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com resPrepend://(prepend_first)\nexample.com resPrepend://(prepend_last)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved
+                .res_prepend
+                .as_ref()
+                .map(|b| std::str::from_utf8(b).unwrap()),
+            Some("prepend_last")
+        );
+    }
+
+    #[test]
+    fn test_merge_res_append_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com resAppend://(append_first)\nexample.com resAppend://(append_last)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved
+                .res_append
+                .as_ref()
+                .map(|b| std::str::from_utf8(b).unwrap()),
+            Some("append_last")
+        );
+    }
+
+    #[test]
+    fn test_merge_res_cors_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com resCors://http://origin-a.com\nexample.com resCors://http://origin-b.com",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved.res_cors.origin.as_deref(),
+            Some("http://origin-b.com")
+        );
+    }
+
+    #[test]
+    fn test_merge_req_cors_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com reqCors://http://origin-a.com\nexample.com reqCors://http://origin-b.com",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved.req_cors.origin.as_deref(),
+            Some("http://origin-b.com")
+        );
+    }
+
+    #[test]
+    fn test_merge_req_replace_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqReplace://old1=new1\nexample.com reqReplace://old2=new2")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.req_replace.len(), 2);
+        assert!(resolved
+            .req_replace
+            .iter()
+            .any(|(o, n)| o == "old1" && n == "new1"));
+        assert!(resolved
+            .req_replace
+            .iter()
+            .any(|(o, n)| o == "old2" && n == "new2"));
+    }
+
+    #[test]
+    fn test_merge_res_replace_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resReplace://old1=new1\nexample.com resReplace://old2=new2")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.res_replace.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_url_replace_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com urlReplace://old_path=new_path\nexample.com urlReplace://old_query=new_query",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.url_replace.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_req_script_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqScript://script1.js\nexample.com reqScript://script2.js")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.req_scripts.len(), 2);
+        assert_eq!(resolved.req_scripts[0], "script1.js");
+        assert_eq!(resolved.req_scripts[1], "script2.js");
+    }
+
+    #[test]
+    fn test_merge_res_script_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resScript://script1.js\nexample.com resScript://script2.js")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.res_scripts.len(), 2);
+        assert_eq!(resolved.res_scripts[0], "script1.js");
+        assert_eq!(resolved.res_scripts[1], "script2.js");
+    }
+
+    #[test]
+    fn test_merge_decode_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com decode://gzip\nexample.com decode://br")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.decode_scripts.len(), 2);
+        assert_eq!(resolved.decode_scripts[0], "gzip");
+        assert_eq!(resolved.decode_scripts[1], "br");
+    }
+
+    #[test]
+    fn test_merge_dns_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser.parse_rules("example.com dns://8.8.8.8").unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.dns_servers.len(), 1);
+        assert_eq!(resolved.dns_servers[0], "8.8.8.8");
+    }
+
+    #[test]
+    fn test_merge_delete_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com delete://reqHeaders.X-Debug|resHeaders.X-Server\nexample.com delete://urlParams.trace",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved.delete_req_headers.contains(&"X-Debug".to_string()));
+        assert!(resolved
+            .delete_res_headers
+            .contains(&"X-Server".to_string()));
+        assert!(resolved.delete_url_params.contains(&"trace".to_string()));
+    }
+
+    #[test]
+    fn test_merge_header_replace_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com headerReplace://req.X-Token:old=new\nexample.com headerReplace://res.X-Server:apache=nginx",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.header_replace.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_req_cookies_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com reqCookies://session=abc\nexample.com reqCookies://token=xyz")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved.req_cookies.len() >= 2);
+        assert!(resolved.req_cookies.iter().any(|(k, _)| k == "session"));
+        assert!(resolved.req_cookies.iter().any(|(k, _)| k == "token"));
+    }
+
+    #[test]
+    fn test_merge_res_cookies_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com resCookies://session=abc\nexample.com resCookies://token=xyz")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved.res_cookies.len() >= 2);
+    }
+
+    #[test]
+    fn test_merge_url_params_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com urlParams://(key_a:val_a)\nexample.com urlParams://(key_b:val_b)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved.url_params.len() >= 2);
+        assert!(resolved.url_params.iter().any(|(k, _)| k == "key_a"));
+        assert!(resolved.url_params.iter().any(|(k, _)| k == "key_b"));
+    }
+
+    #[test]
+    fn test_merge_trailers_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com trailers://X-Checksum=abc\nexample.com trailers://X-Audit=123",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.trailers.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_html_append_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com htmlAppend://(html_first)\nexample.com htmlAppend://(html_last)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.html_append.as_deref(), Some("html_last"));
+    }
+
+    #[test]
+    fn test_merge_html_prepend_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com htmlPrepend://(html_first)\nexample.com htmlPrepend://(html_last)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.html_prepend.as_deref(), Some("html_last"));
+    }
+
+    #[test]
+    fn test_merge_html_body_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com htmlBody://(html_first)\nexample.com htmlBody://(html_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.html_body.as_deref(), Some("html_last"));
+    }
+
+    #[test]
+    fn test_merge_js_append_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com jsAppend://(js_first)\nexample.com jsAppend://(js_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.js_append.as_deref(), Some("js_last"));
+    }
+
+    #[test]
+    fn test_merge_js_prepend_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com jsPrepend://(js_first)\nexample.com jsPrepend://(js_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.js_prepend.as_deref(), Some("js_last"));
+    }
+
+    #[test]
+    fn test_merge_js_body_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com jsBody://(js_first)\nexample.com jsBody://(js_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.js_body.as_deref(), Some("js_last"));
+    }
+
+    #[test]
+    fn test_merge_css_append_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com cssAppend://(css_first)\nexample.com cssAppend://(css_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.css_append.as_deref(), Some("css_last"));
+    }
+
+    #[test]
+    fn test_merge_css_prepend_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com cssPrepend://(css_first)\nexample.com cssPrepend://(css_last)",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.css_prepend.as_deref(), Some("css_last"));
+    }
+
+    #[test]
+    fn test_merge_css_body_last_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com cssBody://(css_first)\nexample.com cssBody://(css_last)")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.css_body.as_deref(), Some("css_last"));
+    }
+
+    #[test]
+    fn test_merge_forwarded_for_pushes_to_req_headers() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com forwardedFor://192.168.1.1")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved
+            .req_headers
+            .iter()
+            .any(|(k, v)| k == "x-forwarded-for" && v == "192.168.1.1"));
+    }
+
+    #[test]
+    fn test_merge_response_for_pushes_to_res_headers() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com responseFor://test-response")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved
+            .res_headers
+            .iter()
+            .any(|(k, v)| k == "x-bifrost-response-for" && v == "test-response"));
+    }
+
+    #[test]
+    fn test_merge_passthrough_sets_ignored_host() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser.parse_rules("example.com passthrough://").unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved.ignored.host);
+    }
+
+    #[test]
+    fn test_merge_tls_intercept() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser.parse_rules("example.com tlsIntercept://").unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.tls_intercept, Some(true));
+    }
+
+    #[test]
+    fn test_merge_tls_passthrough() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser.parse_rules("example.com tlsPassthrough://").unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.tls_intercept, Some(false));
+    }
+
+    #[test]
+    fn test_merge_tls_options() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com tlsOptions://tls1.3")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.tls_options.as_deref(), Some("tls1.3"));
+    }
+
+    #[test]
+    fn test_merge_sni_callback() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com sniCallback://custom_sni_handler")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.sni_callback.as_deref(), Some("custom_sni_handler"));
+    }
+
+    #[test]
+    fn test_merge_forward_and_modify_coexist() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com host://target:8080\nexample.com reqHeaders://X-Custom=hello\nexample.com resHeaders://X-Response=world\nexample.com reqCookies://session=abc",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.host.as_deref(), Some("target:8080"));
+        assert!(resolved
+            .req_headers
+            .iter()
+            .any(|(k, v)| k.to_lowercase() == "x-custom" && v == "hello"));
+        assert!(resolved
+            .res_headers
+            .iter()
+            .any(|(k, v)| k.to_lowercase() == "x-response" && v == "world"));
+        assert!(resolved.req_cookies.iter().any(|(k, _)| k == "session"));
+    }
+
+    #[test]
+    fn test_merge_multiple_accumulate_protocols() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com reqReplace://foo=bar\nexample.com resReplace://baz=qux\nexample.com urlReplace://old=new\nexample.com reqScript://s1.js\nexample.com resScript://s2.js",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved.req_replace.len(), 1);
+        assert_eq!(resolved.res_replace.len(), 1);
+        assert_eq!(resolved.url_replace.len(), 1);
+        assert_eq!(resolved.req_scripts.len(), 1);
+        assert_eq!(resolved.res_scripts.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_redirect_with_status_code() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules("example.com redirect://301:http://new-location.com")
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            resolved.redirect.as_deref(),
+            Some("http://new-location.com")
+        );
+        assert_eq!(resolved.redirect_status, Some(301));
+    }
+
+    #[test]
+    fn test_merge_reqheaders_different_keys_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com reqHeaders://X-Header-A=val-a\nexample.com reqHeaders://X-Header-B=val-b",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved
+            .req_headers
+            .iter()
+            .any(|(k, v)| k.to_lowercase() == "x-header-a" && v == "val-a"));
+        assert!(resolved
+            .req_headers
+            .iter()
+            .any(|(k, v)| k.to_lowercase() == "x-header-b" && v == "val-b"));
+    }
+
+    #[test]
+    fn test_merge_resheaders_different_keys_accumulate() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com resHeaders://X-Header-A=val-a\nexample.com resHeaders://X-Header-B=val-b",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(resolved
+            .res_headers
+            .iter()
+            .any(|(k, v)| k.to_lowercase() == "x-header-a" && v == "val-a"));
+        assert!(resolved
+            .res_headers
+            .iter()
+            .any(|(k, v)| k.to_lowercase() == "x-header-b" && v == "val-b"));
+    }
+
+    #[test]
+    fn test_merge_reqheaders_same_key_first_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com reqHeaders://X-Same=first\nexample.com reqHeaders://X-Same=second",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let val = resolved
+            .req_headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == "x-same")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(val, Some("first"));
+    }
+
+    #[test]
+    fn test_merge_resheaders_same_key_first_wins() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser
+            .parse_rules(
+                "example.com resHeaders://X-Same=first\nexample.com resHeaders://X-Same=second",
+            )
+            .unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "http://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let val = resolved
+            .res_headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == "x-same")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(val, Some("first"));
+    }
 }
