@@ -14,6 +14,8 @@ NC='\033[0m'
 SKIP_E2E=0
 SKIP_STATIC=0
 E2E_ONLY=""
+RUN_COVERAGE=0
+COVERAGE_FORMAT="text"
 
 usage() {
   cat <<'EOF'
@@ -26,22 +28,28 @@ Options:
   --skip-e2e          Skip all E2E tests (only run fmt/clippy/test)
   --skip-static       Skip fmt/clippy/test (only run E2E)
   --e2e-only TYPE     Run only a specific E2E suite: rules, shell, runner, platform
+  --coverage          Run unit-test coverage report after tests
+  --coverage-html     Run unit-test coverage and open HTML report
   -h, --help          Show this help
 
 Examples:
   scripts/ci/local-ci.sh                    # Run everything
   scripts/ci/local-ci.sh --skip-e2e         # Quick static checks + unit tests
   scripts/ci/local-ci.sh --e2e-only rules   # Only E2E rules suite
+  scripts/ci/local-ci.sh --coverage         # Run everything + coverage report
+  scripts/ci/local-ci.sh --coverage-html    # Run everything + HTML coverage
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --skip-e2e)    SKIP_E2E=1; shift ;;
-    --skip-static) SKIP_STATIC=1; shift ;;
-    --e2e-only)    E2E_ONLY="$2"; shift 2 ;;
-    -h|--help)     usage; exit 0 ;;
-    *)             echo "Unknown option: $1" >&2; usage; exit 1 ;;
+    --skip-e2e)     SKIP_E2E=1; shift ;;
+    --skip-static)  SKIP_STATIC=1; shift ;;
+    --e2e-only)     E2E_ONLY="$2"; shift 2 ;;
+    --coverage)     RUN_COVERAGE=1; COVERAGE_FORMAT="text"; shift ;;
+    --coverage-html) RUN_COVERAGE=1; COVERAGE_FORMAT="html"; shift ;;
+    -h|--help)      usage; exit 0 ;;
+    *)              echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
 done
 
@@ -155,6 +163,16 @@ else
   register_result "E2E shell" "SKIP"
   register_result "E2E runner" "SKIP"
   register_result "E2E platform" "SKIP"
+fi
+
+if [[ "$RUN_COVERAGE" -eq 1 ]]; then
+  COV_ARGS=()
+  if [[ "$COVERAGE_FORMAT" == "html" ]]; then
+    COV_ARGS+=(--open)
+  fi
+  run_step "Unit-test coverage" bash scripts/ci/coverage.sh "--$COVERAGE_FORMAT" "${COV_ARGS[@]}" || HAD_FAILURE=1
+else
+  register_result "Unit-test coverage" "SKIP"
 fi
 
 print_report
