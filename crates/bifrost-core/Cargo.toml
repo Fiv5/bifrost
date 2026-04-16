@@ -18,7 +18,7 @@ uuid.workspace = true
 rand.workspace = true
 url.workspace = true
 urlencoding.workspace = true
-chrono.workspace = true
+chrono = { workspace = true, features = ["serde"] }
 once_cell.workspace = true
 serde.workspace = true
 sysproxy.workspace = true
@@ -29,4 +29,4 @@ lru.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 ureq.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }

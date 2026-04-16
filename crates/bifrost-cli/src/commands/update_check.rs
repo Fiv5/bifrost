@@ -1,40 +1,15 @@
+use bifrost_core::version_check::{self, FetchError, VersionCache, GITHUB_RELEASE_URL};
 use bifrost_storage::data_dir;
-use chrono::{DateTime, Duration, Utc};
+use chrono::Duration;
+use chrono::Utc;
 use colored::Colorize;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::thread;
 use tracing::debug;
 
-const GITHUB_RELEASES_API_URL: &str =
-    "https://api.github.com/repos/bifrost-proxy/bifrost/releases/latest";
-const GITHUB_TAGS_API_URL: &str = "https://api.github.com/repos/bifrost-proxy/bifrost/tags";
-const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/tag";
 const CACHE_FILE_NAME: &str = "version_cache.json";
 const CACHE_DURATION_HOURS: i64 = 24;
-const REQUEST_TIMEOUT_SECS: u64 = 10;
-const MAX_RETRIES: u32 = 2;
-const RETRY_DELAY_MS: u64 = 500;
-const MAX_RELEASE_HIGHLIGHTS: usize = 5;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct VersionCache {
-    pub latest_version: String,
-    pub release_highlights: Vec<String>,
-    checked_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    body: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubTag {
-    name: String,
-}
 
 fn cache_file_path() -> PathBuf {
     data_dir().join(CACHE_FILE_NAME)
@@ -66,470 +41,14 @@ fn is_cache_valid(cache: &VersionCache) -> bool {
     cache_age < Duration::hours(CACHE_DURATION_HOURS)
 }
 
-fn classify_ureq_error(err: &ureq::Error) -> &'static str {
-    match err {
-        ureq::Error::Status(status, _) => {
-            if *status == 403 {
-                "GitHub API rate limit exceeded"
-            } else if *status == 404 {
-                "GitHub API endpoint not found"
-            } else {
-                "HTTP error from GitHub API"
-            }
-        }
-        ureq::Error::Transport(transport) => match transport.kind() {
-            ureq::ErrorKind::Dns => "DNS resolution failed (check network connectivity)",
-            ureq::ErrorKind::ConnectionFailed => {
-                "connection failed (GitHub may be unreachable from your network)"
-            }
-            ureq::ErrorKind::Io => {
-                let msg = transport.to_string().to_lowercase();
-                if msg.contains("timed out") || msg.contains("timeout") {
-                    "connection timed out (GitHub may be unreachable from your network)"
-                } else {
-                    "network I/O error"
-                }
-            }
-            ureq::ErrorKind::ProxyConnect | ureq::ErrorKind::ProxyUnauthorized => {
-                "proxy-related error"
-            }
-            ureq::ErrorKind::InvalidUrl | ureq::ErrorKind::UnknownScheme => "invalid URL",
-            ureq::ErrorKind::TooManyRedirects => "too many redirects",
-            ureq::ErrorKind::InsecureRequestHttpsOnly => "TLS/SSL configuration error",
-            _ => "network error",
-        },
-    }
-}
-
-fn fetch_with_retry(agent: &ureq::Agent, url: &str) -> Result<ureq::Response, Box<ureq::Error>> {
-    let mut last_err = None;
-    for attempt in 0..=MAX_RETRIES {
-        if attempt > 0 {
-            debug!(
-                attempt = attempt + 1,
-                max = MAX_RETRIES + 1,
-                url,
-                "retrying request"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(
-                RETRY_DELAY_MS * (attempt as u64),
-            ));
-        }
-        match agent.get(url).call() {
-            Ok(resp) => return Ok(resp),
-            Err(e) => {
-                let reason = classify_ureq_error(&e);
-                debug!(
-                    url,
-                    attempt = attempt + 1,
-                    error = %e,
-                    reason,
-                    "request failed"
-                );
-                last_err = Some(Box::new(e));
-            }
-        }
-    }
-    Err(last_err.unwrap())
-}
-
-#[derive(Debug)]
-pub(crate) enum FetchError {
-    Network(String),
-    Parse(String),
-}
-
-impl std::fmt::Display for FetchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FetchError::Network(msg) => write!(f, "{}", msg),
-            FetchError::Parse(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
 fn fetch_latest_release() -> Option<(String, Vec<String>)> {
-    match fetch_latest_release_detailed() {
+    match version_check::fetch_latest_release_sync() {
         Ok(result) => Some(result),
         Err(e) => {
             debug!(error = %e, "fetch_latest_release failed");
             None
         }
     }
-}
-
-fn fetch_latest_release_detailed() -> Result<(String, Vec<String>), FetchError> {
-    let agent = bifrost_core::direct_ureq_agent_builder()
-        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .user_agent("bifrost-cli")
-        .build();
-
-    match fetch_with_retry(&agent, GITHUB_RELEASES_API_URL) {
-        Ok(response) => match response.into_json::<GitHubRelease>() {
-            Ok(release) => {
-                let version = release
-                    .tag_name
-                    .strip_prefix('v')
-                    .unwrap_or(&release.tag_name)
-                    .to_string();
-                let highlights = parse_release_highlights(release.body.as_deref());
-                return Ok((version, highlights));
-            }
-            Err(e) => {
-                debug!(error = %e, "failed to parse GitHub release JSON, falling back to tags API");
-            }
-        },
-        Err(e) => {
-            let reason = classify_ureq_error(&e);
-            debug!(
-                error = %e,
-                reason,
-                "releases API failed, falling back to tags API"
-            );
-        }
-    }
-
-    let response = fetch_with_retry(&agent, GITHUB_TAGS_API_URL).map_err(|e| {
-        let reason = classify_ureq_error(&e);
-        FetchError::Network(format!("{}: {}", reason, e))
-    })?;
-
-    let tags: Vec<GitHubTag> = response
-        .into_json()
-        .map_err(|e| FetchError::Parse(format!("failed to parse tags response: {}", e)))?;
-
-    let version = tags
-        .into_iter()
-        .map(|t| t.name)
-        .filter(|name| name.starts_with('v'))
-        .map(|name| name.trim_start_matches('v').to_string())
-        .max_by(|a, b| compare_versions(a, b))
-        .ok_or_else(|| FetchError::Parse("no valid version tags found".to_string()))?;
-
-    Ok((version, Vec::new()))
-}
-
-fn parse_release_highlights(body: Option<&str>) -> Vec<String> {
-    let body = match body {
-        Some(b) if !b.trim().is_empty() => b,
-        _ => return Vec::new(),
-    };
-
-    let mut highlights = Vec::new();
-
-    let normalize = |s: &str| -> String {
-        let mapped: String = s
-            .chars()
-            .filter(|c| !c.is_control())
-            .map(|c| match c {
-                '’' | '‘' => '\'',
-                _ => c,
-            })
-            .collect();
-        mapped
-            .to_lowercase()
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || c.is_whitespace() || *c == '\'')
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_string()
-    };
-
-    let lines_iter = body.lines().enumerate().peekable();
-    for (idx, line) in lines_iter {
-        let l = line.trim();
-        if l.starts_with("## ") {
-            let title = normalize(l.trim_start_matches("## ").trim());
-            if title.contains("highlights")
-                || title.contains("what's new")
-                || title.contains("whats new")
-                || title.contains("what’s new")
-            {
-                let mut j = idx + 1;
-                while let Some(next_line) = body.lines().nth(j) {
-                    let nl = next_line.trim();
-                    if nl.starts_with("## ") {
-                        break;
-                    }
-                    if !nl.is_empty() {
-                        let cleaned = nl
-                            .trim_start_matches("- ")
-                            .trim_start_matches("* ")
-                            .trim_start_matches("• ")
-                            .trim();
-                        if !cleaned.is_empty() {
-                            highlights.push(cleaned.to_string());
-                            if highlights.len() >= MAX_RELEASE_HIGHLIGHTS {
-                                return highlights;
-                            }
-                        }
-                    }
-                    j += 1;
-                }
-            }
-        }
-    }
-
-    if highlights.is_empty() {
-        let mut k = 0usize;
-        while k < body.lines().count() {
-            let ln = body.lines().nth(k).unwrap().trim();
-            if ln.starts_with("### ") {
-                let title = normalize(ln.trim_start_matches("### ").trim());
-                if title.contains("features")
-                    || title.contains("new features")
-                    || title.contains("improvements")
-                    || title.contains("enhancements")
-                {
-                    let mut t = k + 1;
-                    while let Some(nl) = body.lines().nth(t) {
-                        let nlt = nl.trim();
-                        if nlt.starts_with("### ") || nlt.starts_with("## ") {
-                            break;
-                        }
-                        if nlt.starts_with("- ") || nlt.starts_with("* ") || nlt.starts_with("• ")
-                        {
-                            let cleaned = nlt
-                                .trim_start_matches("- ")
-                                .trim_start_matches("* ")
-                                .trim_start_matches("• ")
-                                .trim();
-                            if let Some(msg) = extract_commit_message(cleaned) {
-                                highlights.push(msg);
-                                if highlights.len() >= MAX_RELEASE_HIGHLIGHTS {
-                                    return highlights;
-                                }
-                            }
-                        }
-                        t += 1;
-                    }
-                }
-            }
-            k += 1;
-        }
-    }
-
-    if highlights.is_empty() {
-        let mut total_count = 0usize;
-        let mut k = 0usize;
-        while k < body.lines().count() {
-            let ln = body.lines().nth(k).unwrap().trim();
-            if ln.starts_with("### ") {
-                let mut t = k + 1;
-                while let Some(nl) = body.lines().nth(t) {
-                    let nlt = nl.trim();
-                    if nlt.starts_with("### ") || nlt.starts_with("## ") {
-                        break;
-                    }
-                    if nlt.starts_with("- ") || nlt.starts_with("* ") || nlt.starts_with("• ") {
-                        let cleaned = nlt
-                            .trim_start_matches("- ")
-                            .trim_start_matches("* ")
-                            .trim_start_matches("• ")
-                            .trim();
-                        if let Some(msg) = extract_any_commit_message(cleaned) {
-                            total_count += 1;
-                            if highlights.len() < MAX_RELEASE_HIGHLIGHTS {
-                                highlights.push(msg);
-                            }
-                        }
-                    }
-                    t += 1;
-                }
-            }
-            k += 1;
-        }
-        if total_count > MAX_RELEASE_HIGHLIGHTS {
-            highlights.push(format!(
-                "... and {} more",
-                total_count - MAX_RELEASE_HIGHLIGHTS
-            ));
-        }
-    }
-
-    if highlights.is_empty() {
-        highlights = fallback_extract_lines(body);
-    }
-
-    highlights
-}
-
-fn fallback_extract_lines(body: &str) -> Vec<String> {
-    const FALLBACK_LINES: usize = 5;
-
-    let mut lines = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with("**Full Changelog**")
-            || line.starts_with("---")
-            || line.starts_with("## 📥")
-            || line.starts_with("| ")
-            || line.starts_with("```")
-        {
-            continue;
-        }
-
-        let cleaned = line
-            .trim_start_matches("- ")
-            .trim_start_matches("* ")
-            .trim_start_matches("• ")
-            .trim();
-
-        if !cleaned.is_empty() && cleaned.len() > 5 {
-            let display = if let Some(idx) = cleaned.rfind(" (") {
-                if cleaned.ends_with(')') && cleaned.len() - idx < 15 {
-                    cleaned[..idx].trim().to_string()
-                } else {
-                    cleaned.to_string()
-                }
-            } else {
-                cleaned.to_string()
-            };
-
-            if !display.is_empty() {
-                lines.push(display);
-                if lines.len() >= FALLBACK_LINES {
-                    break;
-                }
-            }
-        }
-    }
-    lines
-}
-
-fn extract_commit_message(line: &str) -> Option<String> {
-    let cleaned = if let Some(idx) = line.rfind(" (") {
-        if line.ends_with(')') {
-            line[..idx].trim()
-        } else {
-            line
-        }
-    } else {
-        line
-    };
-
-    let cleaned = cleaned
-        .trim_start_matches("feat: ")
-        .trim_start_matches("feat(")
-        .split(')')
-        .next_back()
-        .unwrap_or(cleaned)
-        .trim_start_matches(": ")
-        .trim();
-
-    if cleaned.is_empty() {
-        None
-    } else {
-        Some(cleaned.to_string())
-    }
-}
-
-fn extract_any_commit_message(line: &str) -> Option<String> {
-    let cleaned = if let Some(idx) = line.rfind(" (") {
-        if line.ends_with(')') {
-            line[..idx].trim()
-        } else {
-            line
-        }
-    } else {
-        line
-    };
-
-    let prefixes = [
-        "feat: ",
-        "fix: ",
-        "chore: ",
-        "ci: ",
-        "docs: ",
-        "refactor: ",
-        "test: ",
-        "perf: ",
-        "style: ",
-        "build: ",
-    ];
-
-    let mut result = cleaned;
-    for prefix in prefixes {
-        if let Some(rest) = result.strip_prefix(prefix) {
-            result = rest;
-            break;
-        }
-    }
-
-    let scoped_prefixes = [
-        "feat(",
-        "fix(",
-        "chore(",
-        "ci(",
-        "docs(",
-        "refactor(",
-        "test(",
-        "perf(",
-        "style(",
-        "build(",
-    ];
-    for prefix in scoped_prefixes {
-        if result.starts_with(prefix) {
-            if let Some(idx) = result.find("): ") {
-                result = &result[idx + 3..];
-            }
-            break;
-        }
-    }
-
-    let result = result.trim();
-    if result.is_empty() {
-        None
-    } else {
-        Some(result.to_string())
-    }
-}
-
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    let parse_version = |s: &str| -> (u32, u32, u32, String) {
-        let (version_part, prerelease) = if let Some(idx) = s.find('-') {
-            (&s[..idx], s[idx + 1..].to_string())
-        } else {
-            (s, String::new())
-        };
-
-        let parts: Vec<u32> = version_part
-            .split('.')
-            .filter_map(|p| p.parse().ok())
-            .collect();
-
-        (
-            parts.first().copied().unwrap_or(0),
-            parts.get(1).copied().unwrap_or(0),
-            parts.get(2).copied().unwrap_or(0),
-            prerelease,
-        )
-    };
-
-    let (a_major, a_minor, a_patch, a_pre) = parse_version(a);
-    let (b_major, b_minor, b_patch, b_pre) = parse_version(b);
-
-    match (a_major, a_minor, a_patch).cmp(&(b_major, b_minor, b_patch)) {
-        std::cmp::Ordering::Equal => match (a_pre.is_empty(), b_pre.is_empty()) {
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            _ => a_pre.cmp(&b_pre),
-        },
-        other => other,
-    }
-}
-
-pub fn is_newer_version(current: &str, latest: &str) -> bool {
-    compare_versions(latest, current) == std::cmp::Ordering::Greater
 }
 
 fn is_ci_environment() -> bool {
@@ -574,7 +93,7 @@ pub fn get_latest_version() -> Option<VersionCache> {
 }
 
 pub fn get_latest_version_fresh_with_diagnostics() -> Result<VersionCache, String> {
-    match fetch_latest_release_detailed() {
+    match version_check::fetch_latest_release_sync() {
         Ok((latest, highlights)) => {
             let cache = VersionCache {
                 latest_version: latest,
@@ -584,7 +103,8 @@ pub fn get_latest_version_fresh_with_diagnostics() -> Result<VersionCache, Strin
             write_cache(&cache);
             Ok(cache)
         }
-        Err(e) => Err(e.to_string()),
+        Err(FetchError::Network(msg)) => Err(msg),
+        Err(FetchError::Parse(msg)) => Err(msg),
     }
 }
 
@@ -600,7 +120,7 @@ pub fn check_and_print_update_notice() {
         None => return,
     };
 
-    if !is_newer_version(current_version, &cache.latest_version) {
+    if !version_check::is_newer_version(current_version, &cache.latest_version) {
         return;
     }
 
@@ -661,6 +181,10 @@ fn print_update_notice(current_version: &str, cache: &VersionCache) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bifrost_core::version_check::{
+        compare_versions, extract_any_commit_message, extract_commit_message, is_newer_version,
+        parse_release_highlights,
+    };
 
     #[test]
     fn test_compare_versions_basic() {
@@ -822,7 +346,7 @@ without proper structure
 
     #[test]
     fn test_parse_release_highlights_whats_new_curly_apostrophe() {
-        let body = "## What’s New\n\n- A\n- B\n- C\n";
+        let body = "## What\u{2019}s New\n\n- A\n- B\n- C\n";
         let highlights = parse_release_highlights(Some(body));
         assert_eq!(highlights.len(), 3);
         assert_eq!(highlights[0], "A");

@@ -6,12 +6,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::update_check::{
-    get_latest_version, get_latest_version_fresh_with_diagnostics, is_newer_version, VersionCache,
-};
+use super::update_check::{get_latest_version, get_latest_version_fresh_with_diagnostics};
 use crate::process::{is_process_running, read_pid, read_runtime_info};
-
-const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/tag";
+use bifrost_core::version_check::{is_newer_version, VersionCache, GITHUB_RELEASE_URL};
 const GITHUB_DOWNLOAD_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/download";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -640,12 +637,11 @@ pub fn handle_upgrade(force: bool, restart: bool) -> Result<(), BifrostError> {
                 println!("{}", "    • Check your internet connection".dimmed());
                 println!(
                     "{}",
-                    "    • If behind a proxy/firewall, ensure api.github.com is accessible"
-                        .dimmed()
+                    "    • If behind a proxy/firewall, ensure github.com is accessible".dimmed()
                 );
                 println!(
                     "{}",
-                    "    • Try: curl -sI https://api.github.com/repos/bifrost-proxy/bifrost/releases/latest"
+                    "    • Try: curl -sI -o /dev/null -w '%{url_effective}' -L https://github.com/bifrost-proxy/bifrost/releases/latest"
                         .dimmed()
                 );
                 println!(

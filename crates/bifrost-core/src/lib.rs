@@ -10,6 +10,7 @@ pub mod rule;
 pub mod shell_proxy;
 pub mod syntax;
 pub mod system_proxy;
+pub mod version_check;
 
 pub use access_control::{
     AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl, PendingAuth,
