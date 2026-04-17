@@ -58,7 +58,7 @@ start_daemon() {
     local log_file="${TEST_DATA_DIR}/proxy-${RANDOM}.log"
     BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" start -d \
         -p "${PROXY_PORT}" \
-        --skip-cert-check --unsafe-ssl -y \
+        --skip-cert-check --unsafe-ssl --no-system-proxy -y \
         >"${log_file}" 2>&1
     local exit_code=$?
 

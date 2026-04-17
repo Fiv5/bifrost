@@ -171,6 +171,7 @@ start_proxy() {
         start \
         --unsafe-ssl \
         --skip-cert-check \
+        --no-system-proxy \
         --rules-file "$RULES_FILE" \
         < /dev/null > "$PROXY_LOG" 2>&1 &
     

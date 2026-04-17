@@ -135,6 +135,7 @@ RULES
         -p "$PROXY_PORT" \
         start \
         --unsafe-ssl \
+        --no-system-proxy \
         --rules-file "$rules_file" \
         > "$PROXY_LOG_FILE" 2>&1 &
 

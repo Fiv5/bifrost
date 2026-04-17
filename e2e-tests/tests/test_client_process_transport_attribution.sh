@@ -166,7 +166,7 @@ start_proxy() {
 
     "$BIFROST_BIN" --port "$PROXY_PORT" --socks5-port "$SOCKS5_PORT" start \
         --skip-cert-check \
-        --unsafe-ssl \
+        --unsafe-ssl --no-system-proxy \
         --intercept \
         --rules-file "$RULES_FILE" \
         >"$TEST_DATA_DIR/proxy.log" 2>&1 &

@@ -40,7 +40,7 @@ build_bifrost() {
 start_proxy() {
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
     "$BIFROST_BIN" -p "${PROXY_PORT}" start \
-        --skip-cert-check --unsafe-ssl \
+        --skip-cert-check --unsafe-ssl --no-system-proxy \
         --cli-proxy \
         --cli-proxy-no-proxy "localhost,127.0.0.1,::1,*.local" \
         > "${TEST_DATA_DIR}/proxy.log" 2>&1 &

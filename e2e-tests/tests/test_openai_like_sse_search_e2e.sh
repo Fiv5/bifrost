@@ -100,7 +100,7 @@ start_bifrost() {
     export BIFROST_DATA_DIR
 
     SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-        "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl \
+        "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl --no-system-proxy \
         >"$BIFROST_LOG_FILE" 2>&1 &
     BIFROST_PID=$!
 

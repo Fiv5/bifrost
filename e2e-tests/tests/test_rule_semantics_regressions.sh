@@ -145,7 +145,7 @@ start_proxy() {
 
     "$BIFROST_BIN" --port "$PROXY_PORT" start \
         --skip-cert-check \
-        --unsafe-ssl \
+        --unsafe-ssl --no-system-proxy \
         --rules-file "$RULES_FILE" \
         >"$TEST_DATA_DIR/proxy.log" 2>&1 &
     PROXY_PID=$!

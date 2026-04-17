@@ -112,7 +112,7 @@ start_bifrost() {
     BIFROST_DATA_DIR="$(mktemp -d)"
     export BIFROST_DATA_DIR
 
-    BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" start -p "$PROXY_PORT" --access-mode allow_all --skip-cert-check --unsafe-ssl > /dev/null 2>&1 &
+    BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" start -p "$PROXY_PORT" --access-mode allow_all --skip-cert-check --unsafe-ssl --no-system-proxy > /dev/null 2>&1 &
     BIFROST_PID=$!
 
     local max_wait=60

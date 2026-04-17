@@ -266,7 +266,7 @@ start_bifrost() {
     cd "$rust_dir" || return 1
 
     SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-        "$BIFROST_BIN" start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl \
+        "$BIFROST_BIN" start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl --no-system-proxy \
         >"$BIFROST_LOG_FILE" 2>&1 &
     BIFROST_PID=$!
     STARTED_BIFROST=1

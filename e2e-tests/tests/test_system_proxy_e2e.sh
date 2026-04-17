@@ -102,6 +102,7 @@ start_proxy_without_system_proxy() {
     "$BIFROST_BIN" --port "${PROXY_PORT}" start \
         --skip-cert-check --unsafe-ssl \
         --rules-file "${TEST_DATA_DIR}/.bifrost/rules/test.txt" \
+        --no-system-proxy \
         > "${TEST_DATA_DIR}/proxy.log" 2>&1 &
     PROXY_PID=$!
     local max_wait=30

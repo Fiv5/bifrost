@@ -96,7 +96,7 @@ start_bifrost_server() {
 
     cd "$PROJECT_DIR" || return 1
     SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$TEST_DATA_DIR" \
-        "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl \
+        "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl --no-system-proxy \
         >"$BIFROST_LOG_FILE" 2>&1 &
     PROXY_PID=$!
 
