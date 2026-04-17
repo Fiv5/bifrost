@@ -488,6 +488,7 @@ pub fn run_start(
     rules: Vec<String>,
     rules_file: Option<PathBuf>,
     system_proxy: bool,
+    no_system_proxy: bool,
     proxy_bypass: Option<String>,
     cli_proxy: bool,
     cli_proxy_no_proxy: Option<String>,
@@ -711,6 +712,8 @@ pub fn run_start(
 
     let enable_system_proxy = if system_proxy {
         true
+    } else if no_system_proxy {
+        false
     } else {
         stored_config.system_proxy.enabled
     };
@@ -1165,6 +1168,8 @@ pub fn run_foreground(
             let admin_state = admin_state.with_sync_manager_shared(sync_manager);
             let admin_state =
                 admin_state.with_ip_tls_pending_manager(bifrost_admin::IpTlsPendingManager::new());
+            let admin_state = admin_state
+                .with_client_trust_tracker(bifrost_admin::ClientTlsTrustTracker::new());
 
             let db_cleanup_task = bifrost_admin::start_db_cleanup_task(traffic_db_store);
             let connection_cleanup_task =
@@ -1832,6 +1837,8 @@ pub fn run_daemon(
                     let admin_state = admin_state.with_sync_manager_shared(sync_manager);
                     let admin_state = admin_state
                         .with_ip_tls_pending_manager(bifrost_admin::IpTlsPendingManager::new());
+                    let admin_state = admin_state
+                        .with_client_trust_tracker(bifrost_admin::ClientTlsTrustTracker::new());
 
                     std::mem::drop(bifrost_admin::start_db_cleanup_task(traffic_db_store));
                     std::mem::drop(bifrost_admin::start_connection_cleanup_task(

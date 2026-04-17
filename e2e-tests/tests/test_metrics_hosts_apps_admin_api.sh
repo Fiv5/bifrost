@@ -72,7 +72,7 @@ start_bifrost() {
     cd "$repo_dir" || return 1
 
     SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-        "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check >"$BIFROST_LOG_FILE" 2>&1 &
+        "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check --no-system-proxy >"$BIFROST_LOG_FILE" 2>&1 &
     BIFROST_PID=$!
 
     local max_wait=180

@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 use crate::app_icon::SharedAppIconCache;
 use crate::async_traffic::{AsyncTrafficWriter, SharedAsyncTrafficWriter};
 use crate::body_store::SharedBodyStore;
+use crate::client_trust_tracker::ClientTlsTrustTracker;
 use crate::connection_monitor::{ConnectionMonitor, SharedConnectionMonitor};
 use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
@@ -33,6 +34,7 @@ use once_cell::sync::OnceCell;
 
 pub type SharedScriptManager = Arc<RwLock<ScriptManager>>;
 pub type SharedIpTlsPendingManager = Arc<IpTlsPendingManager>;
+pub type SharedClientTrustTracker = Arc<ClientTlsTrustTracker>;
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
@@ -115,6 +117,7 @@ pub struct AdminState {
     pub port_rebind_manager: Option<SharedPortRebindManager>,
     pub sync_manager: Option<SharedSyncManager>,
     pub ip_tls_pending_manager: Option<Arc<IpTlsPendingManager>>,
+    pub client_trust_tracker: Option<SharedClientTrustTracker>,
     group_name_cache: parking_lot::Mutex<HashMap<String, String>>,
     group_cache_resolved: AtomicBool,
     badge_rules_cache: parking_lot::RwLock<String>,
@@ -156,6 +159,7 @@ impl AdminState {
             port_rebind_manager: None,
             sync_manager: None,
             ip_tls_pending_manager: None,
+            client_trust_tracker: None,
             group_name_cache: parking_lot::Mutex::new(HashMap::new()),
             group_cache_resolved: AtomicBool::new(false),
             badge_rules_cache: parking_lot::RwLock::new(
@@ -819,6 +823,11 @@ impl AdminState {
 
     pub fn with_ip_tls_pending_manager(mut self, manager: IpTlsPendingManager) -> Self {
         self.ip_tls_pending_manager = Some(Arc::new(manager));
+        self
+    }
+
+    pub fn with_client_trust_tracker(mut self, tracker: ClientTlsTrustTracker) -> Self {
+        self.client_trust_tracker = Some(Arc::new(tracker));
         self
     }
 

@@ -61,7 +61,7 @@ start_proxy_bg() {
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
 
     "$BIFROST_BIN" -p "${PROXY_PORT}" start \
-        --skip-cert-check --unsafe-ssl \
+        --skip-cert-check --unsafe-ssl --no-system-proxy \
         >"${log_file}" 2>&1 &
     echo $!
 }
@@ -94,7 +94,7 @@ test_restart_yes() {
 
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
     printf 'y\n' | "$BIFROST_BIN" -p "${PROXY_PORT}" start \
-        --skip-cert-check --unsafe-ssl \
+        --skip-cert-check --unsafe-ssl --no-system-proxy \
         >"${TEST_DATA_DIR}/proxy-restart.log" 2>&1 &
     local new_pid=$!
     RESTART_PID="$new_pid"
@@ -156,7 +156,7 @@ test_restart_auto_yes() {
 
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
     "$BIFROST_BIN" -p "${PROXY_PORT}" start -y \
-        --skip-cert-check --unsafe-ssl \
+        --skip-cert-check --unsafe-ssl --no-system-proxy \
         >"${TEST_DATA_DIR}/proxy-restart-auto.log" 2>&1 &
     local new_pid=$!
     RESTART_PID="$new_pid"
@@ -216,7 +216,7 @@ test_restart_no() {
 
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
     local output
-    output="$(printf 'n\n' | "$BIFROST_BIN" -p "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl 2>&1)"
+    output="$(printf 'n\n' | "$BIFROST_BIN" -p "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --no-system-proxy 2>&1)"
     local code=$?
 
     assert_equals "0" "$code" "start should exit 0 when cancelled" || {

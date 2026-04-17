@@ -1,5 +1,5 @@
 import { useEffect, useMemo, memo, useCallback, type CSSProperties } from "react";
-import { theme, Tooltip } from "antd";
+import { theme, Tooltip, Popover, Switch } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import { useShallow } from "zustand/react/shallow";
 import { useMetricsStore } from "../../stores/useMetricsStore";
@@ -61,6 +61,8 @@ const StatusBar = memo(function StatusBar() {
   );
   const systemProxy = useProxyStore((state) => state.systemProxy);
   const fetchSystemProxy = useProxyStore((state) => state.fetchSystemProxy);
+  const toggleSystemProxy = useProxyStore((state) => state.toggleSystemProxy);
+  const proxyLoading = useProxyStore((state) => state.loading);
   const syncStatus = useSyncStore((state) => state.syncStatus);
   const startPolling = useSyncStore((state) => state.startPolling);
   const stopPolling = useSyncStore((state) => state.stopPolling);
@@ -119,6 +121,55 @@ const StatusBar = memo(function StatusBar() {
       running: systemProxy.enabled,
     };
   }, [systemProxy]);
+
+  const handleToggleSystemProxy = useCallback(
+    (checked: boolean) => {
+      toggleSystemProxy(checked);
+    },
+    [toggleSystemProxy],
+  );
+
+  const proxyPopoverContent = useMemo(() => {
+    if (!systemProxy) return null;
+    if (!systemProxy.supported) {
+      return (
+        <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
+          System proxy is not supported on this platform
+        </div>
+      );
+    }
+    return (
+      <div style={{ minWidth: 180 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span style={{ fontSize: 12 }}>System Proxy</span>
+          <Switch
+            size="small"
+            checked={systemProxy.enabled}
+            loading={proxyLoading}
+            onChange={handleToggleSystemProxy}
+          />
+        </div>
+        {systemProxy.enabled && (
+          <div
+            style={{
+              fontSize: 11,
+              color: token.colorTextTertiary,
+              marginTop: 6,
+              fontFamily: "monospace",
+            }}
+          >
+            {systemProxy.host}:{systemProxy.port}
+          </div>
+        )}
+      </div>
+    );
+  }, [systemProxy, proxyLoading, handleToggleSystemProxy, token]);
 
   const syncIndicator = useMemo(() => {
     if (!syncStatus || !syncStatus.enabled) {
@@ -294,11 +345,18 @@ const StatusBar = memo(function StatusBar() {
   return (
     <>
       <div style={styles.container}>
-        <div style={styles.item}>
-          <div style={styles.statusDot} />
-          <span style={styles.label}>Proxy:</span>
-          <span style={styles.valueStatus}>{proxyStatus.text}</span>
-        </div>
+        <Popover
+          content={proxyPopoverContent}
+          trigger="hover"
+          placement="top"
+          arrow={false}
+        >
+          <div style={{ ...styles.item, cursor: "pointer" }}>
+            <div style={styles.statusDot} />
+            <span style={styles.label}>Proxy:</span>
+            <span style={styles.valueStatus}>{proxyStatus.text}</span>
+          </div>
+        </Popover>
 
         <Tooltip title={syncIndicator.detail}>
           <div

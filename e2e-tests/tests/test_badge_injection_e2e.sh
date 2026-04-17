@@ -100,7 +100,7 @@ start_proxy() {
   local log_file="$data_dir/bifrost.log"
 
   echo "[INFO] Starting bifrost proxy on ${PROXY_HOST}:${PROXY_PORT} (data_dir=${data_dir})"
-  BIFROST_DATA_DIR="$data_dir" "$BIFROST_BIN" start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl "$@" >"$log_file" 2>&1 &
+  BIFROST_DATA_DIR="$data_dir" "$BIFROST_BIN" start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl --no-system-proxy "$@" >"$log_file" 2>&1 &
   PROXY_PID=$!
 
   for _ in $(seq 1 120); do

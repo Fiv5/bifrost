@@ -99,7 +99,7 @@ start_proxy() {
     rm -rf "$TEST_DATA_DIR"
     mkdir -p "$TEST_DATA_DIR"
     
-    BIFROST_DATA_DIR="$TEST_DATA_DIR" $BIFROST_BIN start -p "$PROXY_PORT" --skip-cert-check > "$TEST_DATA_DIR/proxy.log" 2>&1 &
+    BIFROST_DATA_DIR="$TEST_DATA_DIR" $BIFROST_BIN start -p "$PROXY_PORT" --skip-cert-check --no-system-proxy > "$TEST_DATA_DIR/proxy.log" 2>&1 &
     PROXY_PID=$!
     
     local max_wait=30
@@ -142,7 +142,7 @@ restart_proxy() {
     
     log_info "Restarting Bifrost proxy..."
     
-    BIFROST_DATA_DIR="$TEST_DATA_DIR" $BIFROST_BIN start -p "$PROXY_PORT" --skip-cert-check >> "$TEST_DATA_DIR/proxy.log" 2>&1 &
+    BIFROST_DATA_DIR="$TEST_DATA_DIR" $BIFROST_BIN start -p "$PROXY_PORT" --skip-cert-check --no-system-proxy >> "$TEST_DATA_DIR/proxy.log" 2>&1 &
     PROXY_PID=$!
     
     local max_wait=30

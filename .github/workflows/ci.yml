@@ -30,6 +30,10 @@ on:
       - "pnpm-lock.yaml"
       - ".github/workflows/*.yml"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -508,25 +512,17 @@ jobs:
           path: target/${{ matrix.target }}/release/bifrost
           retention-days: 1
 
-  e2e-macos:
-    name: E2E (${{ matrix.target }})
+  e2e-macos-rules:
+    name: E2E Rules (aarch64-apple-darwin)
     needs: [build-desktop-macos]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: aarch64-apple-darwin
     env:
       BIFROST_DATA_DIR: ${{ github.workspace }}/.bifrost-e2e-ci
       BIFROST_E2E_REPORT_DIR: ${{ github.workspace }}/.e2e-reports
       BIFROST_E2E_RULE_JOBS: "4"
       BIFROST_E2E_RETRY_FAILED_ONCE: "1"
       BIFROST_E2E_HTTP_RETRIES: "2"
-      BIFROST_E2E_SHELL_JOBS: "8"
-      BIFROST_E2E_RUNNER_JOBS: "8"
       TIMEOUT: "90"
       PYTHONIOENCODING: utf-8
     steps:
@@ -543,17 +539,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: e2e-${{ matrix.target }}
+          key: e2e-aarch64-apple-darwin
       - name: Download release binary
         uses: actions/download-artifact@v4
         with:
-          name: bifrost-release-${{ matrix.target }}
+          name: bifrost-release-aarch64-apple-darwin
           path: target/release
       - name: Make binary executable
         run: chmod +x target/release/bifrost
-      - name: End-to-end tests
+      - name: E2E rules tests
         shell: bash
-        run: bash scripts/ci/run-e2e-platform.sh
+        run: bash scripts/ci/run-e2e-rules.sh
       - name: Dump failed suite logs
         if: failure()
         shell: bash
@@ -572,7 +568,128 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-logs-${{ matrix.target }}
+          name: e2e-rules-logs-aarch64-apple-darwin
+          path: |
+            ${{ github.workspace }}/.e2e-reports/
+            ${{ github.workspace }}/.bifrost-e2e-ci/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-macos-shell:
+    name: E2E Shell (aarch64-apple-darwin)
+    needs: [build-desktop-macos]
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      BIFROST_DATA_DIR: ${{ github.workspace }}/.bifrost-e2e-ci
+      BIFROST_E2E_REPORT_DIR: ${{ github.workspace }}/.e2e-reports
+      BIFROST_E2E_SHELL_JOBS: "8"
+      BIFROST_E2E_RETRY_FAILED_ONCE: "1"
+      BIFROST_E2E_HTTP_RETRIES: "2"
+      TIMEOUT: "90"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+      - name: Install sync-server dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: packages/bifrost-sync-server
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-aarch64-apple-darwin
+      - name: Download release binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bifrost-release-aarch64-apple-darwin
+          path: target/release
+      - name: Make binary executable
+        run: chmod +x target/release/bifrost
+      - name: E2E shell tests
+        shell: bash
+        run: bash scripts/ci/run-e2e-shell.sh
+      - name: Dump failed suite logs
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== E2E Report Directory ==="
+          find "$BIFROST_E2E_REPORT_DIR" -type f -name "*.log" 2>/dev/null | head -20
+          echo ""
+          for logfile in $(find "$BIFROST_E2E_REPORT_DIR" -type f -name "*.log" 2>/dev/null | head -10); do
+            echo "=== $logfile ==="
+            tail -100 "$logfile"
+            echo ""
+          done
+          echo "=== E2E Data Directory ==="
+          find "$BIFROST_DATA_DIR" -type f -name "*.log" 2>/dev/null | head -20
+      - name: Upload E2E logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shell-logs-aarch64-apple-darwin
+          path: |
+            ${{ github.workspace }}/.e2e-reports/
+            ${{ github.workspace }}/.bifrost-e2e-ci/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-macos-runner:
+    name: E2E Runner (aarch64-apple-darwin)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      BIFROST_DATA_DIR: ${{ github.workspace }}/.bifrost-e2e-ci
+      BIFROST_E2E_REPORT_DIR: ${{ github.workspace }}/.e2e-reports
+      BIFROST_E2E_RUNNER_JOBS: "8"
+      BIFROST_E2E_RETRY_FAILED_ONCE: "1"
+      BIFROST_E2E_HTTP_RETRIES: "2"
+      TIMEOUT: "90"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-aarch64-apple-darwin
+      - name: E2E runner tests
+        shell: bash
+        run: bash scripts/ci/run-e2e-runner.sh
+      - name: Dump failed suite logs
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== E2E Report Directory ==="
+          find "$BIFROST_E2E_REPORT_DIR" -type f -name "*.log" 2>/dev/null | head -20
+          echo ""
+          for logfile in $(find "$BIFROST_E2E_REPORT_DIR" -type f -name "*.log" 2>/dev/null | head -10); do
+            echo "=== $logfile ==="
+            tail -100 "$logfile"
+            echo ""
+          done
+          echo "=== E2E Data Directory ==="
+          find "$BIFROST_DATA_DIR" -type f -name "*.log" 2>/dev/null | head -20
+      - name: Upload E2E logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-runner-logs-aarch64-apple-darwin
           path: |
             ${{ github.workspace }}/.e2e-reports/
             ${{ github.workspace }}/.bifrost-e2e-ci/

@@ -68,7 +68,19 @@ const SequenceSearch = memo(function SequenceSearch({
   const records = useTrafficStore((state) => state.records);
   const [searching, setSearching] = useState(false);
   const [searchValue, setSearchValue] = useState("");
+  const [hovered, setHovered] = useState(false);
   const inputRef = useRef<{ focus: () => void } | null>(null);
+
+  const handleCopySequence = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (currentSequence != null) {
+        copyToClipboard(String(currentSequence));
+        message.success("Sequence copied");
+      }
+    },
+    [currentSequence],
+  );
 
   const options = useMemo(() => {
     const keyword = searchValue.trim();
@@ -143,23 +155,47 @@ const SequenceSearch = memo(function SequenceSearch({
   }
 
   return (
-    <Tooltip title="Click to search by sequence number">
-      <Text
-        strong
-        onClick={handleStartSearch}
-        style={{
-          whiteSpace: "nowrap",
-          userSelect: "none",
-          flexShrink: 0,
-          cursor: "pointer",
-          color: "#999",
-          fontSize: 12,
-          fontFamily: "monospace",
-        }}
-      >
-        #{currentSequence}
-      </Text>
-    </Tooltip>
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 2,
+        flexShrink: 0,
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <Tooltip title="Click to search by sequence number">
+        <Text
+          strong
+          onClick={handleStartSearch}
+          style={{
+            whiteSpace: "nowrap",
+            userSelect: "none",
+            flexShrink: 0,
+            cursor: "pointer",
+            color: "#999",
+            fontSize: 12,
+            fontFamily: "monospace",
+          }}
+        >
+          #{currentSequence}
+        </Text>
+      </Tooltip>
+      {hovered && (
+        <Tooltip title="Copy sequence number">
+          <CopyOutlined
+            onClick={handleCopySequence}
+            style={{
+              fontSize: 12,
+              cursor: "pointer",
+              color: "#999",
+              padding: 2,
+            }}
+          />
+        </Tooltip>
+      )}
+    </div>
   );
 });
 

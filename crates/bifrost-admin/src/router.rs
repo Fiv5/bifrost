@@ -17,6 +17,7 @@ use crate::handlers::{
     group::handle_group,
     group_rules::handle_group_rules,
     metrics::handle_metrics,
+    notification::handle_notification,
     proxy::handle_proxy,
     replay::handle_replay,
     room::handle_room,
@@ -179,6 +180,8 @@ impl AdminRouter {
             }
         } else if path.starts_with("/api/replay") {
             handle_replay(req, state, push_manager, path).await
+        } else if path.starts_with("/api/notifications") {
+            handle_notification(req, state, path).await
         } else if path.starts_with("/api/syntax") {
             handle_syntax(req, state, path).await
         } else if path.starts_with("/api/bifrost-file") {

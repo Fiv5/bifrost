@@ -452,6 +452,12 @@ pub enum Commands {
         system_proxy: bool,
         #[arg(
             long,
+            conflicts_with = "system_proxy",
+            help = "Disable system proxy configuration"
+        )]
+        no_system_proxy: bool,
+        #[arg(
+            long,
             help = "System proxy bypass list (comma-separated, e.g., 'localhost,127.0.0.1,*.local')"
         )]
         proxy_bypass: Option<String>,

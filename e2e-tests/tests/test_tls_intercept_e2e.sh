@@ -205,7 +205,7 @@ start_proxy() {
     kill_process_on_port "$PROXY_PORT"
     rm -f "$BIFROST_DATA_DIR/bifrost.pid" "$BIFROST_DATA_DIR/runtime.json" 2>/dev/null || true
 
-    local cmd="$BIFROST_BIN --port $PROXY_PORT --log-level debug start --skip-cert-check --unsafe-ssl"
+    local cmd="$BIFROST_BIN --port $PROXY_PORT --log-level debug start --skip-cert-check --unsafe-ssl --no-system-proxy"
     
     if [[ -n "$rules" ]]; then
         cmd="$cmd --rules \"$rules\""

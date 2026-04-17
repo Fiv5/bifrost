@@ -174,6 +174,7 @@ start_proxy() {
         --unsafe-ssl \
         --rules-file "$RULES_FILE" \
         --skip-cert-check \
+        --no-system-proxy \
         2>&1 &
     PROXY_PID=$!
 

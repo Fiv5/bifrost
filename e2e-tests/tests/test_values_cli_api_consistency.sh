@@ -62,7 +62,7 @@ start_bifrost() {
 
     echo "[INFO] Starting bifrost on port $PROXY_PORT with data dir $TEST_DATA_DIR"
     BIFROST_DATA_DIR="$TEST_DATA_DIR" "$BIFROST_BIN" \
-        -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl \
+        -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl --no-system-proxy \
         >"$TEST_DATA_DIR/bifrost.log" 2>&1 &
     PROXY_PID=$!
 

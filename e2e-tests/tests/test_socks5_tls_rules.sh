@@ -111,10 +111,10 @@ EOF
     
     if [ -n "$combined_rules" ]; then
         RUST_LOG=bifrost_proxy=debug "$BIFROST_BIN" -p "$PROXY_PORT" --socks5-port "$SOCKS5_PORT" start \
-            --unsafe-ssl --skip-cert-check --rules "$combined_rules" >"$PROXY_LOG_FILE" 2>&1 &
+            --unsafe-ssl --skip-cert-check --no-system-proxy --rules "$combined_rules" >"$PROXY_LOG_FILE" 2>&1 &
     else
         RUST_LOG=bifrost_proxy=debug "$BIFROST_BIN" -p "$PROXY_PORT" --socks5-port "$SOCKS5_PORT" start \
-            --unsafe-ssl --skip-cert-check >"$PROXY_LOG_FILE" 2>&1 &
+            --unsafe-ssl --skip-cert-check --no-system-proxy >"$PROXY_LOG_FILE" 2>&1 &
     fi
     PROXY_PID=$!
     

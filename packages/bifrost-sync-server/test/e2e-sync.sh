@@ -286,7 +286,7 @@ assert_eq "info returns Alice nickname" "Alice" "$INFO_NICK"
 echo ""
 echo -e "${CYAN}[step 4/9] Starting Bifrost proxy on port $PROXY_PORT...${NC}"
 cd "$PROJECT_ROOT"
-BIFROST_DATA_DIR="$PROXY_DATA_DIR" cargo run --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl &
+BIFROST_DATA_DIR="$PROXY_DATA_DIR" cargo run --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl --no-system-proxy &
 PROXY_PID=$!
 wait_for_service "$ADMIN_BASE/api/rules" "bifrost-proxy" 120
 

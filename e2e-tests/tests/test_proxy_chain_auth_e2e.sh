@@ -186,7 +186,7 @@ start_upstream_bifrost() {
     BIFROST_DATA_DIR="$UPSTREAM_DATA_DIR" \
         "$BIFROST_BIN" --port "$UPSTREAM_PORT" start \
         --skip-cert-check \
-        --unsafe-ssl \
+        --unsafe-ssl --no-system-proxy \
         --rules-file "$UPSTREAM_RULES_FILE" \
         >"$log_file" 2>&1 &
     UPSTREAM_PID=$!
@@ -198,7 +198,7 @@ start_entry_bifrost() {
     BIFROST_DATA_DIR="$ENTRY_DATA_DIR" \
         "$BIFROST_BIN" --port "$ENTRY_PORT" start \
         --skip-cert-check \
-        --unsafe-ssl \
+        --unsafe-ssl --no-system-proxy \
         --rules-file "$ENTRY_RULES_FILE" \
         >"$log_file" 2>&1 &
     ENTRY_PID=$!

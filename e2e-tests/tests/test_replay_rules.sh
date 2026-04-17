@@ -162,7 +162,7 @@ start_bifrost() {
     cd "$ROOT_DIR"
 
     BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-./.bifrost-e2e-test}" \
-        "$BIFROST_BIN" start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
+        "$BIFROST_BIN" start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check --no-system-proxy > /tmp/bifrost_e2e.log 2>&1 &
     BIFROST_PID=$!
     
     local timeout=120

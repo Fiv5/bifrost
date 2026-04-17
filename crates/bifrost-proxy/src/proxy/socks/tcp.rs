@@ -1591,10 +1591,34 @@ impl SocksHandler {
             .take()
             .ok_or_else(|| BifrostError::Network("Stream already taken".to_string()))?;
 
-        let client_tls = acceptor
-            .accept(client_stream)
-            .await
-            .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+        let client_tls = match acceptor.accept(client_stream).await {
+            Ok(tls) => {
+                if let Some(ref state) = admin_state {
+                    if let Some(ref tracker) = state.client_trust_tracker {
+                        tracker.record_handshake_success(
+                            &self.peer_addr.ip().to_string(),
+                            None,
+                            target_host,
+                        );
+                    }
+                }
+                tls
+            }
+            Err(e) => {
+                if let Some(ref state) = admin_state {
+                    if let Some(ref tracker) = state.client_trust_tracker {
+                        let reason = bifrost_admin::classify_tls_accept_error(&e);
+                        tracker.record_handshake_failure(
+                            &self.peer_addr.ip().to_string(),
+                            None,
+                            target_host,
+                            &reason,
+                        );
+                    }
+                }
+                return Err(BifrostError::Tls(format!("TLS accept failed: {e}")));
+            }
+        };
 
         debug!(
             "[{}] SOCKS5: TLS handshake completed for {}:{}",
