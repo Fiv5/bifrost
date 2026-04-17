@@ -126,9 +126,10 @@ impl ClientTlsTrustTracker {
         &self,
         client_ip: &str,
         client_app: Option<&str>,
-        _domain: &str,
+        domain: &str,
     ) {
         let now = current_timestamp();
+        let ctx = Some(("handshake_success".to_string(), domain.to_string()));
 
         if let Ok(ip) = client_ip.parse::<IpAddr>() {
             let mut map = self.by_ip.write();
@@ -138,7 +139,7 @@ impl ClientTlsTrustTracker {
             record.last_success_at = Some(now);
             record.handshake_success += 1;
             let new_status = evaluate_trust(record);
-            self.maybe_emit_event(client_ip, "ip", &old_status, &new_status, None);
+            self.maybe_emit_event(client_ip, "ip", &old_status, &new_status, ctx.clone());
         }
 
         if let Some(app) = client_app {
@@ -152,7 +153,7 @@ impl ClientTlsTrustTracker {
                 record.last_success_at = Some(now);
                 record.handshake_success += 1;
                 let new_status = evaluate_trust(record);
-                self.maybe_emit_event(app, "app", &old_status, &new_status, None);
+                self.maybe_emit_event(app, "app", &old_status, &new_status, ctx.clone());
             }
         }
     }

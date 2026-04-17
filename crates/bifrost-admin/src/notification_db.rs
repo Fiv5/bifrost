@@ -335,7 +335,7 @@ pub fn count_unread() -> Result<i64> {
 
 fn cleanup_old_records(conn: &Connection) -> std::result::Result<(), rusqlite::Error> {
     let old = WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    if old % CLEANUP_CHECK_INTERVAL != 0 {
+    if !old.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
         return Ok(());
     }
     do_cleanup(conn)
