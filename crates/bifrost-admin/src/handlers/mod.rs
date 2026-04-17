@@ -9,6 +9,7 @@ pub mod frames;
 pub mod group;
 pub mod group_rules;
 pub mod metrics;
+pub mod notification;
 pub mod proxy;
 pub mod replay;
 mod replay_ws;

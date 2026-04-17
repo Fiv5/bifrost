@@ -11,7 +11,7 @@
 | 文件 | 功能模块 | 测试用例数 | 说明 |
 |------|---------|-----------|------|
 | [cli-start-stop-status.md](./cli-start-stop-status.md) | CLI 服务管理 | 25 | start/stop/status 命令，含守护进程、自定义端口、TLS 选项、规则加载、SOCKS5、LAN 访问、代理认证，以及 status 活跃规则摘要 |
-| [cli-start-advanced.md](./cli-start-advanced.md) | CLI Start 高级参数 | 31 | TLS 拦截域名/应用排除与白名单、系统代理、CLI 代理环境变量、访问控制模式、Badge 注入、证书检查跳过、日志配置 |
+| [cli-start-advanced.md](./cli-start-advanced.md) | CLI Start 高级参数 | 33 | TLS 拦截域名/应用排除与白名单、系统代理（默认启用、--no-system-proxy 禁用、互斥校验）、CLI 代理环境变量、访问控制模式、Badge 注入、证书检查跳过、日志配置 |
 | [cli-rule-management.md](./cli-rule-management.md) | CLI 规则管理 | 45 | rule 子命令全覆盖：list/add/show/get/update/enable/disable/delete/rename/reorder/active/sync，含过滤器和 lineProps |
 | [cli-rule-list-legacy-skip.md](./cli-rule-list-legacy-skip.md) | CLI `rule list` legacy 容错 | 1 | 损坏 legacy 规则文件跳过回归，确认仅列出本地可用规则 |
 | [cli-traffic-search.md](./cli-traffic-search.md) | CLI 流量与搜索 | 36 | traffic list/get/search/clear 命令，含多维度过滤器、搜索范围控制、交互式搜索 |
@@ -41,6 +41,7 @@
 | [webui-groups.md](./webui-groups.md) | Web UI Groups 页面 | 13 | Group 列表、详情、规则管理、搜索 |
 | [webui-search.md](./webui-search.md) | Web UI 搜索模式 | 12 | 搜索模式进入/退出、关键词搜索、过滤器、结果高亮、状态持久化 |
 | [webui-layout-navigation.md](./webui-layout-navigation.md) | Web UI 布局与导航 | 14 | 侧边栏导航、分割面板、状态栏、Toolbar、主题切换、版本检查、拖拽导入 |
+| [statusbar-proxy-popover.md](./statusbar-proxy-popover.md) | StatusBar Proxy Hover 面板 | 6 | 底部状态栏 Proxy 区域 hover 弹出 Popover，快速切换系统代理开关、地址显示、状态同步 |
 
 ### Admin API 测试
 
@@ -100,7 +101,7 @@
 
 ---
 
-**总计：53 个测试文件，1037 个测试用例**
+**总计：54 个测试文件，1045 个测试用例**
 
 ## 工作流程
 

@@ -946,10 +946,34 @@ async fn tls_intercept_tunnel(
     push_manager: Option<SharedPushManager>,
 ) -> Result<()> {
     let acceptor = TlsAcceptor::from(server_config);
-    let client_tls = acceptor
-        .accept(TokioIo::new(upgraded))
-        .await
-        .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+    let client_tls = match acceptor.accept(TokioIo::new(upgraded)).await {
+        Ok(tls) => {
+            if let Some(ref state) = admin_state {
+                if let Some(ref tracker) = state.client_trust_tracker {
+                    tracker.record_handshake_success(
+                        &client_ip,
+                        client_app.as_deref(),
+                        original_host,
+                    );
+                }
+            }
+            tls
+        }
+        Err(e) => {
+            if let Some(ref state) = admin_state {
+                if let Some(ref tracker) = state.client_trust_tracker {
+                    let reason = bifrost_admin::classify_tls_accept_error(&e);
+                    tracker.record_handshake_failure(
+                        &client_ip,
+                        client_app.as_deref(),
+                        original_host,
+                        &reason,
+                    );
+                }
+            }
+            return Err(BifrostError::Tls(format!("TLS accept failed: {e}")));
+        }
+    };
 
     if verbose_logging {
         debug!("[{}] TLS handshake with client completed", req_id);
@@ -1049,10 +1073,34 @@ async fn tls_intercept_tunnel_with_cancel(
     push_manager: Option<SharedPushManager>,
 ) -> Result<bool> {
     let acceptor = TlsAcceptor::from(server_config);
-    let mut client_tls = acceptor
-        .accept(TokioIo::new(upgraded))
-        .await
-        .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+    let mut client_tls = match acceptor.accept(TokioIo::new(upgraded)).await {
+        Ok(tls) => {
+            if let Some(ref state) = admin_state {
+                if let Some(ref tracker) = state.client_trust_tracker {
+                    tracker.record_handshake_success(
+                        &client_ip,
+                        client_app.as_deref(),
+                        original_host,
+                    );
+                }
+            }
+            tls
+        }
+        Err(e) => {
+            if let Some(ref state) = admin_state {
+                if let Some(ref tracker) = state.client_trust_tracker {
+                    let reason = bifrost_admin::classify_tls_accept_error(&e);
+                    tracker.record_handshake_failure(
+                        &client_ip,
+                        client_app.as_deref(),
+                        original_host,
+                        &reason,
+                    );
+                }
+            }
+            return Err(BifrostError::Tls(format!("TLS accept failed: {e}")));
+        }
+    };
     let client_alpn = client_tls.get_ref().1.alpn_protocol().map(|p| p.to_vec());
     let should_sniff_payload = !is_standard_tls_intercept_port(original_port);
 

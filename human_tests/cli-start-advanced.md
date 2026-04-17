@@ -5,7 +5,7 @@
 本文档覆盖 `bifrost start` 命令的高级启动参数，包括：
 - TLS 拦截域名排除/白名单（`--intercept-exclude`、`--intercept-include`）
 - TLS 拦截应用排除/白名单（`--app-intercept-exclude`、`--app-intercept-include`）
-- 系统代理配置（`--system-proxy`、`--proxy-bypass`）
+- 系统代理配置（`--system-proxy`、`--no-system-proxy`、`--proxy-bypass`）
 - CLI 代理环境变量（`--cli-proxy`、`--cli-proxy-no-proxy`）
 - 访问控制模式与白名单（`--access-mode`、`--whitelist`）
 - HTML Badge 注入（`--enable-badge-injection`、`--disable-badge-injection`）
@@ -206,13 +206,40 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- stop
 
 ---
 
-### TC-CSA-08：--proxy-bypass 不带 --system-proxy 时无效果
+### TC-CSA-08：默认启动（无 CLI 参数）系统代理自动启用
 
 **操作步骤**：
-1. 执行以下命令启动服务（只设置 bypass 但不启用 system-proxy）：
+1. 删除临时数据目录以模拟全新安装：
    ```bash
-   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl \
-     --proxy-bypass "localhost,127.0.0.1"
+   rm -rf ./.bifrost-test
+   ```
+2. 执行以下命令启动服务（不带任何系统代理参数）：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl
+   ```
+3. 检查系统代理状态：
+   ```bash
+   networksetup -getwebproxy Wi-Fi
+   ```
+
+**预期结果**：
+- 服务正常启动，日志中显示 `System proxy: enabled`
+- 步骤 3 macOS 网络设置中 Web 代理已启用，指向 `127.0.0.1:8800`
+- 默认行为变更：系统代理现在默认启用，无需显式指定 `--system-proxy`
+
+**清理**：
+```bash
+BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- stop
+```
+
+---
+
+### TC-CSA-08a：--no-system-proxy 显式禁用系统代理
+
+**操作步骤**：
+1. 执行以下命令启动服务（显式禁用系统代理）：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl --no-system-proxy
    ```
 2. 检查系统代理状态：
    ```bash
@@ -221,8 +248,28 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- stop
 
 **预期结果**：
 - 服务正常启动
-- 系统代理未被启用（`--proxy-bypass` 仅在 `--system-proxy` 启用时生效）
+- 日志中不显示 `System proxy: enabled`
+- 步骤 2 系统代理未被启用
 - 代理功能本身正常工作
+
+**清理**：
+```bash
+BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- stop
+```
+
+---
+
+### TC-CSA-08b：--system-proxy 与 --no-system-proxy 互斥
+
+**操作步骤**：
+1. 执行以下命令（同时指定两个互斥参数）：
+   ```bash
+   BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl --system-proxy --no-system-proxy
+   ```
+
+**预期结果**：
+- 命令执行失败，退出码非 0
+- 错误信息包含 `cannot be used with` 或类似的互斥冲突提示
 
 ---
 

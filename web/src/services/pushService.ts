@@ -54,6 +54,8 @@ export interface OverviewData {
   server: { port: number; admin_url: string };
   pending_authorizations: number;
   pending_ip_tls: number;
+  untrusted_clients: number;
+  unread_notifications: number;
 }
 
 export interface MetricsData {
@@ -85,7 +87,9 @@ export type SettingsScope =
   | 'cli_proxy'
   | 'whitelist_status'
   | 'pending_authorizations'
-  | 'pending_ip_tls';
+  | 'pending_ip_tls'
+  | 'client_trust'
+  | 'notifications';
 
 export interface SettingsUpdateData {
   scope: SettingsScope;

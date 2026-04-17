@@ -262,7 +262,7 @@ pub struct SystemProxyConfig {
 impl Default for SystemProxyConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             bypass: "localhost,127.0.0.1,::1,*.local".to_string(),
             auto_enable: false,
         }
@@ -480,7 +480,7 @@ mod tests {
         assert!(!config.tls.enable_interception);
         assert!(config.tls.intercept_exclude.is_empty());
         assert_eq!(config.access.mode, AccessMode::Interactive);
-        assert!(!config.system_proxy.enabled);
+        assert!(config.system_proxy.enabled);
     }
 
     #[test]

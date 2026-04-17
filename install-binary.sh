@@ -394,6 +394,116 @@ clear_xattr() {
     fi
 }
 
+detect_user_shell() {
+    local shell_name=""
+
+    if [[ -n "${SHELL:-}" ]]; then
+        shell_name=$(basename "$SHELL")
+    fi
+
+    if [[ -z "$shell_name" ]] && command -v getent &>/dev/null; then
+        local passwd_shell
+        passwd_shell=$(getent passwd "$(whoami)" 2>/dev/null | cut -d: -f7)
+        if [[ -n "$passwd_shell" ]]; then
+            shell_name=$(basename "$passwd_shell")
+        fi
+    fi
+
+    if [[ -z "$shell_name" ]] && [[ -f /etc/passwd ]]; then
+        local passwd_shell
+        passwd_shell=$(grep "^$(whoami):" /etc/passwd 2>/dev/null | cut -d: -f7)
+        if [[ -n "$passwd_shell" ]]; then
+            shell_name=$(basename "$passwd_shell")
+        fi
+    fi
+
+    case "$shell_name" in
+        bash|zsh|fish) echo "$shell_name" ;;
+        *) echo "bash" ;;
+    esac
+}
+
+get_shell_config_file() {
+    local shell_name="$1"
+    local os="$2"
+
+    case "$shell_name" in
+        fish)
+            echo "${HOME}/.config/fish/config.fish"
+            ;;
+        zsh)
+            echo "${HOME}/.zshrc"
+            ;;
+        bash)
+            if [[ "$os" == "darwin" ]]; then
+                if [[ -f "${HOME}/.bash_profile" ]]; then
+                    echo "${HOME}/.bash_profile"
+                elif [[ -f "${HOME}/.bashrc" ]]; then
+                    echo "${HOME}/.bashrc"
+                else
+                    echo "${HOME}/.bash_profile"
+                fi
+            else
+                echo "${HOME}/.bashrc"
+            fi
+            ;;
+        *)
+            echo "${HOME}/.profile"
+            ;;
+    esac
+}
+
+build_path_line() {
+    local shell_name="$1"
+    local dir="$2"
+
+    case "$shell_name" in
+        fish)
+            echo "fish_add_path \"$dir\""
+            ;;
+        *)
+            echo "export PATH=\"$dir:\$PATH\""
+            ;;
+    esac
+}
+
+path_already_configured() {
+    local config_file="$1"
+    local dir="$2"
+
+    [[ ! -f "$config_file" ]] && return 1
+
+    if grep -qF "$dir" "$config_file" 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+add_to_path() {
+    local shell_name="$1"
+    local config_file="$2"
+    local dir="$3"
+
+    if path_already_configured "$config_file" "$dir"; then
+        print_success "PATH already configured in $config_file"
+        return 0
+    fi
+
+    local path_line
+    path_line=$(build_path_line "$shell_name" "$dir")
+
+    local config_dir
+    config_dir=$(dirname "$config_file")
+    if [[ ! -d "$config_dir" ]]; then
+        mkdir -p "$config_dir"
+    fi
+
+    printf '\n# Added by Bifrost installer\n%s\n' "$path_line" >> "$config_file"
+    print_success "Added to $config_file: $path_line"
+    return 0
+}
+
 show_help() {
     echo "Bifrost Installation Script"
     echo ""
@@ -404,6 +514,7 @@ show_help() {
     echo "  --dir <PATH>          Installation directory (default: ~/.local/bin)"
     echo "  --target <TRIPLE>     Override target triple (e.g., x86_64-unknown-linux-musl)"
     echo "  --libc <gnu|musl>     Override libc variant on Linux (auto-detected by default)"
+    echo "  --no-modify-path      Skip automatic PATH configuration in shell profile"
     echo "  --help                Show this help message"
     echo ""
     echo "Environment variables:"
@@ -415,11 +526,13 @@ show_help() {
     echo "  curl -fsSL ... | bash -s -- --dir /usr/local/bin"
     echo "  curl -fsSL ... | bash -s -- --libc musl"
     echo "  curl -fsSL ... | bash -s -- --target x86_64-unknown-linux-musl"
+    echo "  curl -fsSL ... | bash -s -- --no-modify-path"
 }
 
 VERSION=""
 FORCE_TARGET=""
 FORCE_LIBC=""
+NO_MODIFY_PATH=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -442,6 +555,10 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             shift 2
+            ;;
+        --no-modify-path)
+            NO_MODIFY_PATH=1
+            shift
             ;;
         --help)
             show_help
@@ -621,53 +738,49 @@ main() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
+    local need_path_hint=0
     if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        print_warning "$INSTALL_DIR is not in your PATH"
-        echo ""
-        if [[ "$os" == "windows" ]]; then
+        if [[ "$NO_MODIFY_PATH" == "1" ]]; then
+            print_warning "$INSTALL_DIR is not in your PATH (auto-configuration skipped by --no-modify-path)"
+            need_path_hint=1
+        elif [[ "$os" == "windows" ]]; then
+            print_warning "$INSTALL_DIR is not in your PATH"
+            echo ""
             local win_install_dir="$INSTALL_DIR"
             if command -v cygpath >/dev/null 2>&1; then
                 win_install_dir=$(cygpath -w "$INSTALL_DIR")
             fi
-            echo "Add it to your Git Bash shell configuration:"
+            local user_shell
+            user_shell=$(detect_user_shell)
+            local config_file
+            config_file=$(get_shell_config_file "$user_shell" "$os")
+
+            print_step "Detected shell: $user_shell (config: $config_file)"
+            add_to_path "$user_shell" "$config_file" "$INSTALL_DIR"
+
             echo ""
-            case "$SHELL" in
-                */fish)
-                    echo "  echo 'set -gx PATH \"$INSTALL_DIR\" \$PATH' >> ~/.config/fish/config.fish"
-                    ;;
-                */zsh)
-                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
-                    ;;
-                *)
-                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
-                    ;;
-            esac
-            echo ""
-            echo "Or add it to Windows PATH (PowerShell):"
+            echo "You may also want to add it to Windows PATH (PowerShell):"
             echo ""
             echo "  \$currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')"
             echo "  [Environment]::SetEnvironmentVariable('Path', \"\$currentPath;$win_install_dir\", 'User')"
-            echo ""
-            echo "Then restart your terminal or run:"
-            echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+            need_path_hint=1
         else
-            echo "Add it to your shell configuration:"
-            echo ""
-            case "$SHELL" in
-                */fish)
-                    echo "  echo 'set -gx PATH \"$INSTALL_DIR\" \$PATH' >> ~/.config/fish/config.fish"
-                    ;;
-                */zsh)
-                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
-                    ;;
-                *)
-                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
-                    ;;
-            esac
-            echo ""
-            echo "Then restart your terminal or run:"
-            echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+            local user_shell
+            user_shell=$(detect_user_shell)
+            local config_file
+            config_file=$(get_shell_config_file "$user_shell" "$os")
+
+            print_step "Detected shell: $user_shell (config: $config_file)"
+            add_to_path "$user_shell" "$config_file" "$INSTALL_DIR"
+            need_path_hint=1
         fi
+    fi
+
+    if [[ "$need_path_hint" == "1" ]]; then
+        echo ""
+        print_warning "Restart your terminal or run the following to use bifrost now:"
+        echo ""
+        echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
     fi
 
     echo ""

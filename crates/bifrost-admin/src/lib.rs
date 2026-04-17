@@ -4,6 +4,7 @@ pub mod admin_auth_db;
 mod app_icon;
 mod async_traffic;
 mod body_store;
+pub mod client_trust_tracker;
 pub mod connection_monitor;
 pub mod connection_registry;
 pub mod cors;
@@ -12,6 +13,7 @@ mod handlers;
 pub mod ip_tls_pending;
 mod metrics;
 pub mod network;
+pub mod notification_db;
 mod port_rebind;
 pub mod push;
 pub mod replay_db;
@@ -46,6 +48,10 @@ pub use async_traffic::{
 pub use body_store::{
     start_body_cleanup_task, BodyRef, BodyStore, BodyStreamWriter, SharedBodyStore,
 };
+pub use client_trust_tracker::{
+    classify_tls_accept_error, ClientTlsTrustTracker, ClientTrustEvent, ClientTrustSummary,
+    TlsAcceptFailureReason,
+};
 pub use connection_monitor::{
     start_connection_cleanup_task, ConnectionMonitor, SharedConnectionMonitor, WebSocketFrameRecord,
 };
@@ -60,6 +66,10 @@ pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,
 };
+pub use notification_db::{
+    count_notifications, count_unread, create_notification, list_notifications, mark_all_as_read,
+    update_notification_status, CreateNotification, NotificationRecord,
+};
 pub use port_rebind::{
     PortRebindManager, PortRebindRequest, PortRebindResponse, SharedPortRebindManager,
 };
@@ -72,8 +82,8 @@ pub use sse::{
 };
 pub use state::{
     start_total_disk_cleanup_task, AdminState, RuntimeConfig, SharedAccessControl,
-    SharedIpTlsPendingManager, SharedRuntimeConfig, SharedScriptManager, SharedSystemProxyManager,
-    SharedValuesStorage,
+    SharedClientTrustTracker, SharedIpTlsPendingManager, SharedRuntimeConfig, SharedScriptManager,
+    SharedSystemProxyManager, SharedValuesStorage,
 };
 pub use traffic::{
     FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,

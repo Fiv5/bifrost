@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
-import { theme, Badge } from "antd";
+import { theme, Badge, App as AntApp } from "antd";
 import {
   GlobalOutlined,
   FileTextOutlined,
@@ -10,11 +10,13 @@ import {
   SunOutlined,
   MoonOutlined,
   UsergroupAddOutlined,
+  BellOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useCallback } from "react";
 import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
 import { usePendingIpTlsStore } from "../../stores/usePendingIpTlsStore";
+import { useNotificationStore } from "../../stores/useNotificationStore";
 import StatusBar from "../StatusBar";
 import { setNavigateCallback, type ReferenceLocation } from "../BifrostEditor";
 import { getDesktopPlatform, isDesktopShell } from "../../runtime";
@@ -32,6 +34,7 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { token } = theme.useToken();
+  const { notification } = AntApp.useApp();
   const {
     pendingCount,
     startSSE,
@@ -62,6 +65,37 @@ export default function AppLayout() {
 
   const showGroups = syncStatus?.enabled ?? false;
 
+  const { unreadCount, fetchUnreadCount } = useNotificationStore();
+  const prevUnreadRef = useRef(unreadCount);
+
+  useEffect(() => {
+    fetchUnreadCount();
+    const timer = setInterval(fetchUnreadCount, 5000);
+    return () => clearInterval(timer);
+  }, [fetchUnreadCount]);
+
+  const handleNotificationToast = useCallback(() => {
+    if (unreadCount > prevUnreadRef.current) {
+      const diff = unreadCount - prevUnreadRef.current;
+      notification.warning({
+        message: "New Notifications",
+        description: `${diff} new notification${diff > 1 ? "s" : ""} received. Check the Notifications panel.`,
+        placement: "topRight",
+        duration: 6,
+        onClick: () => {
+          navigate("/notifications");
+          notification.destroy();
+        },
+        style: { cursor: "pointer" },
+      });
+    }
+    prevUnreadRef.current = unreadCount;
+  }, [unreadCount, navigate, notification]);
+
+  useEffect(() => {
+    handleNotificationToast();
+  }, [handleNotificationToast]);
+
   const menuItems: MenuItem[] = useMemo(
     () => [
       { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
@@ -70,6 +104,7 @@ export default function AppLayout() {
       { key: "/values", icon: <DatabaseOutlined />, label: "Values" },
       { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
       { key: "/groups", icon: <UsergroupAddOutlined />, label: "Groups", hidden: !showGroups },
+      { key: "/notifications", icon: <BellOutlined />, label: "Notify" },
       { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
     ],
     [showGroups],
@@ -261,6 +296,13 @@ export default function AppLayout() {
     if (item.key === "/settings" && pendingCount > 0) {
       return (
         <Badge count={pendingCount} size="small" offset={[4, -4]}>
+          {item.icon}
+        </Badge>
+      );
+    }
+    if (item.key === "/notifications" && unreadCount > 0) {
+      return (
+        <Badge count={unreadCount} size="small" offset={[4, -4]}>
           {item.icon}
         </Badge>
       );

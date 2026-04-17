@@ -35,6 +35,8 @@ pub const SETTINGS_SCOPE_CLI_PROXY: &str = "cli_proxy";
 pub const SETTINGS_SCOPE_WHITELIST_STATUS: &str = "whitelist_status";
 pub const SETTINGS_SCOPE_PENDING_AUTHORIZATIONS: &str = "pending_authorizations";
 pub const SETTINGS_SCOPE_PENDING_IP_TLS: &str = "pending_ip_tls";
+pub const SETTINGS_SCOPE_CLIENT_TRUST: &str = "client_trust";
+pub const SETTINGS_SCOPE_NOTIFICATIONS: &str = "notifications";
 
 fn generate_client_id() -> u64 {
     CLIENT_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -116,6 +118,9 @@ pub enum PushMessage {
 
     #[serde(rename = "disconnect")]
     Disconnect(DisconnectData),
+
+    #[serde(rename = "notification")]
+    Notification(NotificationPushData),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +154,8 @@ pub struct OverviewData {
     pub server: ServerInfo,
     pub pending_authorizations: usize,
     pub pending_ip_tls: usize,
+    pub untrusted_clients: usize,
+    pub unread_notifications: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +252,15 @@ pub struct ErrorData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisconnectData {
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationPushData {
+    pub notification_type: String,
+    pub title: String,
+    pub message: String,
+    pub metadata: Option<serde_json::Value>,
+    pub unread_count: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -471,6 +487,15 @@ impl PushManager {
             .map(|m| m.pending_count())
             .unwrap_or(0);
 
+        let untrusted_clients_count = self
+            .state
+            .client_trust_tracker
+            .as_ref()
+            .map(|t| t.get_untrusted_count())
+            .unwrap_or(0);
+
+        let unread_notifications = crate::notification_db::count_unread().unwrap_or(0);
+
         let overview = OverviewData {
             system: serde_json::to_value(&system_info).unwrap_or_default(),
             metrics: serde_json::to_value(&metrics).unwrap_or_default(),
@@ -487,6 +512,8 @@ impl PushManager {
             },
             pending_authorizations: pending_count,
             pending_ip_tls: pending_ip_tls_count,
+            untrusted_clients: untrusted_clients_count,
+            unread_notifications,
         };
 
         *self.overview_cache.write() = Some(overview.clone());
@@ -1181,6 +1208,22 @@ impl PushManager {
                     json!([])
                 }
             }
+            SETTINGS_SCOPE_CLIENT_TRUST => {
+                if let Some(ref tracker) = self.state.client_trust_tracker {
+                    json!(tracker.get_all_statuses())
+                } else {
+                    json!([])
+                }
+            }
+            SETTINGS_SCOPE_NOTIFICATIONS => {
+                let unread = crate::notification_db::count_unread().unwrap_or(0);
+                let recent = crate::notification_db::list_notifications(None, None, 20, 0)
+                    .unwrap_or_default();
+                json!({
+                    "unread_count": unread,
+                    "recent": recent,
+                })
+            }
             _ => return None,
         };
 
@@ -1627,6 +1670,124 @@ pub fn start_push_tasks(manager: SharedPushManager) -> Vec<tokio::task::JoinHand
                     manager_subnet
                         .broadcast_settings_scope(SETTINGS_SCOPE_CERT_INFO)
                         .await;
+                }
+            }
+        }));
+    }
+
+    if let Some(ref tracker) = manager.state.client_trust_tracker {
+        let manager_trust = manager.clone();
+        let mut trust_rx = tracker.subscribe();
+        handles.push(tokio::spawn(async move {
+            loop {
+                match trust_rx.recv().await {
+                    Ok(event) => {
+                        let metadata = serde_json::to_value(&event).ok();
+                        let title = format!("Client {} trust status changed", event.identifier);
+                        let message = format!(
+                            "{} ({}) changed from {} to {}",
+                            event.identifier,
+                            event.identifier_type,
+                            event.old_status,
+                            event.new_status,
+                        );
+
+                        let _ = crate::notification_db::create_notification(
+                            &crate::notification_db::CreateNotification {
+                                notification_type: "tls_trust_change".to_string(),
+                                title,
+                                message,
+                                metadata: metadata.map(|m| m.to_string()),
+                            },
+                        );
+
+                        manager_trust
+                            .broadcast_settings_scope(SETTINGS_SCOPE_CLIENT_TRUST)
+                            .await;
+                        manager_trust
+                            .broadcast_settings_scope(SETTINGS_SCOPE_NOTIFICATIONS)
+                            .await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Client trust event receiver lagged by {n}");
+                        manager_trust
+                            .broadcast_settings_scope(SETTINGS_SCOPE_CLIENT_TRUST)
+                            .await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }));
+    }
+
+    if let Some(ref ac) = manager.state.access_control {
+        let manager_ac = manager.clone();
+        let ac_clone = ac.clone();
+        handles.push(tokio::spawn(async move {
+            let mut ac_rx = ac_clone.read().await.subscribe();
+            loop {
+                match ac_rx.recv().await {
+                    Ok(event) => {
+                        let ip = &event.pending_auth.ip;
+                        let event_type = &event.event_type;
+
+                        let (title, message) = match event_type.as_str() {
+                            "new" => (
+                                format!("New connection pending authorization from {ip}"),
+                                format!(
+                                    "IP {ip} is requesting access (attempt #{}). Total pending: {}",
+                                    event.pending_auth.attempt_count, event.total_pending
+                                ),
+                            ),
+                            "approved" => (
+                                format!("Access approved for {ip}"),
+                                format!(
+                                    "IP {ip} has been approved and added to temporary whitelist"
+                                ),
+                            ),
+                            "rejected" => (
+                                format!("Access rejected for {ip}"),
+                                format!("IP {ip} has been rejected and denied for this session"),
+                            ),
+                            _ => (
+                                format!("Access control event for {ip}"),
+                                format!("Event type: {event_type}, IP: {ip}"),
+                            ),
+                        };
+
+                        let metadata = serde_json::to_value(&event).ok().map(|mut m| {
+                            if let Some(obj) = m.as_object_mut() {
+                                obj.insert(
+                                    "domain".to_string(),
+                                    serde_json::Value::String(ip.to_string()),
+                                );
+                            }
+                            m.to_string()
+                        });
+
+                        let _ = crate::notification_db::create_notification(
+                            &crate::notification_db::CreateNotification {
+                                notification_type: "pending_authorization".to_string(),
+                                title,
+                                message,
+                                metadata,
+                            },
+                        );
+
+                        manager_ac
+                            .broadcast_settings_scope(SETTINGS_SCOPE_PENDING_AUTHORIZATIONS)
+                            .await;
+                        manager_ac
+                            .broadcast_settings_scope(SETTINGS_SCOPE_NOTIFICATIONS)
+                            .await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Access control event receiver lagged by {n}");
+                        manager_ac
+                            .broadcast_settings_scope(SETTINGS_SCOPE_PENDING_AUTHORIZATIONS)
+                            .await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         }));

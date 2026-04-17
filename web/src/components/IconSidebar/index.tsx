@@ -10,6 +10,7 @@ import {
   SunOutlined,
   MoonOutlined,
   UsergroupAddOutlined,
+  BellOutlined,
 } from "@ant-design/icons";
 import { useEffect, type CSSProperties } from "react";
 import { useThemeStore } from "../../stores/useThemeStore";
@@ -48,6 +49,7 @@ export default function IconSidebar() {
     { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
     { key: "/values", icon: <TeamOutlined />, label: "Values" },
     { key: "/groups", icon: <UsergroupAddOutlined />, label: "Groups", hidden: !showGroups },
+    { key: "/notifications", icon: <BellOutlined />, label: "Notifications" },
     { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
   ];
 
