@@ -680,3 +680,103 @@ GET /api/tls/client-trust/stream   → SSE 推送信任状态变更
 | P1 | ClientTlsTrustTracker + Admin API | 完整的信任状态查询 | 中 |
 | P2 | Web UI 信任状态展示 | 用户友好的可视化 | 中 |
 | P3 | SSE 实时推送 + IpTlsPendingManager 联动 | 自动化运维 | 小 |
+
+---
+
+## TLS 不信任域名交互式 Passthrough
+
+### 功能描述
+
+当 `ClientTlsTrustTracker` 检测到客户端不信任某个域名的 TLS 证书时，系统会创建一条 `tls_trust_change` 类型的通知记录。本功能在两个 UI 层面提供交互式处理入口，让用户可以一键将不信任域名加入 TLS Passthrough 列表（即跳过该域名的 TLS 拦截）：
+
+1. **Layout 全局 Toast 通知**：当有新的未读 `tls_trust_change` 通知产生时，`AppLayout` 组件会在页面右上角弹出 `notification.warning` Toast，包含域名信息及两个操作按钮：
+   - **Passthrough**：调用 `useTlsConfigStore.addDomainToPassthrough(domain)` 将域名加入 `intercept_exclude` 列表，同时将通知标记为 `read` + `action_taken: "passthrough"`
+   - **Ignore**：将通知标记为 `dismissed` + `action_taken: "ignored"`，不做配置变更
+
+2. **Notifications 表格行内操作**：在 `/notifications` 页面的 `NotificationsTable` 中，`tls_trust_change` 类型记录的 Actions 列会根据当前状态渲染不同内容：
+   - 未处理时：显示 **Passthrough** 和 **Ignore** 两个按钮（逻辑同 Toast）
+   - 已执行 Passthrough：显示绿色 `Passthrough ✓` 标签
+   - 已忽略/已 Dismiss：显示灰色 `Ignored` 标签
+
+两个入口共享同一套数据流：`notification.metadata` 中的 JSON 字段 `{ "domain": "<域名>" }` 提供目标域名，`useTlsConfigStore.addDomainToPassthrough` 提供配置变更能力。
+
+### 实现方案
+
+#### Layout Toast 增强（`web/src/components/Layout/index.tsx`）
+
+`AppLayout` 通过轮询 `useNotificationStore.unreadCount` 变化触发 `handleNotificationToast` 回调：
+
+1. 当 `unreadCount` 增加时，调用 `getNotifications({ status: "unread", limit: 20 })` 获取最新未读通知
+2. 对每条通知进行去重检查（`shownToastIdsRef`），过滤已弹出的 Toast
+3. 对 `notification_type === "tls_trust_change"` 的通知，解析 `JSON.parse(item.metadata)` 提取 `meta.domain`
+4. 弹出 `notification.warning` Toast（`duration: 0` 不自动关闭），包含：
+   - 描述文本：`Domain <strong>{domain}</strong> is not trusted by the client.`
+   - Passthrough 按钮：`await addDomainToPassthrough(domain)` → `updateNotificationStatus(id, "read", "passthrough")` → `fetchUnreadCount()` → `notification.destroy(key)`
+   - Ignore 按钮：`updateNotificationStatus(id, "dismissed", "ignored")` → `fetchUnreadCount()` → `notification.destroy(key)`
+5. 非 TLS 类通知累计到 `genericCount`，统一弹出通用 Toast
+
+关键依赖：
+- `useTlsConfigStore` 的 `addDomainToPassthrough` 和 `fetchConfig`
+- `useNotificationStore` 的 `unreadCount` 和 `fetchUnreadCount`
+- `api/notifications` 的 `getNotifications` 和 `updateNotificationStatus`
+
+#### Notifications 表格操作（`web/src/pages/Notifications/index.tsx`）
+
+`NotificationsTable` 组件中：
+
+1. 通过 `useTlsConfigStore((s) => s.addDomainToPassthrough)` 获取 passthrough 操作方法
+2. 定义 `handlePassthrough(id, domain)` 回调：先 `addDomainToPassthrough(domain)`，成功后 `handleUpdateStatus(id, "read", "passthrough")`
+3. 定义 `handleIgnore(id)` 回调：`handleUpdateStatus(id, "dismissed", "ignored")`
+4. 在 Actions 列的 `render` 函数中，对 `tls_trust_change` 类型记录：
+   - 从 `JSON.parse(record.metadata)` 提取 `domain`
+   - 根据 `record.action_taken` 判断已处理状态，渲染对应标签
+   - 未处理时渲染 Passthrough / Ignore 按钮对
+
+Domain 列同样通过 `JSON.parse(metadata)` 提取 `parsed.domain` 进行展示。
+
+#### `useTlsConfigStore.addDomainToPassthrough` 复用（`web/src/stores/useTlsConfigStore.ts`）
+
+此方法已存在且被 Toast 和 Notifications 表格共同复用，核心逻辑：
+
+1. 检查 `config.intercept_exclude` 是否已包含该域名（幂等）
+2. 将域名追加到 `intercept_exclude` 列表
+3. 如果域名同时存在于 `intercept_include` 列表中，自动将其移除（互斥保证）
+4. 调用 `updateTlsConfig({ intercept_exclude: newList, intercept_include: includeList })` 持久化
+5. 更新本地 store 状态
+
+### 测试方案
+
+#### 单元测试
+
+- `test_parse_tls_trust_notification_metadata_domain`：验证从 `metadata: '{"domain":"example.com"}'` 中正确解析出域名
+- `test_parse_tls_trust_notification_metadata_null`：验证 `metadata: null` 时返回 `-`
+- `test_parse_tls_trust_notification_metadata_invalid_json`：验证非法 JSON 时返回 `-`
+- `test_parse_tls_trust_notification_metadata_missing_domain`：验证 `metadata: '{"foo":"bar"}'`（无 domain 字段）时返回 `-`
+- `test_add_domain_to_passthrough_idempotent`：验证重复添加同一域名时直接返回 `true` 且不重复请求 API
+- `test_add_domain_to_passthrough_removes_from_intercept`：验证域名从 `intercept_include` 自动移除
+
+#### 端到端测试（E2E）
+
+- 启动代理（启用 TLS 拦截），使用不信任 CA 的客户端访问 HTTPS 目标域名，验证：
+  - `/api/notifications` 返回包含 `tls_trust_change` 类型、`metadata` 含目标域名的记录
+  - 调用 Passthrough 操作后，`/api/config/tls` 返回的 `intercept_exclude` 包含该域名
+  - 再次访问该域名时，代理对其执行 passthrough（不拦截 TLS）
+- 验证 Notifications 页面 Actions 列状态流转：
+  - 初始状态显示 Passthrough / Ignore 按钮
+  - 点击 Passthrough 后显示绿色 `Passthrough ✓`
+  - 点击 Ignore 后显示灰色 `Ignored`
+- 验证 Toast 行为：
+  - 新 `tls_trust_change` 通知触发 Toast 弹出
+  - Toast 中点击 Passthrough 后 Toast 关闭，域名加入 passthrough 列表
+  - Toast 中点击 Ignore 后 Toast 关闭，通知标记为 dismissed
+
+#### 真实场景测试（human_tests）
+
+在 `human_tests/` 创建 `tls-passthrough-interactive.md`，包含以下用例：
+
+- **TC-TPI-01**：启用 TLS 拦截，使用 Chrome（未安装 CA）访问 `https://httpbin.org`，等待 Toast 弹出，确认 Toast 显示域名 `httpbin.org` 及 Passthrough / Ignore 按钮
+- **TC-TPI-02**：在 TC-TPI-01 的 Toast 中点击 Passthrough，验证：Toast 消失；Settings → TLS 的 Exclude 列表中出现 `httpbin.org`；重新访问 `https://httpbin.org` 不再触发 TLS 拦截错误
+- **TC-TPI-03**：在 TC-TPI-01 的 Toast 中点击 Ignore，验证：Toast 消失；Settings → TLS 的 Exclude 列表中不出现该域名；Notifications 页面对应记录显示 `Ignored`
+- **TC-TPI-04**：打开 `/notifications?tab=tls_trust_change` 页面，找到未处理的 `tls_trust_change` 记录，验证 Domain 列正确显示域名，Actions 列显示 Passthrough 和 Ignore 按钮
+- **TC-TPI-05**：在 Notifications 表格中点击 Passthrough 按钮，验证：Actions 列变为绿色 `Passthrough ✓` 标签；TLS 配置已更新
+- **TC-TPI-06**：在 Notifications 表格中点击 Ignore 按钮，验证：Actions 列变为灰色 `Ignored` 标签；TLS 配置未变更

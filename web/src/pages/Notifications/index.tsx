@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, type CSSProperties } from 'react';
+import { useEffect, useCallback, useState, useMemo, type CSSProperties } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Tabs,
@@ -23,6 +23,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { useNotificationStore } from '../../stores/useNotificationStore';
+import { useTlsConfigStore } from '../../stores/useTlsConfigStore';
 import type { NotificationRecord, ClientTrustSummary } from '../../api/notifications';
 
 const { Text } = Typography;
@@ -106,6 +107,62 @@ function CopyableCell({ text }: { text: string | null }) {
 function NotificationsTable() {
   const { notifications, total, loading, handleUpdateStatus, handleMarkAllRead, activeTab } =
     useNotificationStore();
+  const addDomainToPassthrough = useTlsConfigStore((s) => s.addDomainToPassthrough);
+  const fetchTlsConfig = useTlsConfigStore((s) => s.fetchConfig);
+
+  useEffect(() => {
+    fetchTlsConfig();
+  }, [fetchTlsConfig]);
+
+  const handlePassthrough = useCallback(
+    async (id: number, domain: string) => {
+      const ok = await addDomainToPassthrough(domain);
+      if (ok) {
+        await handleUpdateStatus(id, 'read', 'passthrough');
+      }
+    },
+    [addDomainToPassthrough, handleUpdateStatus],
+  );
+
+  const handleIgnore = useCallback(
+    async (id: number) => {
+      await handleUpdateStatus(id, 'dismissed', 'ignored');
+    },
+    [handleUpdateStatus],
+  );
+
+  const pendingTlsItems = useMemo(() => {
+    return notifications
+      .filter(
+        (n) =>
+          n.notification_type === 'tls_trust_change' &&
+          n.action_taken !== 'passthrough' &&
+          n.action_taken !== 'ignored' &&
+          n.status !== 'dismissed',
+      )
+      .map((n) => {
+        let domain: string | null = null;
+        try {
+          const meta = JSON.parse(n.metadata || '{}');
+          domain = meta.domain || null;
+        } catch {}
+        return { id: n.id, domain };
+      })
+      .filter((i): i is { id: number; domain: string } => i.domain !== null);
+  }, [notifications]);
+
+  const handleBatchPassthrough = useCallback(async () => {
+    for (const item of pendingTlsItems) {
+      await addDomainToPassthrough(item.domain);
+      await handleUpdateStatus(item.id, 'read', 'passthrough');
+    }
+  }, [pendingTlsItems, addDomainToPassthrough, handleUpdateStatus]);
+
+  const handleBatchIgnore = useCallback(async () => {
+    for (const item of pendingTlsItems) {
+      await handleUpdateStatus(item.id, 'dismissed', 'ignored');
+    }
+  }, [pendingTlsItems, handleUpdateStatus]);
 
   const columns = [
     {
@@ -161,32 +218,64 @@ function NotificationsTable() {
     {
       title: 'Actions',
       key: 'actions',
-      width: 90,
+      width: 200,
       fixed: 'right' as const,
-      render: (_: unknown, record: NotificationRecord) => (
-        <Space size="small">
-          {record.status === 'unread' && (
-            <Tooltip title="Mark as read">
-              <Button
-                type="text"
-                size="small"
-                icon={<EyeOutlined />}
-                onClick={() => handleUpdateStatus(record.id, 'read')}
-              />
-            </Tooltip>
-          )}
-          {record.status !== 'dismissed' && (
-            <Tooltip title="Dismiss">
-              <Button
-                type="text"
-                size="small"
-                icon={<CheckOutlined />}
-                onClick={() => handleUpdateStatus(record.id, 'dismissed', 'dismissed')}
-              />
-            </Tooltip>
-          )}
-        </Space>
-      ),
+      render: (_: unknown, record: NotificationRecord) => {
+        if (record.notification_type === 'tls_trust_change') {
+          let domain: string | null = null;
+          try {
+            const meta = JSON.parse(record.metadata || '{}');
+            domain = meta.domain || null;
+          } catch {}
+
+          if (record.action_taken === 'passthrough') {
+            return <Tag color="green">Passthrough ✓</Tag>;
+          }
+          if (record.action_taken === 'ignored' || record.status === 'dismissed') {
+            return <Tag>Ignored</Tag>;
+          }
+          if (domain) {
+            return (
+              <Space size="small">
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() => handlePassthrough(record.id, domain!)}
+                >
+                  Passthrough
+                </Button>
+                <Button size="small" onClick={() => handleIgnore(record.id)}>
+                  Ignore
+                </Button>
+              </Space>
+            );
+          }
+        }
+        return (
+          <Space size="small">
+            {record.status === 'unread' && (
+              <Tooltip title="Mark as read">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<EyeOutlined />}
+                  onClick={() => handleUpdateStatus(record.id, 'read')}
+                />
+              </Tooltip>
+            )}
+            {record.status !== 'dismissed' && (
+              <Tooltip title="Dismiss">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<CheckOutlined />}
+                  onClick={() => handleUpdateStatus(record.id, 'dismissed', 'dismissed')}
+                />
+              </Tooltip>
+            )}
+          </Space>
+        );
+      },
     },
   ];
 
@@ -194,13 +283,25 @@ function NotificationsTable() {
     <div>
       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
         <Text type="secondary">{total} notification(s)</Text>
-        <Button
-          size="small"
-          icon={<CheckCircleOutlined />}
-          onClick={() => handleMarkAllRead(activeTab === 'all' ? undefined : activeTab)}
-        >
-          Mark All Read
-        </Button>
+        <Space size="small">
+          {pendingTlsItems.length > 0 && (
+            <>
+              <Button size="small" type="primary" onClick={handleBatchPassthrough}>
+                Passthrough All ({pendingTlsItems.length})
+              </Button>
+              <Button size="small" onClick={handleBatchIgnore}>
+                Ignore All ({pendingTlsItems.length})
+              </Button>
+            </>
+          )}
+          <Button
+            size="small"
+            icon={<CheckCircleOutlined />}
+            onClick={() => handleMarkAllRead(activeTab === 'all' ? undefined : activeTab)}
+          >
+            Mark All Read
+          </Button>
+        </Space>
       </div>
       <Table
         dataSource={notifications}
@@ -208,7 +309,7 @@ function NotificationsTable() {
         rowKey="id"
         loading={loading}
         size="small"
-        scroll={{ x: 1230 }}
+        scroll={{ x: 1340 }}
         pagination={{ pageSize: 20 }}
         locale={{ emptyText: <Empty description="No notifications" /> }}
       />

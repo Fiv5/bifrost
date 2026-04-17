@@ -42,6 +42,7 @@
 | [webui-search.md](./webui-search.md) | Web UI 搜索模式 | 12 | 搜索模式进入/退出、关键词搜索、过滤器、结果高亮、状态持久化 |
 | [webui-layout-navigation.md](./webui-layout-navigation.md) | Web UI 布局与导航 | 14 | 侧边栏导航、分割面板、状态栏、Toolbar、主题切换、版本检查、拖拽导入 |
 | [statusbar-proxy-popover.md](./statusbar-proxy-popover.md) | StatusBar Proxy Hover 面板 | 6 | 底部状态栏 Proxy 区域 hover 弹出 Popover，快速切换系统代理开关、地址显示、状态同步 |
+| [tls-passthrough-interactive.md](./tls-passthrough-interactive.md) | TLS 不信任域名交互式 Passthrough | 8 | TLS 不信任 Toast 弹窗交互、Passthrough / Ignore 按钮、Notifications 表格操作、域名排除列表联动 |
 
 ### Admin API 测试
 
@@ -101,7 +102,7 @@
 
 ---
 
-**总计：54 个测试文件，1045 个测试用例**
+**总计：55 个测试文件，1053 个测试用例**
 
 ## 工作流程
 
